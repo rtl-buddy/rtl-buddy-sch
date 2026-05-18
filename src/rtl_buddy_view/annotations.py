@@ -133,6 +133,36 @@ class DomainMap:
         """
         return not self.clocks
 
+    def predominant_clock(self, instance_path: str) -> str | None:
+        """Return the most common clock among flops under ``instance_path``.
+
+        "Under" means the flop's ``instance_path`` equals ``instance_path``
+        or starts with ``instance_path + "."``. Flops with ``clock=None``
+        (untraceable) are ignored. Ties between clocks with the same
+        flop count are broken alphabetically so the result is stable
+        across runs.
+
+        Returns ``None`` when no flop under the subtree has a known
+        clock — that's the "no annotation to show" signal for
+        renderers, which fall back to un-annotated styling.
+        """
+        prefix = instance_path + "."
+        counts: dict[str, int] = {}
+        for flop in self.flop_domains:
+            if flop.clock is None:
+                continue
+            if flop.instance_path == instance_path or flop.instance_path.startswith(
+                prefix
+            ):
+                counts[flop.clock] = counts.get(flop.clock, 0) + 1
+        if not counts:
+            return None
+        # Sort by count descending, then name ascending. Sorting (not
+        # max) keeps the tie-break logic obvious — the (-count, name)
+        # key makes Python's default ascending sort do both jobs.
+        ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return ordered[0][0]
+
 
 def load_domain_map(path: Path) -> DomainMap:
     """Load and validate a clock-domain map.
