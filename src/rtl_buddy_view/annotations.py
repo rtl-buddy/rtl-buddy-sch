@@ -133,6 +133,22 @@ class DomainMap:
         """
         return not self.clocks
 
+    def crossings_into(
+        self, instance_path: str, *, async_only: bool = True
+    ) -> tuple["Crossing", ...]:
+        """Crossings whose destination flop is at ``instance_path``.
+
+        Default filters to ``async_per_sdc=True`` — the SDC-confirmed
+        true-CDC subset. Pass ``async_only=False`` to get every
+        crossing the analyzer found regardless of SDC verdict (rare
+        outside of debugging).
+        """
+        return tuple(
+            c
+            for c in self.crossings
+            if c.dst_flop == instance_path and (not async_only or c.async_per_sdc)
+        )
+
     def predominant_clock(self, instance_path: str) -> str | None:
         """Return the most common clock among flops under ``instance_path``.
 
