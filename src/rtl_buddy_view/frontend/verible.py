@@ -25,7 +25,13 @@ from pathlib import Path
 
 from rtl_buddy_view._offsets import OffsetIndex
 from rtl_buddy_view._verible_install import find_binary
-from rtl_buddy_view.extractor import Module, ModuleTable, SourceLocation
+from rtl_buddy_view.extractor import (
+    Instance,
+    Module,
+    ModuleTable,
+    Port,
+    SourceLocation,
+)
 
 
 class VeribleUnavailable(RuntimeError):
@@ -67,9 +73,12 @@ def parse(files: list[Path]) -> ModuleTable:
     table = ModuleTable()
     for path in files:
         text = path.read_text()
+        source_bytes = text.encode("utf-8")
         offsets = OffsetIndex.build(text)
         cst = _run_verible(binary, path)
-        for mod in _walk_modules(cst, file=str(path), offsets=offsets):
+        for mod in _walk_modules(
+            cst, file=str(path), offsets=offsets, source=source_bytes
+        ):
             if mod.name in table.modules_by_name:
                 raise VeribleParseError(
                     f"Duplicate module definition {mod.name!r}: already "
@@ -113,6 +122,7 @@ def _walk_modules(
     *,
     file: str,
     offsets: OffsetIndex,
+    source: bytes,
 ) -> list[Module]:
     """Yield one :class:`Module` per ``kModuleDeclaration`` in the CST."""
     out: list[Module] = []
@@ -130,16 +140,179 @@ def _walk_modules(
             if span is None
             else _location(file, offsets, span[0], span[1])
         )
+        ports = _extract_ports(header, file=file, offsets=offsets, source=source)
+        instances = _extract_instances(node, file=file, offsets=offsets)
         out.append(
             Module(
                 name=name,
-                ports=(),
+                ports=ports,
                 parameters=(),
-                instances=(),
+                instances=instances,
                 location=loc,
             )
         )
     return out
+
+
+# --- port / instance walkers -------------------------------------------------
+
+
+_DIRECTION_TAGS: dict[str, str] = {
+    "input": "input",
+    "output": "output",
+    "inout": "inout",
+}
+
+
+def _extract_ports(
+    header: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[Port, ...]:
+    """Extract ANSI-style ports from a ``kModuleHeader``.
+
+    Verible has two ``kParenGroup`` children under ``kModuleHeader``
+    when the module has parameters: the first for ``#(...)``, the
+    second for the port list. The port list always appears alongside
+    a ``kPortDeclarationList`` so we filter by that child tag rather
+    than positional indexing — robust to whether parameters are
+    declared or not.
+    """
+    port_list_paren = None
+    for child in header.get("children", ()) or ():
+        if not isinstance(child, dict) or child.get("tag") != "kParenGroup":
+            continue
+        if _first_child_with_tag(child, "kPortDeclarationList") is not None:
+            port_list_paren = child
+            break
+    if port_list_paren is None:
+        return ()
+    decl_list = _first_child_with_tag(port_list_paren, "kPortDeclarationList")
+    if decl_list is None:
+        return ()
+    out: list[Port] = []
+    for decl in decl_list.get("children", ()) or ():
+        if not isinstance(decl, dict) or decl.get("tag") != "kPortDeclaration":
+            continue
+        out.append(_port_from_decl(decl, file=file, offsets=offsets, source=source))
+    return tuple(out)
+
+
+def _port_from_decl(
+    decl: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> Port:
+    direction: str | None = None
+    type_text: str | None = None
+    name = "<unknown>"
+    name_node: dict | None = None
+    for child in decl.get("children", ()) or ():
+        if not isinstance(child, dict):
+            continue
+        tag = child.get("tag")
+        if direction is None and tag in _DIRECTION_TAGS:
+            direction = _DIRECTION_TAGS[tag]
+        elif tag == "kDataType":
+            type_text = _source_slice(child, source)
+        elif tag == "kUnqualifiedId":
+            sym = _first_child_with_tag(child, "SymbolIdentifier")
+            if sym is not None and "text" in sym:
+                name = sym["text"]
+                name_node = sym
+    span = _node_span(name_node) if name_node is not None else _node_span(decl)
+    loc = (
+        SourceLocation(file=file)
+        if span is None
+        else _location(file, offsets, span[0], span[1])
+    )
+    return Port(name=name, direction=direction, type_text=type_text, location=loc)  # type: ignore[arg-type]
+
+
+def _extract_instances(
+    module_node: dict, *, file: str, offsets: OffsetIndex
+) -> tuple[Instance, ...]:
+    """Extract child instances from a ``kModuleDeclaration``.
+
+    Each instantiation lives under
+    ``kModuleItemList > kDataDeclaration > kInstantiationBase``. A
+    single ``kInstantiationBase`` can declare multiple gate instances
+    sharing the same module type — we emit one :class:`Instance` per
+    ``kGateInstance``.
+    """
+    item_list = _first_child_with_tag(module_node, "kModuleItemList")
+    if item_list is None:
+        return ()
+    out: list[Instance] = []
+    for data_decl in item_list.get("children", ()) or ():
+        if (
+            not isinstance(data_decl, dict)
+            or data_decl.get("tag") != "kDataDeclaration"
+        ):
+            continue
+        base = _first_child_with_tag(data_decl, "kInstantiationBase")
+        if base is None:
+            continue
+        inst_type = _first_child_with_tag(base, "kInstantiationType")
+        gate_list = _first_child_with_tag(base, "kGateInstanceRegisterVariableList")
+        if inst_type is None or gate_list is None:
+            continue
+        module_name_node = _find_first_sym(inst_type)
+        if module_name_node is None:
+            continue
+        module_name = module_name_node.get("text", "")
+        if not module_name:
+            continue
+        for gate in gate_list.get("children", ()) or ():
+            if not isinstance(gate, dict) or gate.get("tag") != "kGateInstance":
+                continue
+            inst_name_node = _first_child_with_tag(gate, "SymbolIdentifier")
+            if inst_name_node is None or "text" not in inst_name_node:
+                continue
+            inst_name = inst_name_node["text"]
+            span = _node_span(gate)
+            loc = (
+                SourceLocation(file=file)
+                if span is None
+                else _location(file, offsets, span[0], span[1])
+            )
+            out.append(
+                Instance(
+                    name=inst_name,
+                    module_name=module_name,
+                    param_overrides=(),
+                    port_connections=(),
+                    location=loc,
+                )
+            )
+    return tuple(out)
+
+
+def _find_first_sym(node: dict) -> dict | None:
+    """First ``SymbolIdentifier`` reachable in a depth-first walk."""
+    if not isinstance(node, dict):
+        return None
+    if node.get("tag") == "SymbolIdentifier" and "text" in node:
+        return node
+    for child in node.get("children", ()) or ():
+        if isinstance(child, dict):
+            hit = _find_first_sym(child)
+            if hit is not None:
+                return hit
+    return None
+
+
+def _source_slice(node: dict, source: bytes) -> str | None:
+    """Return the verbatim source text covered by ``node``.
+
+    Verible omits the ``text`` field on keyword leaves (the ``logic``
+    keyword has ``tag: "logic"`` and byte offsets but no ``text``),
+    so reconstructing the source from token texts loses content.
+    Using the byte span against the original file preserves comments
+    and whitespace exactly — useful for diagram labels and as LLM
+    context when the snippet is fed back.
+    """
+    span = _node_span(node)
+    if span is None:
+        return None
+    start, end = span
+    return source[start:end].decode("utf-8", errors="replace")
 
 
 def _iter_nodes_with_tag(node: dict | None, tag: str):
