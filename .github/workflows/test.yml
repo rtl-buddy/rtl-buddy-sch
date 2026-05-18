@@ -10,6 +10,8 @@ on:
       - '.python-version'
       - 'src/**/*.py'
       - 'tests/**/*.py'
+      - 'scripts/**/*.py'
+      - 'tests/fixtures/**'
   pull_request:
     branches: [main]
     paths:
@@ -19,6 +21,8 @@ on:
       - '.python-version'
       - 'src/**/*.py'
       - 'tests/**/*.py'
+      - 'scripts/**/*.py'
+      - 'tests/fixtures/**'
 
 jobs:
   pytest:
@@ -37,6 +41,24 @@ jobs:
 
       - name: Install test dependencies
         run: uv sync --group test --python ${{ matrix.python-version }}
+
+      # The verible-dependent integration tests skip when the binary
+      # isn't on PATH or in vendor/. Without them, the coverage gate
+      # in pyproject.toml (--cov-fail-under=80) won't hold, since the
+      # CST walker in frontend/verible.py wouldn't be exercised.
+      # Cache the vendored binary keyed on the pinned-version constant
+      # so we pay the download cost once per version bump, not once
+      # per CI run.
+      - name: Cache vendored Verible
+        id: cache-verible
+        uses: actions/cache@v4
+        with:
+          path: vendor/verible
+          key: verible-${{ runner.os }}-${{ hashFiles('src/rtl_buddy_view/_verible_install.py') }}
+
+      - name: Fetch Verible (cache miss only)
+        if: steps.cache-verible.outputs.cache-hit != 'true'
+        run: uv run python scripts/fetch_verible.py
 
       - name: Run pytest
         run: uv run pytest -q

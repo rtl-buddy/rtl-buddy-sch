@@ -18,42 +18,46 @@ import pytest
 from rtl_buddy_view import _verible_install as vi
 
 
-def _synthetic_tarball(inner_dir_suffix: str) -> bytes:
+def _synthetic_tarball(inner_dir_name: str) -> bytes:
     """Build a tar.gz whose layout matches upstream Verible.
 
-    One executable-looking ``bin/verible-verilog-syntax`` inside a
-    ``verible-<version>-<inner>`` top-level dir. The binary content is
-    a shebang + ``true`` so the file exists and is non-empty — we
-    don't need it to run for these tests.
+    Top-level directory is ``inner_dir_name`` containing ``bin/`` with
+    every tool from ``VERIBLE_TOOLS``. The binary content is a shebang
+    + ``true`` so the file exists and is non-empty — we don't need it
+    to run for these tests.
     """
     buf = io.BytesIO()
-    inner = f"verible-{vi.VERIBLE_PINNED_VERSION}-{inner_dir_suffix}"
     payload = b"#!/bin/sh\nexit 0\n"
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for tool in vi.VERIBLE_TOOLS:
-            info = tarfile.TarInfo(name=f"{inner}/bin/{tool}")
+            info = tarfile.TarInfo(name=f"{inner_dir_name}/bin/{tool}")
             info.size = len(payload)
             info.mode = 0o755
             tar.addfile(info, io.BytesIO(payload))
     return buf.getvalue()
 
 
-@pytest.fixture
-def fake_download(monkeypatch: pytest.MonkeyPatch) -> dict:
+@pytest.fixture(
+    params=[
+        pytest.param("verible-{version}-testplat", id="suffixed-template"),
+        pytest.param("verible-{version}", id="bare-template"),
+    ]
+)
+def fake_download(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> dict:
     """Monkeypatch ``_download`` to write a synthetic tarball.
 
-    Also overrides ``_resolve_asset`` to a known platform so the test
-    runs identically on Darwin and Linux CI runners.
+    Parametrized over both template shapes upstream actually uses
+    (macOS-style ``verible-{ver}-<suffix>`` and Linux-style
+    ``verible-{ver}``) so the install path is exercised on both.
     """
+    template = request.param
+    inner_dir_name = template.format(version=vi.VERIBLE_PINNED_VERSION)
+    tarball_bytes = _synthetic_tarball(inner_dir_name)
     asset = vi.PlatformAsset(
         asset_suffix="testplat.tar.gz",
-        inner_dir_suffix="testplat",
-        sha256=None,  # filled in after we know the synthetic payload
-    )
-    tarball_bytes = _synthetic_tarball(asset.inner_dir_suffix)
-    asset = vi.PlatformAsset(
-        asset_suffix=asset.asset_suffix,
-        inner_dir_suffix=asset.inner_dir_suffix,
+        inner_dir_template=template,
         sha256=hashlib.sha256(tarball_bytes).hexdigest(),
     )
     monkeypatch.setattr(vi, "_resolve_asset", lambda: asset)
@@ -94,10 +98,12 @@ def test_install_rejects_bad_checksum(
 ) -> None:
     bogus_asset = vi.PlatformAsset(
         asset_suffix="testplat.tar.gz",
-        inner_dir_suffix="testplat",
+        inner_dir_template="verible-{version}-testplat",
         sha256="00" * 32,
     )
-    tarball_bytes = _synthetic_tarball(bogus_asset.inner_dir_suffix)
+    tarball_bytes = _synthetic_tarball(
+        bogus_asset.inner_dir_template.format(version=vi.VERIBLE_PINNED_VERSION)
+    )
     monkeypatch.setattr(vi, "_resolve_asset", lambda: bogus_asset)
     monkeypatch.setattr(
         vi, "_download", lambda url, dest: dest.write_bytes(tarball_bytes)
@@ -141,4 +147,4 @@ def test_real_platform_resolution() -> None:
     """
     asset = vi._resolve_asset()
     assert asset.asset_suffix.endswith(".tar.gz")
-    assert asset.inner_dir_suffix
+    assert asset.inner_dir_template
