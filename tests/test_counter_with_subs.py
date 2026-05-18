@@ -18,6 +18,7 @@ from rtl_buddy_view._filelist import parse_filelist
 from rtl_buddy_view._verible_install import find_binary
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.graph import build_hierarchy
+from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.render import tree as tree_render
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "counter_with_subs"
@@ -79,6 +80,29 @@ def test_extracts_instances_with_module_names() -> None:
         ("u_x", "sub_x"),
     ]
     assert _table().modules_by_name["counter_ff"].instances == ()
+
+
+def test_extracts_named_port_connections() -> None:
+    counter = _table().modules_by_name["counter"]
+    by_inst = {
+        i.name: [(c.port_name, c.net_expr_text) for c in i.port_connections]
+        for i in counter.instances
+    }
+    assert by_inst == {
+        "u_ff": [("clk", "clk"), ("q", "q")],
+        "u_x": [("clk", "clk")],
+    }
+
+
+def test_dot_edges_carry_port_connection_labels() -> None:
+    root = build_hierarchy(_table(), "counter")
+    buf = io.StringIO()
+    dot_render.render(root, buf)
+    output = buf.getvalue()
+    # The u_ff edge has two connections; both should appear verbatim.
+    assert '"counter" -> "counter.u_ff" [label=".clk(clk), .q(q)"];' in output
+    # The u_x edge has only `.clk(clk)`.
+    assert '"counter" -> "counter.u_x" [label=".clk(clk)"];' in output
 
 
 def test_hierarchy_marks_undefined_as_blackbox() -> None:
