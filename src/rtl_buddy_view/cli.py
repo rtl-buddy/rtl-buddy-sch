@@ -6,21 +6,28 @@ Phase 1 surface::
                    [--format tree|dot] [--output <path>] \\
                    [--frontend verible|slang]
 
-The CLI is wired through the analyzer pipeline (frontend → extractor →
-graph → renderer) but the analyzer layers themselves are
-``NotImplementedError`` stubs until the Phase 1 PRs land — see
-[rtl-buddy/rtl-buddy-view#1](https://github.com/rtl-buddy/rtl-buddy-view/issues/1).
-Running ``--help`` works today.
+Routes through frontend → extractor → graph → renderer. The Verible
+frontend is wired and supports the empty-module case end-to-end
+today; broader extractor coverage (ports, parameters, instances)
+lands in follow-up PRs against issue
+[#1](https://github.com/rtl-buddy/rtl-buddy-view/issues/1).
 """
 
 from __future__ import annotations
 
+import sys
 from enum import Enum
 from pathlib import Path
+from typing import IO
 
 import typer
 
-from rtl_buddy_view.frontend import Frontend
+from rtl_buddy_view._filelist import FilelistError, parse_filelist
+from rtl_buddy_view.frontend import Frontend, parse_to_modules
+from rtl_buddy_view.frontend.verible import VeribleParseError, VeribleUnavailable
+from rtl_buddy_view.graph import HierarchyError, build_hierarchy
+from rtl_buddy_view.render import dot as dot_render
+from rtl_buddy_view.render import tree as tree_render
 
 app = typer.Typer(
     help="RTL hierarchy and connectivity visualization.",
@@ -72,15 +79,40 @@ def main(
     ),
 ) -> None:
     """Render the hierarchy of ``--top`` to ``--format``."""
-    typer.echo(
-        f"rtl-buddy-view: pre-alpha. top={top} filelist={filelist} "
-        f"format={output_format.value} frontend={frontend.value} "
-        f"output={output_path or '<stdout>'}",
-        err=True,
-    )
-    typer.echo(
-        "Analyzer pipeline is not yet implemented — see "
-        "https://github.com/rtl-buddy/rtl-buddy-view/issues/1",
-        err=True,
-    )
-    raise typer.Exit(code=2)
+    try:
+        files = parse_filelist(filelist)
+    except FilelistError as e:
+        typer.echo(f"filelist: {e}", err=True)
+        raise typer.Exit(code=1) from None
+
+    try:
+        table = parse_to_modules(files, frontend=frontend)
+    except (VeribleUnavailable, VeribleParseError) as e:
+        typer.echo(f"verible: {e}", err=True)
+        raise typer.Exit(code=1) from None
+    except NotImplementedError as e:
+        typer.echo(f"frontend: {e}", err=True)
+        raise typer.Exit(code=2) from None
+
+    try:
+        root = build_hierarchy(table, top)
+    except HierarchyError as e:
+        typer.echo(f"hierarchy: {e}", err=True)
+        raise typer.Exit(code=1) from None
+
+    sink: IO[str]
+    if output_path is None:
+        sink = sys.stdout
+        _render(root, output_format, sink)
+    else:
+        with output_path.open("w") as sink:
+            _render(root, output_format, sink)
+
+
+def _render(root, fmt: OutputFormat, sink: IO[str]) -> None:
+    if fmt is OutputFormat.tree:
+        tree_render.render(root, sink)
+    elif fmt is OutputFormat.dot:
+        dot_render.render(root, sink)
+    else:  # pragma: no cover
+        raise ValueError(f"Unknown format: {fmt}")

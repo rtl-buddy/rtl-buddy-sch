@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
-from rtl_buddy_view.frontend.verible import VeribleUnavailable
 
 
 def test_package_imports() -> None:
@@ -53,19 +52,10 @@ def test_cli_help_exits_zero() -> None:
     assert "rtl-buddy-view" in result.stdout.lower() or "top" in result.stdout.lower()
 
 
-def test_frontend_stubs_signal_clearly(tmp_path: Path) -> None:
-    """Both frontends should fail loudly while Phase 1 is in flight.
-
-    The verible frontend probes the binary up-front: when verible is
-    installed the call surfaces ``NotImplementedError`` (the analyzer
-    isn't built yet); when it isn't installed we surface
-    :class:`VeribleUnavailable` with an install hint. Either is a
-    valid scaffolding state; both should not silently swallow input.
-    """
+def test_slang_frontend_stub_signals_clearly(tmp_path: Path) -> None:
+    """The slang frontend is a Phase 2 feature; the stub must say so."""
     files = [tmp_path / "dummy.sv"]
     for f in files:
         f.write_text("module dummy; endmodule\n")
-    with pytest.raises((NotImplementedError, VeribleUnavailable)):
-        parse_to_modules(files, frontend=Frontend.verible)
     with pytest.raises(NotImplementedError):
         parse_to_modules(files, frontend=Frontend.slang)
