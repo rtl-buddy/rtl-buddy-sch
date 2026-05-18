@@ -16,19 +16,24 @@ Truncation is purely visual; the underlying
 :class:`rtl_buddy_view.extractor.Instance.port_connections` tuple
 always carries the full list for downstream consumers.
 
+When a :class:`rtl_buddy_view.annotations.DomainMap` is supplied,
+each node's fill color is set from a deterministic clock-domain
+palette so subtrees in the same clock land in the same color
+across runs. Pass ``with_legend=True`` to emit a small subgraph
+listing each clock and its swatch.
+
 The output is fed to ``dot -Tsvg`` (or any Graphviz consumer) by the
 user; we don't shell out to Graphviz ourselves — keeping the renderer
 free of toolchain dependencies. Output is deterministic given the
 graph; goldens diff cleanly across runs.
-
-Phase 2 will overlay clock-domain coloring on this same renderer
-(see [#2](https://github.com/rtl-buddy/rtl-buddy-view/issues/2)).
 """
 
 from __future__ import annotations
 
+import hashlib
 from typing import IO
 
+from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.extractor import ParameterOverride, PortConnection
 from rtl_buddy_view.graph import HierNode
 
@@ -39,27 +44,115 @@ Beyond this we render the first ``MAX_EDGE_LABEL_CONNECTIONS - 1``
 entries followed by ``…(+N more)`` so the diagram stays readable on
 wide bus interfaces. The data model itself is untouched."""
 
+# A small palette of distinct pastel fills tuned for legibility on
+# both light and dark backgrounds. Hash-mapped to clock names so the
+# same clock always lands in the same color across runs — handy when
+# diffing diagrams across SDC edits. Pinned to seven entries: more
+# would dilute legibility, and an RTL with eight or more distinct
+# clocks is realistically going to need a hierarchical overlay
+# anyway (filed as a Phase 3 follow-up).
+_CLOCK_PALETTE: tuple[str, ...] = (
+    "#dbeafe",  # blue
+    "#dcfce7",  # green
+    "#fef9c3",  # yellow
+    "#fce7f3",  # pink
+    "#ede9fe",  # purple
+    "#fed7aa",  # orange
+    "#cffafe",  # cyan
+)
 
-def render(node: HierNode, out: IO[str]) -> None:
+_DEFAULT_FILL = "#f5f5f5"
+_BLACKBOX_FILL = "#fff8e0"
+
+
+def render(
+    node: HierNode,
+    out: IO[str],
+    *,
+    domain_map: DomainMap | None = None,
+    with_legend: bool = False,
+) -> None:
     """Render ``node`` and its subtree as a Graphviz ``.dot`` digraph."""
+    active_map = domain_map if (domain_map and not domain_map.is_empty) else None
     out.write("digraph hierarchy {\n")
     out.write('  rankdir="TB";\n')
-    out.write('  node [shape=box, style="rounded,filled", fillcolor="#f5f5f5"];\n')
+    out.write(
+        f'  node [shape=box, style="rounded,filled", fillcolor="{_DEFAULT_FILL}"];\n'
+    )
     out.write("\n")
-    _emit_node(node, out)
+    _emit_node(node, out, active_map)
     _emit_edges(node, out)
+    if with_legend and active_map is not None:
+        _emit_legend(active_map, out)
     out.write("}\n")
 
 
-def _emit_node(node: HierNode, out: IO[str]) -> None:
-    label = _label_for(node)
+def _emit_node(node: HierNode, out: IO[str], domain_map: DomainMap | None) -> None:
+    label = _label_for(node, domain_map)
     attrs = [f'label="{label}"']
+    fill = _fill_for(node, domain_map)
     if node.is_blackbox:
         attrs.append('style="rounded,filled,dashed"')
-        attrs.append('fillcolor="#fff8e0"')
+        attrs.append(f'fillcolor="{fill}"')
+    elif fill != _DEFAULT_FILL:
+        attrs.append(f'fillcolor="{fill}"')
     out.write(f'  "{node.instance_path}" [{", ".join(attrs)}];\n')
     for child in node.children:
-        _emit_node(child, out)
+        _emit_node(child, out, domain_map)
+
+
+def _fill_for(node: HierNode, domain_map: DomainMap | None) -> str:
+    """Pick the node's fill color.
+
+    Annotations off → blackbox-yellow for blackboxes, default gray
+    otherwise. Annotations on → clock-keyed pastel from the palette
+    when the subtree has a predominant clock, else fall back to the
+    annotations-off behavior (so pure-comb and untraceable nodes
+    stay neutral).
+    """
+    if domain_map is None:
+        return _BLACKBOX_FILL if node.is_blackbox else _DEFAULT_FILL
+    clock = domain_map.predominant_clock(node.instance_path)
+    if clock is None:
+        return _BLACKBOX_FILL if node.is_blackbox else _DEFAULT_FILL
+    return _palette_color(clock)
+
+
+def _palette_color(clock_name: str) -> str:
+    """Deterministic clock→palette mapping via stable digest.
+
+    Using a hash (not Python's ``hash()``) keeps colors stable across
+    Python processes and PYTHONHASHSEED values — important when the
+    output is checked into golden files or feeding visual diff tools.
+    """
+    digest = hashlib.sha256(clock_name.encode("utf-8")).digest()
+    return _CLOCK_PALETTE[digest[0] % len(_CLOCK_PALETTE)]
+
+
+def _emit_legend(domain_map: DomainMap, out: IO[str]) -> None:
+    """Emit a clock→swatch legend as a side subgraph.
+
+    Each entry is a small filled box labeled with the clock name and
+    period (when available). Subgraph stays untethered from the
+    hierarchy nodes so dot's layout engine treats it as a separate
+    rank below the main diagram.
+    """
+    out.write("\n  subgraph cluster_clock_legend {\n")
+    out.write('    label="Clocks";\n')
+    out.write('    style="dashed";\n')
+    out.write('    rank="sink";\n')
+    for clock in sorted(domain_map.clocks, key=lambda c: c.name):
+        fill = _palette_color(clock.name)
+        if clock.period is not None:
+            label = f"{clock.name}\\n{clock.period}"
+        else:
+            label = clock.name
+        out.write(
+            f'    "_legend_{clock.name}" '
+            f'[label="{label}", shape=box, style="rounded,filled", '
+            f'fillcolor="{fill}"];\n'
+        )
+    out.write("  }\n")
 
 
 def _emit_edges(node: HierNode, out: IO[str]) -> None:
@@ -102,11 +195,15 @@ def _format_port_connections(conns: tuple[PortConnection, ...]) -> str:
     return ", ".join(parts)
 
 
-def _label_for(node: HierNode) -> str:
+def _label_for(node: HierNode, domain_map: DomainMap | None) -> str:
     inst_name = node.instance.name if node.instance is not None else node.module_name
     lines = [_escape(inst_name), _escape(node.module_name)]
     if node.instance is not None and node.instance.param_overrides:
         lines.append(_format_param_overrides(node.instance.param_overrides))
+    if domain_map is not None:
+        clock = domain_map.predominant_clock(node.instance_path)
+        if clock is not None:
+            lines.append(f"[{_escape(clock)}]")
     if node.is_blackbox:
         lines.append("(blackbox)")
     return r"\n".join(lines)

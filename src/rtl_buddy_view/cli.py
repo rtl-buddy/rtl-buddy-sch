@@ -92,6 +92,13 @@ def main(
         "When present, renderers overlay clock-domain context onto "
         "the hierarchy; absent → identical to un-annotated output.",
     ),
+    clock_legend: bool = typer.Option(
+        False,
+        "--clock-legend",
+        help="Dot format only: emit a side legend listing each clock "
+        "with its assigned color swatch. No effect without "
+        "--cdc-annotations.",
+    ),
 ) -> None:
     """Render the hierarchy of ``--top`` to ``--format``."""
     domain_map: DomainMap | None = None
@@ -126,10 +133,10 @@ def main(
     sink: IO[str]
     if output_path is None:
         sink = sys.stdout
-        _render(root, output_format, sink, domain_map)
+        _render(root, output_format, sink, domain_map, clock_legend)
     else:
         with output_path.open("w") as sink:
-            _render(root, output_format, sink, domain_map)
+            _render(root, output_format, sink, domain_map, clock_legend)
 
 
 def _render(
@@ -137,14 +144,11 @@ def _render(
     fmt: OutputFormat,
     sink: IO[str],
     domain_map: DomainMap | None,
+    clock_legend: bool,
 ) -> None:
-    # ``domain_map`` plumbing is in place for the Phase 2 follow-up
-    # PRs that wire each renderer to it; the current renderers
-    # silently ignore it so this PR is a no-op for un-annotated runs.
-    del domain_map
     if fmt is OutputFormat.tree:
-        tree_render.render(root, sink)
+        tree_render.render(root, sink, domain_map=domain_map)
     elif fmt is OutputFormat.dot:
-        dot_render.render(root, sink)
+        dot_render.render(root, sink, domain_map=domain_map, with_legend=clock_legend)
     else:  # pragma: no cover
         raise ValueError(f"Unknown format: {fmt}")
