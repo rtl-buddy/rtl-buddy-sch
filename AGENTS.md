@@ -80,16 +80,37 @@ uv sync                        # set up env (Python 3.13; see .python-version)
 uv run ruff check              # lint (must pass)
 uv run ruff format --check     # format check (CI enforces this)
 uv run mypy                    # type check (must pass; src/ scope only)
-uv run pytest -q               # full unit suite
-uv run pytest tests/test_<x>.py -q   # single file
+uv run pytest -q               # full unit suite + coverage gate
+uv run pytest tests/test_<x>.py -q --no-cov   # single file, no gate
 
 # end-to-end smoke
 uv run rtl-buddy-view --top counter --filelist tests/fixtures/counter/counter.f \
     --format tree
 ```
 
-CI runs ruff + mypy (`lint.yml`) and pytest (`test.yml`) on every PR.
-Run them locally before pushing.
+CI runs ruff + mypy (`lint.yml`) and pytest with coverage (`test.yml`) on
+every PR. Run them locally before pushing.
+
+### Coverage gate
+
+`pytest` is wired to enforce `--cov-fail-under=80` aggregate across
+the package (configured in `pyproject.toml`'s
+`[tool.pytest.ini_options].addopts`). The Phase 1 acceptance
+criterion (issue #1) calls for ≥80% on `frontend/verible.py`,
+`extractor.py`, and `graph.py` — the aggregate gate enforces a
+slightly weaker but practical equivalent. The per-file breakdown
+shows in the pytest tail; drops in any single file surface at PR
+review.
+
+To dodge the gate during exploratory work pass `--no-cov`. To
+regenerate the report without re-running tests, use
+`uv run coverage report -m`.
+
+The verible-dependent integration tests skip when the binary isn't
+on PATH or in `vendor/`. **CI fetches the pinned Verible release
+before running pytest** so coverage stays meaningful; locally,
+`uv run python scripts/fetch_verible.py` (or `brew install verible`)
+is the same.
 
 ## Cross-repo coupling
 
