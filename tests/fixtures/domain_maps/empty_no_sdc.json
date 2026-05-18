@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "generator": {"name": "rtl-buddy-cdc", "version": "0.2.0"},
+  "design": {"top": "counter", "frontend": "yosys"},
+  "clocks": [],
+  "generated_clocks": [],
+  "clock_groups": [],
+  "false_path_pairs": [],
+  "flop_domains": [],
+  "port_domains": [],
+  "crossings": []
+}

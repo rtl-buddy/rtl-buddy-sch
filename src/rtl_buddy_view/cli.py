@@ -23,6 +23,11 @@ from typing import IO
 import typer
 
 from rtl_buddy_view._filelist import FilelistError, parse_filelist
+from rtl_buddy_view.annotations import (
+    AnnotationsError,
+    DomainMap,
+    load_domain_map,
+)
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.frontend.verible import VeribleParseError, VeribleUnavailable
 from rtl_buddy_view.graph import HierarchyError, build_hierarchy
@@ -77,8 +82,26 @@ def main(
         help="Parser frontend. verible (default) operates on the source "
         "CST; slang (Phase 2) is the elaborated fallback.",
     ),
+    cdc_annotations: Path | None = typer.Option(
+        None,
+        "--cdc-annotations",
+        exists=True,
+        readable=True,
+        help="Optional clock-domain map JSON emitted by "
+        "`rtl-buddy-cdc --emit-domain-map` (rtl-buddy-cdc#106). "
+        "When present, renderers overlay clock-domain context onto "
+        "the hierarchy; absent → identical to un-annotated output.",
+    ),
 ) -> None:
     """Render the hierarchy of ``--top`` to ``--format``."""
+    domain_map: DomainMap | None = None
+    if cdc_annotations is not None:
+        try:
+            domain_map = load_domain_map(cdc_annotations)
+        except AnnotationsError as e:
+            typer.echo(f"cdc-annotations: {e}", err=True)
+            raise typer.Exit(code=1) from None
+
     try:
         files = parse_filelist(filelist)
     except FilelistError as e:
@@ -103,13 +126,22 @@ def main(
     sink: IO[str]
     if output_path is None:
         sink = sys.stdout
-        _render(root, output_format, sink)
+        _render(root, output_format, sink, domain_map)
     else:
         with output_path.open("w") as sink:
-            _render(root, output_format, sink)
+            _render(root, output_format, sink, domain_map)
 
 
-def _render(root, fmt: OutputFormat, sink: IO[str]) -> None:
+def _render(
+    root,
+    fmt: OutputFormat,
+    sink: IO[str],
+    domain_map: DomainMap | None,
+) -> None:
+    # ``domain_map`` plumbing is in place for the Phase 2 follow-up
+    # PRs that wire each renderer to it; the current renderers
+    # silently ignore it so this PR is a no-op for un-annotated runs.
+    del domain_map
     if fmt is OutputFormat.tree:
         tree_render.render(root, sink)
     elif fmt is OutputFormat.dot:
