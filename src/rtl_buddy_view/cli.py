@@ -32,6 +32,8 @@ from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.frontend.verible import VeribleParseError, VeribleUnavailable
 from rtl_buddy_view.graph import HierarchyError, build_hierarchy
 from rtl_buddy_view.render import dot as dot_render
+from rtl_buddy_view.render import json_render
+from rtl_buddy_view.render import mermaid as mermaid_render
 from rtl_buddy_view.render import tree as tree_render
 
 app = typer.Typer(
@@ -43,6 +45,8 @@ app = typer.Typer(
 class OutputFormat(str, Enum):
     tree = "tree"
     dot = "dot"
+    mermaid = "mermaid"
+    json = "json"
 
 
 @app.callback(invoke_without_command=True)
@@ -67,7 +71,9 @@ def main(
         OutputFormat.tree,
         "--format",
         case_sensitive=False,
-        help="Output format. tree = ASCII; dot = Graphviz.",
+        help="Output format. tree = ASCII; dot = Graphviz; "
+        "mermaid = markdown-embeddable flowchart; json = "
+        "machine-readable (rtl_buddy consumes this).",
     ),
     output_path: Path | None = typer.Option(
         None,
@@ -150,5 +156,9 @@ def _render(
         tree_render.render(root, sink, domain_map=domain_map)
     elif fmt is OutputFormat.dot:
         dot_render.render(root, sink, domain_map=domain_map, with_legend=clock_legend)
+    elif fmt is OutputFormat.mermaid:
+        mermaid_render.render(root, sink, domain_map=domain_map)
+    elif fmt is OutputFormat.json:
+        json_render.render(root, sink, domain_map=domain_map)
     else:  # pragma: no cover
         raise ValueError(f"Unknown format: {fmt}")
