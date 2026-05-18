@@ -19,6 +19,7 @@ from rtl_buddy_view._filelist import parse_filelist
 from rtl_buddy_view._verible_install import find_binary
 from rtl_buddy_view.annotations import (
     Clock,
+    Crossing,
     DomainMap,
     FlopDomain,
     load_domain_map,
@@ -91,6 +92,61 @@ def test_predominant_clock_skips_untraceable_flops() -> None:
     assert m.predominant_clock("top.u_a") == "clk_b"
 
 
+def _crossing(
+    *,
+    src_clock: str,
+    dst_clock: str,
+    dst_flop: str,
+    src_flop: str | None = None,
+    async_per_sdc: bool = True,
+) -> Crossing:
+    return Crossing(
+        src_clock=src_clock,
+        dst_clock=dst_clock,
+        dst_flop=dst_flop,
+        min_hops=0,
+        width=1,
+        async_per_sdc=async_per_sdc,
+        src_flop=src_flop or "top.src",
+    )
+
+
+def _map_with_crossings(crossings: list[Crossing]) -> DomainMap:
+    return DomainMap(
+        schema_version="1.0",
+        generator_name="test",
+        generator_version="0",
+        design_top="top",
+        design_frontend="yosys",
+        clocks=(Clock(name="clk_a", period=10.0, source="create_clock", ports=()),),
+        crossings=tuple(crossings),
+    )
+
+
+# --- unit: crossings_into ----------------------------------------------------
+
+
+def test_crossings_into_filters_by_dst_flop() -> None:
+    a = _crossing(src_clock="clk_a", dst_clock="clk_b", dst_flop="top.u_x")
+    b = _crossing(src_clock="clk_c", dst_clock="clk_d", dst_flop="top.u_y")
+    m = _map_with_crossings([a, b])
+    hits = m.crossings_into("top.u_x")
+    assert len(hits) == 1
+    assert hits[0].src_clock == "clk_a"
+
+
+def test_crossings_into_filters_out_non_async_by_default() -> None:
+    sync = _crossing(
+        src_clock="clk_a",
+        dst_clock="clk_a",
+        dst_flop="top.u_x",
+        async_per_sdc=False,
+    )
+    m = _map_with_crossings([sync])
+    assert m.crossings_into("top.u_x") == ()
+    assert m.crossings_into("top.u_x", async_only=False) == (sync,)
+
+
 def test_predominant_clock_does_not_match_partial_prefix() -> None:
     # ``top.u_a`` must NOT match a flop at ``top.u_a_other.f1`` — the
     # prefix check has to be path-segment-aware via the trailing ".".
@@ -138,6 +194,36 @@ def test_tree_renders_clock_suffix() -> None:
     assert buf.getvalue() == "top  [clk_x]\n└── u_a : child  [clk_x]\n"
 
 
+def test_tree_marks_crossing_destinations() -> None:
+    """Async crossings into a flop surface as ``⚠CDC[src→dst]`` suffix."""
+    dst = _node("top.u_dst", "ff", inst_name="u_dst")
+    root = _node("top", "top", children=(dst,))
+    m = _map_with_crossings(
+        [_crossing(src_clock="clk_a", dst_clock="clk_b", dst_flop="top.u_dst")]
+    )
+    buf = io.StringIO()
+    tree_render.render(root, buf, domain_map=m)
+    output = buf.getvalue()
+    assert "⚠CDC[clk_a→clk_b]" in output
+    # Top has no crossing into it → no marker.
+    assert output.splitlines()[0] == "top"
+
+
+def test_tree_collapses_multiple_crossings_into_one_marker() -> None:
+    dst = _node("top.u_dst", "ff", inst_name="u_dst")
+    root = _node("top", "top", children=(dst,))
+    m = _map_with_crossings(
+        [
+            _crossing(src_clock="clk_a", dst_clock="clk_b", dst_flop="top.u_dst"),
+            _crossing(src_clock="clk_c", dst_clock="clk_b", dst_flop="top.u_dst"),
+        ]
+    )
+    buf = io.StringIO()
+    tree_render.render(root, buf, domain_map=m)
+    # Both source clocks appear, alphabetically sorted, in one marker.
+    assert "⚠CDC[clk_a→clk_b, clk_c→clk_b]" in buf.getvalue()
+
+
 def test_tree_no_annotation_for_subtree_without_flops() -> None:
     pure_comb = _node("top.u_b", "comb", inst_name="u_b")
     root = _node("top", "top", children=(pure_comb,))
@@ -180,6 +266,72 @@ def test_dot_colors_node_when_clock_known() -> None:
     fill_for_child = _extract_fill(text, '"top.u_a" ')
     assert fill_for_top == fill_for_child
     assert fill_for_top.startswith("#")
+
+
+def test_dot_styles_crossing_edges_in_red_dashed() -> None:
+    dst = _node("top.u_dst", "ff", inst_name="u_dst")
+    root = _node("top", "top", children=(dst,))
+    m = _map_with_crossings(
+        [_crossing(src_clock="clk_a", dst_clock="clk_b", dst_flop="top.u_dst")]
+    )
+    buf = io.StringIO()
+    dot_render.render(root, buf, domain_map=m)
+    output = buf.getvalue()
+    # The edge to the crossing destination carries the warning label,
+    # a red color, and dashed style — matches the conventions used
+    # for other dashed-warning edges across the renderer family.
+    assert "⚠CDC: clk_a→clk_b" in output
+    assert "#dc2626" in output
+    assert 'style="dashed"' in output
+    # Non-destination edges aren't affected.
+    assert output.count("#dc2626") == 2  # color + fontcolor on one edge
+
+
+def test_dot_edge_label_combines_cdc_and_port_connections() -> None:
+    """CDC marker prepends to the port-connection label, not replaces it."""
+    inst = Instance(
+        name="u_dst",
+        module_name="ff",
+        param_overrides=(),
+        port_connections=(),
+        location=None,
+    )
+    dst = HierNode(
+        instance_path="top.u_dst",
+        module_name="ff",
+        instance=inst,
+        module=None,
+        is_blackbox=False,
+        children=(),
+    )
+    # Build a port connection to test the combined label path.
+    from rtl_buddy_view.extractor import PortConnection
+
+    inst_with_conns = Instance(
+        name="u_dst",
+        module_name="ff",
+        param_overrides=(),
+        port_connections=(
+            PortConnection(port_name="clk", net_expr_text="clk_b", location=None),
+        ),
+        location=None,
+    )
+    dst = HierNode(
+        instance_path="top.u_dst",
+        module_name="ff",
+        instance=inst_with_conns,
+        module=None,
+        is_blackbox=False,
+        children=(),
+    )
+    root = _node("top", "top", children=(dst,))
+    m = _map_with_crossings(
+        [_crossing(src_clock="clk_a", dst_clock="clk_b", dst_flop="top.u_dst")]
+    )
+    buf = io.StringIO()
+    dot_render.render(root, buf, domain_map=m)
+    output = buf.getvalue()
+    assert "⚠CDC: clk_a→clk_b\\n.clk(clk_b)" in output
 
 
 def test_dot_legend_lists_each_clock() -> None:
@@ -262,6 +414,25 @@ def test_integration_dot_with_legend(integration_root: HierNode) -> None:
     assert "cluster_clock_legend" in output
     # Both flop nodes get a colored fill (not the default gray).
     assert "#f5f5f5" not in _extract_fill(output, '"top.u_fifo.u_wr_ptr" ')
+    # u_rd_ptr is the destination of an async crossing → red dashed edge.
+    rd_edge = next(
+        line
+        for line in output.splitlines()
+        if "top.u_fifo.u_rd_ptr" in line and "->" in line
+    )
+    assert "⚠CDC: clk_a→clk_b" in rd_edge
+    assert "#dc2626" in rd_edge
+
+
+@pytestmark_integration
+def test_integration_tree_marks_cdc(integration_root: HierNode) -> None:
+    m = load_domain_map(FIXTURE_DIR / "domain_map.json")
+    buf = io.StringIO()
+    tree_render.render(integration_root, buf, domain_map=m)
+    output = buf.getvalue()
+    assert "u_rd_ptr : ff  [clk_b]  ⚠CDC[clk_a→clk_b]" in output
+    # u_wr_ptr is the *source* of the crossing, not the dest — no marker.
+    assert "u_wr_ptr : ff  [clk_a]\n" in output
 
 
 @pytestmark_integration

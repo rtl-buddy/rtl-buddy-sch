@@ -81,7 +81,7 @@ def render(
     )
     out.write("\n")
     _emit_node(node, out, active_map)
-    _emit_edges(node, out)
+    _emit_edges(node, out, active_map)
     if with_legend and active_map is not None:
         _emit_legend(active_map, out)
     out.write("}\n")
@@ -155,14 +155,55 @@ def _emit_legend(domain_map: DomainMap, out: IO[str]) -> None:
     out.write("  }\n")
 
 
-def _emit_edges(node: HierNode, out: IO[str]) -> None:
+def _emit_edges(
+    node: HierNode, out: IO[str], domain_map: DomainMap | None = None
+) -> None:
     for child in node.children:
-        attrs = ""
-        if child.instance is not None and child.instance.port_connections:
-            label = _format_port_connections(child.instance.port_connections)
-            attrs = f' [label="{label}"]'
+        attr_parts: list[str] = []
+        port_label = (
+            _format_port_connections(child.instance.port_connections)
+            if child.instance is not None and child.instance.port_connections
+            else ""
+        )
+        cdc_summary = _format_cdc_summary(child, domain_map)
+        label = port_label
+        if cdc_summary:
+            label = f"{cdc_summary}\\n{port_label}" if port_label else cdc_summary
+        if label:
+            attr_parts.append(f'label="{label}"')
+        if cdc_summary:
+            # Distinct edge style for CDC: dashed red so the
+            # hazard reads instantly even on a busy diagram.
+            attr_parts.append('color="#dc2626"')
+            attr_parts.append('style="dashed"')
+            attr_parts.append('fontcolor="#dc2626"')
+        attrs = f" [{', '.join(attr_parts)}]" if attr_parts else ""
         out.write(f'  "{node.instance_path}" -> "{child.instance_path}"{attrs};\n')
-        _emit_edges(child, out)
+        _emit_edges(child, out, domain_map)
+
+
+def _format_cdc_summary(child: HierNode, domain_map: DomainMap | None) -> str:
+    """Build the ``⚠CDC: clk_a→clk_b`` label fragment for a CDC edge.
+
+    Returns an empty string when no async crossing terminates at
+    ``child``. Multiple crossings from distinct source clocks
+    collapse to a single deterministic list — matches the tree
+    renderer's marker shape so reviewers see the same summary across
+    formats.
+    """
+    if domain_map is None or domain_map.is_empty:
+        return ""
+    crossings = domain_map.crossings_into(child.instance_path)
+    if not crossings:
+        return ""
+    sources_by_dst: dict[str, set[str]] = {}
+    for c in crossings:
+        sources_by_dst.setdefault(c.dst_clock, set()).add(c.src_clock)
+    parts: list[str] = []
+    for dst in sorted(sources_by_dst):
+        for src in sorted(sources_by_dst[dst]):
+            parts.append(f"{src}→{dst}")
+    return "⚠CDC: " + ", ".join(parts)
 
 
 def _format_port_connections(conns: tuple[PortConnection, ...]) -> str:
