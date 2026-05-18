@@ -29,6 +29,8 @@ from rtl_buddy_view.extractor import (
     Instance,
     Module,
     ModuleTable,
+    Parameter,
+    ParameterOverride,
     Port,
     SourceLocation,
 )
@@ -141,12 +143,15 @@ def _walk_modules(
             else _location(file, offsets, span[0], span[1])
         )
         ports = _extract_ports(header, file=file, offsets=offsets, source=source)
-        instances = _extract_instances(node, file=file, offsets=offsets)
+        parameters = _extract_parameters(
+            header, file=file, offsets=offsets, source=source
+        )
+        instances = _extract_instances(node, file=file, offsets=offsets, source=source)
         out.append(
             Module(
                 name=name,
                 ports=ports,
-                parameters=(),
+                parameters=parameters,
                 instances=instances,
                 location=loc,
             )
@@ -225,8 +230,78 @@ def _port_from_decl(
     return Port(name=name, direction=direction, type_text=type_text, location=loc)  # type: ignore[arg-type]
 
 
+def _extract_parameters(
+    header: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[Parameter, ...]:
+    """Extract module-level parameter declarations from ``kModuleHeader``.
+
+    Layout::
+
+        kModuleHeader
+          kFormalParameterListDeclaration
+            #
+            kParenGroup
+              kFormalParameterList
+                kParamDeclaration
+                  parameter
+                  kParamType
+                    kTypeInfo …
+                    SymbolIdentifier  <-- the name
+                  kTrailingAssign
+                    =
+                    kExpression       <-- the default value (optional)
+
+    Captures the parameter name and (when present) the verbatim
+    default-value source slice. Type expressions are not parsed in
+    Phase 1.
+    """
+    formal = _first_child_with_tag(header, "kFormalParameterListDeclaration")
+    if formal is None:
+        return ()
+    paren = _first_child_with_tag(formal, "kParenGroup")
+    if paren is None:
+        return ()
+    plist = _first_child_with_tag(paren, "kFormalParameterList")
+    if plist is None:
+        return ()
+    out: list[Parameter] = []
+    for decl in plist.get("children", ()) or ():
+        if not isinstance(decl, dict) or decl.get("tag") != "kParamDeclaration":
+            continue
+        out.append(_param_from_decl(decl, file=file, offsets=offsets, source=source))
+    return tuple(out)
+
+
+def _param_from_decl(
+    decl: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> Parameter:
+    name = "<unknown>"
+    name_node: dict | None = None
+    default_text: str | None = None
+    ptype = _first_child_with_tag(decl, "kParamType")
+    if ptype is not None:
+        for child in ptype.get("children", ()) or ():
+            if isinstance(child, dict) and child.get("tag") == "SymbolIdentifier":
+                if "text" in child:
+                    name = child["text"]
+                    name_node = child
+                break
+    trailing = _first_child_with_tag(decl, "kTrailingAssign")
+    if trailing is not None:
+        expr = _first_child_with_tag(trailing, "kExpression")
+        if expr is not None:
+            default_text = _source_slice(expr, source)
+    span = _node_span(name_node) if name_node is not None else _node_span(decl)
+    loc = (
+        SourceLocation(file=file)
+        if span is None
+        else _location(file, offsets, span[0], span[1])
+    )
+    return Parameter(name=name, default_text=default_text, location=loc)
+
+
 def _extract_instances(
-    module_node: dict, *, file: str, offsets: OffsetIndex
+    module_node: dict, *, file: str, offsets: OffsetIndex, source: bytes
 ) -> tuple[Instance, ...]:
     """Extract child instances from a ``kModuleDeclaration``.
 
@@ -234,7 +309,9 @@ def _extract_instances(
     ``kModuleItemList > kDataDeclaration > kInstantiationBase``. A
     single ``kInstantiationBase`` can declare multiple gate instances
     sharing the same module type — we emit one :class:`Instance` per
-    ``kGateInstance``.
+    ``kGateInstance``. Named parameter overrides live alongside the
+    type's SymbolIdentifier under ``kUnqualifiedId``; we extract them
+    via :func:`_extract_param_overrides`.
     """
     item_list = _first_child_with_tag(module_node, "kModuleItemList")
     if item_list is None:
@@ -259,6 +336,9 @@ def _extract_instances(
         module_name = module_name_node.get("text", "")
         if not module_name:
             continue
+        param_overrides = _extract_param_overrides(
+            inst_type, file=file, offsets=offsets, source=source
+        )
         for gate in gate_list.get("children", ()) or ():
             if not isinstance(gate, dict) or gate.get("tag") != "kGateInstance":
                 continue
@@ -276,11 +356,83 @@ def _extract_instances(
                 Instance(
                     name=inst_name,
                     module_name=module_name,
-                    param_overrides=(),
+                    param_overrides=param_overrides,
                     port_connections=(),
                     location=loc,
                 )
             )
+    return tuple(out)
+
+
+def _extract_param_overrides(
+    inst_type: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[ParameterOverride, ...]:
+    """Extract named parameter overrides from a ``kInstantiationType``.
+
+    Layout (named-override case)::
+
+        kInstantiationType > kDataType > kLocalRoot > kUnqualifiedId
+          SymbolIdentifier            <-- the module name
+          kActualParameterList
+            #
+            kParenGroup
+              kActualParameterByNameList
+                kParamByName
+                  .
+                  SymbolIdentifier    <-- the parameter name
+                  kParenGroup
+                    kExpression       <-- the override value
+
+    Positional overrides (``#(8, 16)``) are not handled in this PR —
+    they live under a different tag (``kActualParameterPositionalList``)
+    and the rendering / overrides-by-name semantics differ. Filed as
+    follow-up work alongside positional port connections.
+    """
+    apl = next(_iter_nodes_with_tag(inst_type, "kActualParameterList"), None)
+    if apl is None:
+        return ()
+    paren = _first_child_with_tag(apl, "kParenGroup")
+    if paren is None:
+        return ()
+    by_name_list = _first_child_with_tag(paren, "kActualParameterByNameList")
+    if by_name_list is None:
+        return ()
+    out: list[ParameterOverride] = []
+    for entry in by_name_list.get("children", ()) or ():
+        if not isinstance(entry, dict) or entry.get("tag") != "kParamByName":
+            continue
+        name = None
+        value_text: str | None = None
+        value_loc_node: dict | None = None
+        # The .NAME(expr) layout: children are `.`, SymbolIdentifier,
+        # kParenGroup. We walk explicitly rather than positional-index
+        # so an unexpected child order doesn't crash.
+        for child in entry.get("children", ()) or ():
+            if not isinstance(child, dict):
+                continue
+            tag = child.get("tag")
+            if tag == "SymbolIdentifier" and "text" in child:
+                name = child["text"]
+            elif tag == "kParenGroup":
+                expr = _first_child_with_tag(child, "kExpression")
+                if expr is not None:
+                    value_text = _source_slice(expr, source)
+                    value_loc_node = expr
+        if name is None or value_text is None:
+            continue
+        span = (
+            _node_span(value_loc_node)
+            if value_loc_node is not None
+            else _node_span(entry)
+        )
+        loc = (
+            SourceLocation(file=file)
+            if span is None
+            else _location(file, offsets, span[0], span[1])
+        )
+        out.append(
+            ParameterOverride(param_name=name, value_text=value_text, location=loc)
+        )
     return tuple(out)
 
 
