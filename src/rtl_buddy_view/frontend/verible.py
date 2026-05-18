@@ -32,6 +32,7 @@ from rtl_buddy_view.extractor import (
     Parameter,
     ParameterOverride,
     Port,
+    PortConnection,
     SourceLocation,
 )
 
@@ -352,15 +353,85 @@ def _extract_instances(
                 if span is None
                 else _location(file, offsets, span[0], span[1])
             )
+            port_connections = _extract_port_connections(
+                gate, file=file, offsets=offsets, source=source
+            )
             out.append(
                 Instance(
                     name=inst_name,
                     module_name=module_name,
                     param_overrides=param_overrides,
-                    port_connections=(),
+                    port_connections=port_connections,
                     location=loc,
                 )
             )
+    return tuple(out)
+
+
+def _extract_port_connections(
+    gate: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[PortConnection, ...]:
+    """Extract named port connections from a ``kGateInstance``.
+
+    Layout::
+
+        kGateInstance
+          SymbolIdentifier            <-- instance name
+          kParenGroup
+            kPortActualList
+              kActualNamedPort
+                .
+                SymbolIdentifier      <-- port name
+                kParenGroup
+                  kExpression         <-- net expression (optional;
+                                          absent for `.port` shorthand)
+
+    Positional connections (``u_x (clk, q)``) and the implicit
+    ``.port`` shorthand are not handled in this PR — they need their
+    own tag-specific code paths. Filed as follow-up work alongside
+    positional parameter overrides.
+    """
+    paren = _first_child_with_tag(gate, "kParenGroup")
+    if paren is None:
+        return ()
+    actual_list = _first_child_with_tag(paren, "kPortActualList")
+    if actual_list is None:
+        return ()
+    out: list[PortConnection] = []
+    for entry in actual_list.get("children", ()) or ():
+        if not isinstance(entry, dict) or entry.get("tag") != "kActualNamedPort":
+            continue
+        port_name: str | None = None
+        net_expr_text = ""
+        loc_node: dict | None = None
+        for child in entry.get("children", ()) or ():
+            if not isinstance(child, dict):
+                continue
+            tag = child.get("tag")
+            if tag == "SymbolIdentifier" and "text" in child:
+                port_name = child["text"]
+            elif tag == "kParenGroup":
+                expr = _first_child_with_tag(child, "kExpression")
+                if expr is not None:
+                    sliced = _source_slice(expr, source)
+                    if sliced is not None:
+                        net_expr_text = sliced
+                        loc_node = expr
+        if port_name is None:
+            continue
+        span = _node_span(loc_node) if loc_node is not None else _node_span(entry)
+        loc = (
+            SourceLocation(file=file)
+            if span is None
+            else _location(file, offsets, span[0], span[1])
+        )
+        out.append(
+            PortConnection(
+                port_name=port_name,
+                net_expr_text=net_expr_text,
+                location=loc,
+            )
+        )
     return tuple(out)
 
 

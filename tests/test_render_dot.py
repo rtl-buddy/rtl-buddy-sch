@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import io
 
-from rtl_buddy_view.extractor import Instance, ParameterOverride
+from rtl_buddy_view.extractor import Instance, ParameterOverride, PortConnection
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.render import dot as dot_render
 
@@ -34,15 +34,23 @@ def _node(
 
 
 def _instance(
-    name: str, module_name: str, *, overrides: tuple[ParameterOverride, ...] = ()
+    name: str,
+    module_name: str,
+    *,
+    overrides: tuple[ParameterOverride, ...] = (),
+    connections: tuple[PortConnection, ...] = (),
 ) -> Instance:
     return Instance(
         name=name,
         module_name=module_name,
         param_overrides=overrides,
-        port_connections=(),
+        port_connections=connections,
         location=None,
     )
+
+
+def _conn(port_name: str | None, net: str) -> PortConnection:
+    return PortConnection(port_name=port_name, net_expr_text=net, location=None)
 
 
 def test_renders_single_node() -> None:
@@ -115,3 +123,47 @@ def test_label_escapes_quotes_and_backslashes() -> None:
     text = out.getvalue()
     # Both quotes must be backslash-escaped inside the dot label.
     assert r"\"hi\"" in text
+
+
+def test_edge_label_lists_port_connections() -> None:
+    inst = _instance(
+        "u_ff",
+        "ff",
+        connections=(_conn("clk", "clk"), _conn("q", "q[0]")),
+    )
+    child = _node("top.u_ff", "ff", instance=inst)
+    root = _node("top", "top", children=(child,))
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    assert '"top" -> "top.u_ff" [label=".clk(clk), .q(q[0])"];' in text
+
+
+def test_edge_label_truncates_long_port_lists() -> None:
+    conns = tuple(_conn(f"p{i}", f"n{i}") for i in range(20))
+    inst = _instance("u", "wide", connections=conns)
+    child = _node("top.u", "wide", instance=inst)
+    root = _node("top", "top", children=(child,))
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    # First few connections appear; later ones are summarised.
+    assert ".p0(n0)" in text
+    assert ".p1(n1)" in text
+    # Last few that fit before the cap should be there; everything
+    # beyond is rolled into the "(+N more)" overflow note.
+    assert "(+" in text and " more)" in text
+    # The very last connection (.p19) should NOT appear inline.
+    assert ".p19(n19)" not in text
+
+
+def test_no_edge_label_when_no_connections() -> None:
+    inst = _instance("u", "child")
+    child = _node("top.u", "child", instance=inst)
+    root = _node("top", "top", children=(child,))
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    assert '"top" -> "top.u";' in text
+    # No label= attribute on this edge.
+    assert '"top" -> "top.u" [' not in text
