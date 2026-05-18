@@ -371,25 +371,33 @@ def _extract_instances(
 def _extract_port_connections(
     gate: dict, *, file: str, offsets: OffsetIndex, source: bytes
 ) -> tuple[PortConnection, ...]:
-    """Extract named port connections from a ``kGateInstance``.
+    """Extract port connections (named, positional, and shorthand).
 
-    Layout::
+    Layouts::
 
-        kGateInstance
-          SymbolIdentifier            <-- instance name
-          kParenGroup
-            kPortActualList
-              kActualNamedPort
-                .
-                SymbolIdentifier      <-- port name
-                kParenGroup
-                  kExpression         <-- net expression (optional;
-                                          absent for `.port` shorthand)
+        kGateInstance > kParenGroup > kPortActualList >
+          # named:
+          kActualNamedPort
+            .
+            SymbolIdentifier            <-- port name
+            kParenGroup
+              kExpression               <-- net expression
 
-    Positional connections (``u_x (clk, q)``) and the implicit
-    ``.port`` shorthand are not handled in this PR — they need their
-    own tag-specific code paths. Filed as follow-up work alongside
-    positional parameter overrides.
+          # implicit `.port` shorthand:
+          kActualNamedPort
+            .
+            SymbolIdentifier            <-- port name (no kParenGroup)
+
+          # positional:
+          kActualPositionalPort
+            kExpression                 <-- net expression only
+
+    For named connections we emit ``PortConnection(port_name, net_expr_text)``.
+    For shorthand we leave ``net_expr_text`` empty — the renderer
+    surfaces this as ``.port`` (matching source) rather than the
+    canonical ``.port(port)`` form. Positional connections set
+    ``port_name = None`` and store the bare net expression in
+    ``net_expr_text``.
     """
     paren = _first_child_with_tag(gate, "kParenGroup")
     if paren is None:
@@ -399,40 +407,86 @@ def _extract_port_connections(
         return ()
     out: list[PortConnection] = []
     for entry in actual_list.get("children", ()) or ():
-        if not isinstance(entry, dict) or entry.get("tag") != "kActualNamedPort":
+        if not isinstance(entry, dict):
             continue
-        port_name: str | None = None
-        net_expr_text = ""
-        loc_node: dict | None = None
-        for child in entry.get("children", ()) or ():
-            if not isinstance(child, dict):
-                continue
-            tag = child.get("tag")
-            if tag == "SymbolIdentifier" and "text" in child:
-                port_name = child["text"]
-            elif tag == "kParenGroup":
-                expr = _first_child_with_tag(child, "kExpression")
-                if expr is not None:
-                    sliced = _source_slice(expr, source)
-                    if sliced is not None:
-                        net_expr_text = sliced
-                        loc_node = expr
-        if port_name is None:
-            continue
-        span = _node_span(loc_node) if loc_node is not None else _node_span(entry)
-        loc = (
-            SourceLocation(file=file)
-            if span is None
-            else _location(file, offsets, span[0], span[1])
-        )
-        out.append(
-            PortConnection(
-                port_name=port_name,
-                net_expr_text=net_expr_text,
-                location=loc,
+        tag = entry.get("tag")
+        if tag == "kActualNamedPort":
+            conn = _named_port_connection(
+                entry, file=file, offsets=offsets, source=source
             )
-        )
+        elif tag == "kActualPositionalPort":
+            conn = _positional_port_connection(
+                entry, file=file, offsets=offsets, source=source
+            )
+        else:
+            continue
+        if conn is not None:
+            out.append(conn)
     return tuple(out)
+
+
+def _named_port_connection(
+    entry: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> PortConnection | None:
+    """Build a :class:`PortConnection` from a ``kActualNamedPort``.
+
+    Handles both the full ``.port(expr)`` form and the implicit
+    ``.port`` shorthand — distinguished by whether a ``kParenGroup``
+    child is present.
+    """
+    port_name: str | None = None
+    net_expr_text = ""
+    loc_node: dict | None = None
+    for child in entry.get("children", ()) or ():
+        if not isinstance(child, dict):
+            continue
+        tag = child.get("tag")
+        if tag == "SymbolIdentifier" and "text" in child:
+            port_name = child["text"]
+        elif tag == "kParenGroup":
+            expr = _first_child_with_tag(child, "kExpression")
+            if expr is not None:
+                sliced = _source_slice(expr, source)
+                if sliced is not None:
+                    net_expr_text = sliced
+                    loc_node = expr
+    if port_name is None:
+        return None
+    span = _node_span(loc_node) if loc_node is not None else _node_span(entry)
+    loc = (
+        SourceLocation(file=file)
+        if span is None
+        else _location(file, offsets, span[0], span[1])
+    )
+    return PortConnection(
+        port_name=port_name,
+        net_expr_text=net_expr_text,
+        location=loc,
+    )
+
+
+def _positional_port_connection(
+    entry: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> PortConnection | None:
+    """Build a :class:`PortConnection` from a ``kActualPositionalPort``.
+
+    ``port_name`` is None — the positional index is implied by
+    placement in :attr:`Instance.port_connections`. The net
+    expression is stored verbatim.
+    """
+    expr = _first_child_with_tag(entry, "kExpression")
+    if expr is None:
+        return None
+    net = _source_slice(expr, source)
+    if net is None:
+        return None
+    span = _node_span(expr)
+    loc = (
+        SourceLocation(file=file)
+        if span is None
+        else _location(file, offsets, span[0], span[1])
+    )
+    return PortConnection(port_name=None, net_expr_text=net, location=loc)
 
 
 def _extract_param_overrides(
@@ -454,10 +508,9 @@ def _extract_param_overrides(
                   kParenGroup
                     kExpression       <-- the override value
 
-    Positional overrides (``#(8, 16)``) are not handled in this PR —
-    they live under a different tag (``kActualParameterPositionalList``)
-    and the rendering / overrides-by-name semantics differ. Filed as
-    follow-up work alongside positional port connections.
+    Positional overrides (``#(8, 16)``) use a sibling tag
+    (``kActualParameterPositionalList``); each kExpression child
+    becomes a :class:`ParameterOverride` with ``param_name=None``.
     """
     apl = next(_iter_nodes_with_tag(inst_type, "kActualParameterList"), None)
     if apl is None:
@@ -465,6 +518,11 @@ def _extract_param_overrides(
     paren = _first_child_with_tag(apl, "kParenGroup")
     if paren is None:
         return ()
+    positional_list = _first_child_with_tag(paren, "kActualParameterPositionalList")
+    if positional_list is not None:
+        return _positional_param_overrides(
+            positional_list, file=file, offsets=offsets, source=source
+        )
     by_name_list = _first_child_with_tag(paren, "kActualParameterByNameList")
     if by_name_list is None:
         return ()
@@ -503,6 +561,45 @@ def _extract_param_overrides(
         )
         out.append(
             ParameterOverride(param_name=name, value_text=value_text, location=loc)
+        )
+    return tuple(out)
+
+
+def _positional_param_overrides(
+    positional_list: dict,
+    *,
+    file: str,
+    offsets: OffsetIndex,
+    source: bytes,
+) -> tuple[ParameterOverride, ...]:
+    """Build :class:`ParameterOverride` entries from a positional list.
+
+    Layout::
+
+        kActualParameterPositionalList
+          kExpression   <-- override #0
+          ,
+          kExpression   <-- override #1
+          …
+
+    ``param_name`` is None — the positional index is implied by
+    placement in :attr:`Instance.param_overrides`.
+    """
+    out: list[ParameterOverride] = []
+    for entry in positional_list.get("children", ()) or ():
+        if not isinstance(entry, dict) or entry.get("tag") != "kExpression":
+            continue
+        value_text = _source_slice(entry, source)
+        if value_text is None:
+            continue
+        span = _node_span(entry)
+        loc = (
+            SourceLocation(file=file)
+            if span is None
+            else _location(file, offsets, span[0], span[1])
+        )
+        out.append(
+            ParameterOverride(param_name=None, value_text=value_text, location=loc)
         )
     return tuple(out)
 
