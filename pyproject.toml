@@ -1,0 +1,65 @@
+[project]
+name = "rtl-buddy-view"
+version = "0.1.0"
+description = "RTL hierarchy and connectivity visualization tool. Pluggable Verible (source CST) or slang (elaborated) frontend; renders Graphviz / ASCII / Mermaid / JSON; integrates with rtl-buddy."
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    { name = "Loh Zhi-Hern", email = "expsg-hern@users.noreply.github.com" }
+]
+dependencies = [
+    "typer>=0.25.1",
+]
+
+[project.optional-dependencies]
+# Opt-in elaboration frontend. Installs pyslang so the `slang` frontend
+# can elaborate SystemVerilog in-process — needed to resolve generates
+# and parameterized instances that the source-level Verible frontend
+# cannot. Default install stays typer-only; the Verible binary is
+# fetched separately by the setup flow, not pulled in via pip.
+slang = [
+    "pyslang>=10,<11",
+]
+
+[project.scripts]
+rtl-buddy-view = "rtl_buddy_view:main"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+lint = [
+    "mypy>=2.1.0",
+    "ruff>=0.11.0",
+]
+test = [
+    "pytest>=9.0.3",
+]
+dev = [
+    { include-group = "lint" },
+    { include-group = "test" },
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["F", "E7", "E9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/rtl_buddy_view"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pyslang.*"
+ignore_missing_imports = true
+follow_imports = "skip"
