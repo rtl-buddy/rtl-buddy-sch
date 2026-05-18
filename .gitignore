@@ -6,6 +6,9 @@ dist/
 build/
 .pytest_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 *.swp
 .DS_Store
 # Vendored Verible binary fetched by the setup flow.
