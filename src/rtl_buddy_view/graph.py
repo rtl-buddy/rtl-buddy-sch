@@ -25,6 +25,10 @@ from dataclasses import dataclass, field
 from rtl_buddy_view.extractor import Instance, Module, ModuleTable
 
 
+class HierarchyError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class HierNode:
     """One node in the elaborated hierarchy tree.
@@ -45,12 +49,48 @@ class HierNode:
 def build_hierarchy(table: ModuleTable, top: str) -> HierNode:
     """Build the hierarchy graph rooted at ``top``.
 
-    Phase 1 stub — the public signature is locked so downstream
-    renderers and query helpers can be written against it now.
-    Implementation lands together with the Verible extractor in
-    [#1](https://github.com/rtl-buddy/rtl-buddy-view/issues/1).
+    Raises :class:`HierarchyError` if ``top`` is not in the table.
+    Unresolved child module names (modules referenced from an
+    instance but not defined in ``table``) become blackbox leaves.
+    Repeated child names within the same parent are allowed — each
+    becomes a distinct :class:`HierNode` keyed by its instance path.
     """
-    raise NotImplementedError(
-        "build_hierarchy is a Phase 1 stub — see "
-        "https://github.com/rtl-buddy/rtl-buddy-view/issues/1"
+    if top not in table.modules_by_name:
+        known = sorted(table.modules_by_name)
+        raise HierarchyError(f"top module {top!r} not found. Known modules: {known}")
+    return _build(table, table.modules_by_name[top], path=top, instance=None)
+
+
+def _build(
+    table: ModuleTable,
+    module: Module,
+    *,
+    path: str,
+    instance: Instance | None,
+) -> HierNode:
+    children: list[HierNode] = []
+    for inst in module.instances:
+        child_path = f"{path}.{inst.name}"
+        child_module = table.modules_by_name.get(inst.module_name)
+        if child_module is None:
+            table.unresolved.add(inst.module_name)
+            children.append(
+                HierNode(
+                    instance_path=child_path,
+                    module_name=inst.module_name,
+                    instance=inst,
+                    module=None,
+                    is_blackbox=True,
+                    children=(),
+                )
+            )
+            continue
+        children.append(_build(table, child_module, path=child_path, instance=inst))
+    return HierNode(
+        instance_path=path,
+        module_name=module.name,
+        instance=instance,
+        module=module,
+        is_blackbox=False,
+        children=tuple(children),
     )
