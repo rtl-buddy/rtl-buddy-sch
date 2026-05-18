@@ -40,31 +40,35 @@ VERIBLE_RELEASE_URL_BASE = "https://github.com/chipsalliance/verible/releases/do
 class PlatformAsset:
     """Per-platform release asset metadata.
 
-    ``inner_dir_suffix`` is the directory name *inside* the tarball
-    after extraction (Verible names the top-level dir after the
-    asset, e.g. ``verible-{ver}-macOS`` or
-    ``verible-{ver}-linux-static-x86_64``). We use it to locate the
-    ``bin/`` directory without listing the tar contents.
+    ``inner_dir_template`` is the directory name inside the tarball
+    after extraction, with ``{version}`` as a placeholder. Upstream
+    Verible is inconsistent across platforms: the macOS tarball
+    extracts to ``verible-<version>-macOS/`` (with platform suffix),
+    while the Linux tarballs extract to just ``verible-<version>/``
+    (no suffix). The template lets each platform name its own
+    extracted directory rather than assuming a uniform shape.
     """
 
     asset_suffix: str
-    inner_dir_suffix: str
+    inner_dir_template: str
     sha256: str | None
 
 
 # Checksums computed by running `shasum -a 256` against the upstream
 # tarball. To rotate the pinned version: bump ``VERIBLE_PINNED_VERSION``,
 # then run ``scripts/fetch_verible.py --print-checksum`` on each
-# supported platform and paste the resulting digest here.
+# supported platform and paste the resulting digest here. Verify the
+# ``inner_dir_template`` matches the tarball layout — upstream has
+# been inconsistent across platforms.
 CHECKSUMS: dict[tuple[str, str], PlatformAsset] = {
     ("Darwin", "*"): PlatformAsset(
         asset_suffix="macOS.tar.gz",
-        inner_dir_suffix="macOS",
+        inner_dir_template="verible-{version}-macOS",
         sha256="6eb2ed4f443baed841159f3b23ebebd70d2fde789e64f6f3e2baa02ef73a0ddd",
     ),
     ("Linux", "x86_64"): PlatformAsset(
         asset_suffix="linux-static-x86_64.tar.gz",
-        inner_dir_suffix="linux-static-x86_64",
+        inner_dir_template="verible-{version}",
         sha256="1edc1f29c70d74213ed373e727183802d5a733e23f9ab9c74462f5b18b76f2c0",
     ),
     # Upstream publishes an aarch64 asset but we haven't pinned its
@@ -73,7 +77,7 @@ CHECKSUMS: dict[tuple[str, str], PlatformAsset] = {
     # bump.
     ("Linux", "aarch64"): PlatformAsset(
         asset_suffix="linux-static-arm64.tar.gz",
-        inner_dir_suffix="linux-static-arm64",
+        inner_dir_template="verible-{version}",
         sha256=None,
     ),
 }
@@ -157,7 +161,7 @@ def install(
     target_dir = (target_dir or default_vendor_root()).resolve()
     asset = _resolve_asset()
     version_dir = target_dir / version
-    inner_dir = f"verible-{version}-{asset.inner_dir_suffix}"
+    inner_dir = asset.inner_dir_template.format(version=version)
     bin_dir = version_dir / inner_dir / "bin"
     marker = version_dir / ".installed"
 
@@ -224,7 +228,7 @@ def find_binary(
         asset = _resolve_asset()
     except VeribleInstallError:
         return None
-    inner_dir = f"verible-{version}-{asset.inner_dir_suffix}"
+    inner_dir = asset.inner_dir_template.format(version=version)
     candidate = vendor_dir / version / inner_dir / "bin" / name
     if candidate.exists():
         return candidate
