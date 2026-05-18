@@ -88,7 +88,13 @@ def _format_port_connections(conns: tuple[PortConnection, ...]) -> str:
         overflow = len(conns) - keep
     for c in rendered:
         if c.port_name is None:
+            # Positional connection — bare net expression.
             parts.append(_escape(c.net_expr_text))
+        elif not c.net_expr_text:
+            # Implicit `.port` shorthand — net expression is implied
+            # to be a same-name net by the elaborator. Render
+            # verbatim to keep source style.
+            parts.append(f".{_escape(c.port_name)}")
         else:
             parts.append(f".{_escape(c.port_name)}({_escape(c.net_expr_text)})")
     if overflow:
@@ -110,9 +116,8 @@ def _format_param_overrides(overrides: tuple[ParameterOverride, ...]) -> str:
     parts: list[str] = []
     for ov in overrides:
         if ov.param_name is None:
-            # Positional overrides aren't extracted today; if they
-            # ever surface here, render as bare value so the diagram
-            # still reflects them.
+            # Positional override — bare value, positional index
+            # implied by the order in the surrounding list.
             parts.append(_escape(ov.value_text))
         else:
             parts.append(f".{_escape(ov.param_name)}({_escape(ov.value_text)})")
