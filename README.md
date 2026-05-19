@@ -144,7 +144,9 @@ uv run rtl-buddy-view \
 schema versions. Unknown overlay names surface the registered set
 in the error message so typos self-correct. Third-party packages
 register additional overlays via the
-`rtl_buddy_view.overlays` entry-point group.
+`rtl_buddy_view.overlays` entry-point group — see
+[`docs/overlays.md`](docs/overlays.md) for the protocol + a
+worked example.
 
 > **Deprecation note.** The pre-Phase-4 `--cdc-annotations` and
 > `--rdc-annotations` flags still work as aliases (with a
@@ -245,7 +247,8 @@ rtl-buddy-view [OPTIONS]
 
 The JSON output is the locked v1 contract that the Phase 5 web
 viewer (#18) and `rb hier` consume. Schema lives at
-`schemas/view-v1.json`; each node carries:
+`schemas/view-v1.json`; the full field-by-field reference is in
+[`docs/view-json-v1.md`](docs/view-json-v1.md). Each node carries:
 
 - a stable `id` (full instance path), `module`, `instance_name`,
   `is_blackbox`, `parameters` dict, and `ports[]` with `expr` +
