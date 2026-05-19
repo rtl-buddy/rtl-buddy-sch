@@ -33,7 +33,7 @@ const canvasEl = ref(null)
 const transform = ref({ x: 0, y: 0, scale: 1 })
 let _svgEl = null
 
-const graph = computed(() => store.graph)
+const graph = computed(() => store.displayGraph)
 
 async function renderSvg() {
   if (!graph.value || !svgHostEl.value) return
