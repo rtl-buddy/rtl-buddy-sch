@@ -195,8 +195,7 @@ function fitToWindow() {
     applyTransform()
     return
   }
-  const margin = 0.95
-  const scale = Math.min(rect.width / bb.width, rect.height / bb.height) * margin
+  const scale = Math.min(rect.width / bb.width, rect.height / bb.height)
   transform.value = {
     scale,
     x: (rect.width - bb.width * scale) / 2 - bb.x * scale,
