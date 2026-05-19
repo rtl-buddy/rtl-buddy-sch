@@ -8,8 +8,9 @@ of generates / parameterized instances) → in-memory hierarchy graph →
 four renderers (ASCII tree, Graphviz `.dot`, Mermaid, JSON). With an
 optional clock-domain map from [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc),
 every renderer overlays clock-domain context and flags asynchronous
-CDC crossings inline. Designed to plug into [rtl-buddy](https://github.com/rtl-buddy/rtl_buddy)
-as `rb hier`.
+CDC crossings inline. Integrated into [rtl-buddy](https://github.com/rtl-buddy/rtl_buddy)
+as `rb hier` — the recommended entry point for users with a
+`models.yaml`-backed project.
 
 ## Why
 
@@ -76,6 +77,21 @@ uv run python scripts/fetch_verible.py
 
 On macOS, `brew install verible` is also fine — the tool prefers a
 PATH binary over the vendored copy.
+
+## Use via `rb hier`
+
+If your project already uses [rtl-buddy](https://github.com/rtl-buddy/rtl_buddy),
+the recommended entry point is `rb hier <model>` — it derives `--top`
+and `--filelist` from the model declared in `models.yaml`, writes the
+generated filelist to `artefacts/hier/<model>/hier.f`, and forwards
+every renderer flag below. All examples in the Quickstart below
+translate to `rb hier <model> --format <fmt>` once the model is
+registered.
+
+The wrapper lives at
+[`tools/hier_rtl_buddy_view.py`](https://github.com/rtl-buddy/rtl_buddy/blob/main/src/rtl_buddy/tools/hier_rtl_buddy_view.py)
+in the rtl-buddy repo and reaches `rtl-buddy-view` via PATH. Install
+this package into the same virtualenv so `rb hier` picks it up.
 
 ## Quickstart
 
@@ -154,8 +170,9 @@ rtl-buddy-view [OPTIONS]
   consuming rtl-buddy-cdc's schema-v1.0 domain map, deterministic
   output across all formats, JSON contract pinned for downstream
   `rb hier`. ([#2](https://github.com/rtl-buddy/rtl-buddy-view/issues/2))
-- **Phase 3** — Reset-domain overlay (blocked on rtl-buddy-cdc#107 /
-  #108 producer-side work).
+- **Phase 3** — Reset-domain overlay. Unblocked:
+  rtl-buddy-cdc#107 (analysis) and #108 (`--emit-reset-domain-map`)
+  shipped on rtl-buddy-cdc `main`.
   ([#3](https://github.com/rtl-buddy/rtl-buddy-view/issues/3))
 
 ## License

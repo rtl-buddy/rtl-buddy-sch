@@ -75,7 +75,10 @@ def render(
     """Render ``node`` and its subtree as a Graphviz ``.dot`` digraph."""
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
     out.write("digraph hierarchy {\n")
-    out.write('  rankdir="TB";\n')
+    # Left-to-right by default: deep hierarchies are usually wider than
+    # tall, and multiline port-connection edge labels stack vertically
+    # — LR gives both more room before edges overlap each other.
+    out.write('  rankdir="LR";\n')
     out.write(
         f'  node [shape=box, style="rounded,filled", fillcolor="{_DEFAULT_FILL}"];\n'
     )
@@ -233,7 +236,11 @@ def _format_port_connections(conns: tuple[PortConnection, ...]) -> str:
             parts.append(f".{_escape(c.port_name)}({_escape(c.net_expr_text)})")
     if overflow:
         parts.append(f"…(+{overflow} more)")
-    return ", ".join(parts)
+    # ``\l`` is Graphviz's left-aligned newline. One port-connection per
+    # line keeps the label tall instead of wide so Graphviz's layout
+    # engine has room to place adjacent edges without overlap. Trailing
+    # ``\l`` anchors the final line to the left margin too.
+    return r"\l".join(parts) + (r"\l" if parts else "")
 
 
 def _label_for(node: HierNode, domain_map: DomainMap | None) -> str:

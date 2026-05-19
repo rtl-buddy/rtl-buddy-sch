@@ -89,8 +89,8 @@ def test_dot_renders_param_overrides_in_label() -> None:
     # Edges exist from root to each child; each carries a port-
     # connection label since both children are instantiated with
     # `.clk(clk)`.
-    assert '"fifo" -> "fifo.u_core" [label=".clk(clk)"];' in output
-    assert '"fifo" -> "fifo.u_ptr" [label=".clk(clk)"];' in output
+    assert r'"fifo" -> "fifo.u_core" [label=".clk(clk)\l"];' in output
+    assert r'"fifo" -> "fifo.u_ptr" [label=".clk(clk)\l"];' in output
 
 
 def test_cli_dot_end_to_end() -> None:
