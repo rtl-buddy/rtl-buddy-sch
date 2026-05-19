@@ -1,0 +1,556 @@
+# rtl-buddy-hub protocol v1
+
+Wire contract between the three views of an RTL design — schematic
+(rtl-buddy-view viewer), waveform (surfer via WCP), and source (nvim /
+VS Code) — mediated by a single shared daemon, `rtl-buddy-hub`.
+
+Three independent implementations (the daemon, the nvim plugin, the
+viewer) are built against this spec; it is locked at v1 ahead of any
+code so they stay coherent. Versioning is per-document, signaled by the
+`v` field in the envelope (§2) and the `schema_version` in the JSON
+Schema (`schemas/hub-protocol-v1.json`).
+
+> Phase 10a (see `rtl-buddy/rtl-buddy-view#19`). No implementation in
+> this document — daemon is Phase 10b, nvim plugin Phase 10c, viewer
+> wiring Phase 10d.
+
+## Table of contents
+
+1. [Coordinate systems](#1-coordinate-systems)
+2. [Message envelope](#2-message-envelope)
+3. [Event catalog](#3-event-catalog)
+4. [Config](#4-config)
+5. [Loop prevention](#5-loop-prevention)
+6. [Asymmetric selection collapse](#6-asymmetric-selection-collapse)
+7. [Worked examples](#7-worked-examples)
+8. [WCP mapping](#8-wcp-mapping)
+9. [nvim mapping](#9-nvim-mapping)
+10. [Capability negotiation](#10-capability-negotiation)
+11. [Glossary](#11-glossary)
+
+---
+
+## 1. Coordinate systems
+
+The hub's only intelligence is translating among three coordinate
+systems plus a derived fourth (source). Every other piece of behavior
+falls out of these four mappings.
+
+| Name    | Example                          | Owner of the mapping                |
+| ------- | -------------------------------- | ----------------------------------- |
+| `view`  | `top.u_fifo.u_wr_ptr`            | `view.json` v1 from rtl-buddy-view  |
+| `wave`  | `tb.dut.u_fifo.u_wr_ptr`         | surfer / WCP                        |
+| `src`   | `{file, line, col}`              | view.json source anchors            |
+| signal  | `top.u_fifo.wr_ptr_q` (a signal) | view.json edges + surfer            |
+
+### Translation tables
+
+#### view ↔ src
+
+Trivial; every node in `view.json` carries `{file, line, col}` from the
+extractor's source anchors. Round-trip is exact when the source has
+not changed since extraction.
+
+#### view ↔ wave
+
+The hub strips a configurable testbench prefix (`tb_prefix`, see §4)
+from the wave path; the remainder must match a `view` instance path
+exactly.
+
+- `wave="tb.dut.u_fifo.u_wr_ptr"`, `tb_prefix="tb.dut."` →
+  `view="u_fifo.u_wr_ptr"`. The hub then prepends `view.json.top` if
+  the result is not already rooted — yielding `top.u_fifo.u_wr_ptr`.
+- A wave path that does not start with `tb_prefix`, or that strips to
+  a name not present in `view.json`, produces an `error{code:
+  "unresolvable"}` event (§3). The hub does not guess.
+
+Optional per-instance `signal_aliases` in config (§4) cover legacy
+post-rename testbenches; aliases are applied before the prefix strip.
+
+#### wave ↔ src
+
+Derived: wave → view via the prefix strip, view → src via the source
+anchor. No independent storage.
+
+#### signal → driver instance
+
+Edges in `view.json` carry `port_pairs` from rtl-buddy-view's CST
+extractor: `{port_name, net_expr_text, expr_kind}`. The hub walks the
+edge graph to find the unique driver of a named signal. When the
+signal name resolves to a port net (e.g. `wr_ptr_q`) that is driven by
+multiple instances (a bus, a generate replication), the result is a
+**list** of driver instance paths, not a single value — see §6.
+
+---
+
+## 2. Message envelope
+
+Every message on the hub channel — regardless of `kind` or `type` —
+shares one envelope:
+
+```json
+{
+  "v": 1,
+  "id": "9c3f8e5f-7d1b-4d3a-9a3b-1a2f5c8e7d3a",
+  "origin": "view",
+  "kind": "event",
+  "type": "selection_changed",
+  "payload": { "instance_path": "top.u_fifo.u_wr_ptr" }
+}
+```
+
+| Field     | Type            | Meaning                                                                                                                |
+| --------- | --------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `v`       | integer (= 1)   | Protocol major version. Mismatch → `error{code: "protocol_mismatch"}`. Minor additions to `type` are forward-compatible. |
+| `id`      | string (uuid)   | Per-message UUID. Used for request/response correlation (§3) and for the loop-prevention dedupe window (§5).            |
+| `origin`  | enum            | One of `view`, `wave`, `src`, `cli`. The loop-prevention discriminator (§5). Every client tags messages it produces.    |
+| `kind`    | enum            | One of `event`, `request`, `response`, `error`. See §3 for the per-`type` allowed kinds.                                 |
+| `type`    | string          | The message type from the event catalog (§3) or one of the request/response/error type names.                            |
+| `payload` | object \| null  | Type-specific. Shapes are defined in the JSON Schema (`schemas/hub-protocol-v1.json`).                                  |
+
+The transport is line-delimited JSON over a TCP socket the hub listens
+on; one JSON object per line, UTF-8. Clients connect, exchange
+`hello`/`welcome` (§10), and then stream messages bidirectionally.
+
+---
+
+## 3. Event catalog
+
+### State events (broadcast)
+
+Broadcast events are delivered to every connected client *except* the
+one whose `origin` matches the event's `origin` (see §5). `kind:
+"event"`, no response expected.
+
+| `type`                  | Direction       | Payload                                                                | Notes                                                                                                                            |
+| ----------------------- | --------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `selection_changed`     | any → all       | `{ "instance_path": "top.u_fifo.u_wr_ptr" \| string[] }`                | "Selected instance" in any view. String for unambiguous selection; array when collapsed from a multi-driver signal (§6).         |
+| `signal_selected`       | wave → all      | `{ "signal": "wr_ptr_q", "wave_scope": "tb.dut.u_fifo" }`               | A waveform signal selection. The hub augments the broadcast with a derived `selection_changed` of the driver instance path(s).   |
+| `cursor_time_changed`   | wave → all      | `{ "t_fs": "0" }` (femtoseconds, decimal string, may be very large)    | Surfer cursor moved. Requires the WCP `cursor_set` event in the surfer fork (§8).                                                |
+| `scope_changed`         | wave → all      | `{ "wave_scope": "tb.dut.u_fifo" }`                                    | Surfer scope navigation. Requires the WCP `scope_changed` event in the surfer fork (§8).                                         |
+| `source_focused`        | src → all       | `{ "file": "rtl/fifo.sv", "line": 42, "col": 5 }`                      | nvim's explicit `:RtlBuddyShow` broadcast — not on every cursor move (would spam the bus). Paths are absolute.                  |
+
+### Request/response (point-to-point)
+
+`kind: "request"` requires `kind: "response"` with matching `id`, or
+`kind: "error"` with matching `id`. Default timeout 5 s; on timeout the
+client SHOULD treat as `error{code: "timeout"}` locally and not retry
+automatically.
+
+| `type`                    | Direction          | Request payload                                  | Response payload                                              | Notes                                                                                          |
+| ------------------------- | ------------------ | ------------------------------------------------ | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `open_source`             | hub → src          | `{ "file": "...", "line": 42, "col": 5 }`        | `{ "ok": true }`                                              | Open the file at the given anchor in the source editor.                                        |
+| `wave_add_variables`      | hub → wave         | `{ "variables": ["tb.dut.u_fifo.wr_ptr_q"] }`    | `{ "ids": [17, 18] }`                                         | Maps onto WCP `add_variables` (§8).                                                            |
+| `wave_set_scope`          | hub → wave         | `{ "wave_scope": "tb.dut.u_fifo" }`              | `{ "ok": true }`                                              | Approximated via WCP `add_scope` in v1; see §8 for caveat.                                     |
+| `wave_set_cursor`         | hub → wave         | `{ "t_fs": "12500000" }`                         | `{ "ok": true }`                                              | Maps onto WCP `set_cursor`.                                                                    |
+| `view_pan_to`             | hub → view         | `{ "instance_path": "top.u_fifo" }`              | `{ "ok": true }`                                              | Pan/center the viewer on the named instance.                                                   |
+| `resolve_view_to_wave`    | any → hub          | `{ "instance_path": "top.u_fifo.u_wr_ptr" }`     | `{ "wave_scope": "tb.dut.u_fifo.u_wr_ptr" }`                  | Pure mapping; uses `tb_prefix` and aliases.                                                    |
+| `resolve_signal_to_view`  | any → hub          | `{ "signal": "wr_ptr_q", "wave_scope": "tb.dut.u_fifo" }` | `{ "instance_path": ["top.u_fifo.u_wr_ptr"], "port": "q" }` | Returns a list of driver instance paths; `port` is the driven port on each (§6).               |
+
+### Lifecycle
+
+| `type`     | Direction         | Payload                                                                                | Notes                                                                                                                              |
+| ---------- | ----------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `hello`    | client → hub      | `{ "client": "viewer", "version": "0.1.0", "capabilities": ["selection_changed", ...] }` | Required first message. `client` is one of `view`, `wave`, `src`, `cli`. `capabilities` lists `type`s the client understands.       |
+| `welcome`  | hub → client      | `{ "server_version": "0.1.0", "registered_clients": ["wave", "src"] }`                  | Hub's reply. Failure to negotiate → `error{code: "protocol_mismatch"}` then disconnect.                                            |
+| `bye`      | either direction  | `{}`                                                                                   | Clean disconnect; no response expected. Hub broadcasts `bye` to remaining clients with the leaving client's `origin` in the envelope. |
+
+### Errors
+
+`kind: "error"` carries the original message's `id` when applicable;
+when emitted spontaneously (e.g. from a broadcast that failed to
+resolve), the `id` is a fresh UUID.
+
+```json
+{
+  "v": 1,
+  "id": "...",
+  "origin": "cli",
+  "kind": "error",
+  "type": "error",
+  "payload": { "code": "unresolvable", "message": "...", "context": { ... } }
+}
+```
+
+| `code`                | Meaning                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `unresolvable`        | A coordinate translation failed (wave path not in design, signal not found, instance unknown). `context` carries the offending input. |
+| `not_connected`       | A request was routed to a client `origin` that has no current connection (e.g. surfer is closed).                  |
+| `bad_request`         | Malformed envelope or payload that fails the JSON Schema. `context.path` points at the failing JSON pointer.       |
+| `protocol_mismatch`   | Mismatched `v`, or `hello` failed capability negotiation.                                                          |
+| `timeout`             | Client-side only; never sent on the wire.                                                                          |
+
+---
+
+## 4. Config
+
+`~/.rtl-buddy/hub.toml`:
+
+```toml
+[hub]
+listen_port = 0          # 0 = auto-assign; the chosen port is written
+                         # to ~/.rtl-buddy/hub.json for client discovery
+log_path    = "~/.rtl-buddy/hub.log"
+
+[mapping]
+# Stripped from wave paths to recover view instance paths.
+tb_prefix      = "tb.dut."
+
+# Optional per-instance fixups for legacy / renamed testbench paths.
+# Applied BEFORE the tb_prefix strip.
+signal_aliases = [
+  # { wave = "tb.dut.foo_pre_renamed", view = "top.foo" },
+]
+
+[adapters.surfer]
+# WCP TCP address surfer is listening on. Required if `auto_connect`.
+wcp_address  = "127.0.0.1:54321"
+auto_connect = true
+
+[adapters.nvim]
+# Either an explicit socket path or a glob that picks the most recent
+# matching socket (so multiple nvim instances can share a hub).
+socket_glob = "/tmp/rtlbuddy.sock"
+```
+
+The hub writes its actual listen address (after the `0` auto-assign)
+to `~/.rtl-buddy/hub.json` on startup. Clients discover the hub by
+reading this file; no environment variables, no service discovery.
+
+---
+
+## 5. Loop prevention
+
+The hub treats messages as **strictly originator-suppressed**: an
+event from `origin: X` is never delivered to a client whose `origin`
+also matches `X`. Combined with the rule that every client tags its
+own outgoing messages with its `origin`, this eliminates the trivial
+echo loop.
+
+Three additional rules cover the indirect cycles:
+
+1. **Request → response → side-effect → event** is allowed once. When
+   the viewer requests `wave_set_scope`, surfer accepts, and surfer
+   subsequently broadcasts a `scope_changed` event with `origin:
+   wave`, the hub forwards that event to the viewer. The viewer
+   dedupes by remembering which scope it just asked surfer to set; it
+   MUST NOT issue a second `wave_set_scope` in response. The hub does
+   not enforce this — clients are responsible.
+
+2. **Request ID dedupe window.** The hub maintains a bounded LRU of
+   in-flight request IDs (default capacity 1024, default TTL 60 s).
+   A response or error with an unknown `id` is logged at WARN and
+   dropped. A duplicate request (same `id`) is dropped.
+
+3. **Synthetic broadcasts derived from another event** are tagged with
+   the source event's `origin`. When the hub observes a wave-side
+   `signal_selected` and synthesizes the corresponding
+   `selection_changed`, that `selection_changed` carries `origin:
+   wave` — so it reaches `view` and `src` but not surfer.
+
+---
+
+## 6. Asymmetric selection collapse
+
+The three views don't have the same notion of "what is selected." A
+single click in one resolves to a *set* of things in another. The hub
+collapses these per fixed rules so downstream clients don't have to
+re-derive them.
+
+### Bus / multi-driver signals
+
+`signal_selected` for a bus (a wave variable driven by N flops in a
+generate or by a packed-array assignment) → `selection_changed` event
+whose `payload.instance_path` is the **list** of driving instance
+paths in extraction order. Clients that only handle the single-path
+case SHOULD treat the first element as the canonical selection and
+optionally surface the others as alternatives.
+
+### Source focus on a non-module line
+
+`source_focused` on a line that is inside a module body (not at a
+module/instance declaration) resolves to the **enclosing module
+instance**, by `(file, line, col)` containment against the source
+anchors in `view.json`. If the file is not in `view.json` at all, the
+hub emits `error{code: "unresolvable"}` and broadcasts nothing — there
+is no useful fallback.
+
+### Cursor without a signal selection
+
+`cursor_time_changed` with no current `signal_selected` does **not**
+synthesize a `selection_changed`. The viewer tints based on all port
+values; no specific instance is "selected." (When this event becomes
+available — see §8 — clients SHOULD render the time, not the
+selection.)
+
+### Multi-instance resolution from view → wave
+
+`resolve_view_to_wave` for an instance whose source appears multiple
+times in the testbench (e.g. parameterized modules instantiated under
+several scopes) returns the unique match if there is one, else an
+`error{code: "unresolvable"}` with `context.candidates` enumerating
+the ambiguous wave paths. The hub does not pick.
+
+---
+
+## 7. Worked examples
+
+Each example shows the full sequence on the wire. `id` values are
+abbreviated; in practice they are full UUIDs.
+
+### 7.1 Click in viewer → wave + src
+
+User clicks `top.u_fifo.u_wr_ptr` in the viewer.
+
+```json
+// 1. viewer broadcasts its selection
+{ "v":1, "id":"a1", "origin":"view", "kind":"event", "type":"selection_changed",
+  "payload":{ "instance_path":"top.u_fifo.u_wr_ptr" } }
+
+// 2. hub forwards to wave + src (not back to view); src acts on it
+{ "v":1, "id":"a2", "origin":"view", "kind":"event", "type":"selection_changed",
+  "payload":{ "instance_path":"top.u_fifo.u_wr_ptr" } }   // → wave
+{ "v":1, "id":"a3", "origin":"view", "kind":"event", "type":"selection_changed",
+  "payload":{ "instance_path":"top.u_fifo.u_wr_ptr" } }   // → src
+
+// 3. wave adapter resolves instance_path → wave_scope, asks surfer to add it
+{ "v":1, "id":"a4", "origin":"cli", "kind":"request", "type":"resolve_view_to_wave",
+  "payload":{ "instance_path":"top.u_fifo.u_wr_ptr" } }
+{ "v":1, "id":"a4", "origin":"cli", "kind":"response", "type":"resolve_view_to_wave",
+  "payload":{ "wave_scope":"tb.dut.u_fifo.u_wr_ptr" } }
+
+// 4. src adapter opens the file at the source anchor
+{ "v":1, "id":"a5", "origin":"cli", "kind":"request", "type":"open_source",
+  "payload":{ "file":"rtl/fifo.sv", "line":42, "col":5 } }
+{ "v":1, "id":"a5", "origin":"src", "kind":"response", "type":"open_source",
+  "payload":{ "ok":true } }
+```
+
+### 7.2 Cursor scrub in wave → view tint + src goto_declaration
+
+When surfer emits `cursor_time_changed` (added by the surfer fork —
+see §8):
+
+```json
+// 1. surfer broadcasts cursor time
+{ "v":1, "id":"b1", "origin":"wave", "kind":"event", "type":"cursor_time_changed",
+  "payload":{ "t_fs":"12500000" } }
+
+// 2. hub forwards to view + src; view re-tints
+{ "v":1, "id":"b2", "origin":"wave", "kind":"event", "type":"cursor_time_changed",
+  "payload":{ "t_fs":"12500000" } }   // → view
+// (src ignores cursor_time_changed by default; nothing to navigate to)
+```
+
+WCP `goto_declaration` events are handled separately — they map onto
+`source_focused` with `origin: wave` after the hub resolves the signal
+name to a source anchor.
+
+### 7.3 `:RtlBuddyShow` in nvim → view + wave
+
+User invokes `:RtlBuddyShow` at line 42 of `rtl/fifo.sv`.
+
+```json
+// 1. nvim plugin broadcasts source focus
+{ "v":1, "id":"c1", "origin":"src", "kind":"event", "type":"source_focused",
+  "payload":{ "file":"/abs/rtl/fifo.sv", "line":42, "col":5 } }
+
+// 2. hub resolves to enclosing instance, broadcasts selection_changed
+{ "v":1, "id":"c2", "origin":"src", "kind":"event", "type":"selection_changed",
+  "payload":{ "instance_path":"top.u_fifo" } }
+
+// 3. wave adapter resolves + adds the scope to surfer
+{ "v":1, "id":"c3", "origin":"cli", "kind":"request", "type":"resolve_view_to_wave",
+  "payload":{ "instance_path":"top.u_fifo" } }
+{ "v":1, "id":"c3", "origin":"cli", "kind":"response", "type":"resolve_view_to_wave",
+  "payload":{ "wave_scope":"tb.dut.u_fifo" } }
+```
+
+### 7.4 Viewer offline (no hub)
+
+Viewer starts, finds no `~/.rtl-buddy/hub.json`, falls back to
+standalone mode: no hub features (no cross-view sync), all overlay
+data still loads from `view.json`. The viewer SHOULD show a small "no
+hub connected" indicator and a button to start one (which spawns
+`rb hub`).
+
+### 7.5 Surfer disconnects mid-session
+
+Surfer is closed. The hub detects the TCP disconnect; subsequent
+`wave_*` requests respond with `error{code: "not_connected"}`. When
+surfer reconnects, it sends a fresh `hello`; the hub broadcasts
+`welcome` to all clients listing the now-registered clients. No state
+is replayed — the viewer keeps its current selection; the user's next
+interaction re-syncs.
+
+### 7.6 Resolution failure
+
+User clicks an instance in the viewer that the testbench doesn't
+contain (e.g. a sub-module that lives under a generate that's
+disabled in this build):
+
+```json
+{ "v":1, "id":"f1", "origin":"cli", "kind":"request", "type":"resolve_view_to_wave",
+  "payload":{ "instance_path":"top.u_dbg.u_probe" } }
+{ "v":1, "id":"f1", "origin":"cli", "kind":"error", "type":"error",
+  "payload":{ "code":"unresolvable", "message":"no wave scope matches instance",
+              "context":{ "instance_path":"top.u_dbg.u_probe", "tb_prefix":"tb.dut." } } }
+```
+
+The viewer surfaces the error to the user; no fallback wave_scope is
+synthesized.
+
+---
+
+## 8. WCP mapping
+
+Source of truth: `surfer-wcp/src/proto.rs` on `rtl-buddy/surfer @
+rtl-buddy` (the fork the hub pins). Upstream is
+`surfer-project/surfer`. We own the fork and extend WCP there to meet
+v1 requirements; the additions in §8.3 below are dependencies of this
+spec.
+
+### 8.1 Commands the hub issues
+
+| Hub request          | WCP command                                      | Notes                                                                                                          |
+| -------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `wave_add_variables` | `add_variables { variables }`                    | Returns `WcpResponse::add_variables { ids }`. The hub surfaces `ids` back to the requester.                    |
+| `wave_set_scope`     | `set_scope { scope }` *(fork addition, §8.3)*    | "Navigate to scope" without adding its variables. Upstream's closest match is `add_scope`, which also adds vars — the fork separates the two so the hub can cleanly drive navigation.  |
+| `wave_set_cursor`    | `set_cursor { timestamp }`                       | Hub passes `t_fs` through after timestamp-unit reconciliation (WCP uses surfer's currently-loaded time unit).   |
+
+The hub does not use: `set_item_color`, `set_viewport_to`,
+`set_viewport_range`, `remove_items`, `focus_item`, `clear`, `load`,
+`zoom_to_fit`, `add_markers`, `add_items`, `reload`, `shutdown`,
+`get_item_list`, `get_item_info`, `add_scope`. They remain available
+to clients that connect directly to surfer (bypassing the hub) for
+non-mediated operations.
+
+### 8.2 Events the hub subscribes to
+
+| WCP event                       | Hub action                                                                                                       |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `waveforms_loaded`              | Logged. Cached `wave` ↔ `view` lookups are invalidated.                                                          |
+| `goto_declaration { variable }` | Resolve `variable` → source anchor via signal → driver lookup → instance source anchor; emit `source_focused`.   |
+| `cursor_set { timestamp }` *(fork, §8.3)*    | Map onto `cursor_time_changed` event (§3).                                                          |
+| `scope_changed { scope }` *(fork, §8.3)*     | Map onto `scope_changed` event (§3).                                                                |
+| `add_drivers`                   | Reserved for v2 ("trace drivers"). Logged but not broadcast in v1.                                              |
+| `add_loads`                     | Same as `add_drivers`.                                                                                          |
+
+### 8.3 Fork additions required for v1
+
+The hub depends on the following extensions to `surfer-wcp` on the
+`rtl-buddy` branch of `rtl-buddy/surfer`. These are tracked separately
+from this spec but are listed here as load-bearing for v1.
+
+**New WCP commands:**
+
+- `set_scope { scope: String }` — surfer navigates to the given scope
+  without adding its variables to the view. Responds with
+  `WcpResponse::ack`. Upstream's `add_scope` is unsuitable: it also
+  adds variables, which causes the viewer to spam the panel every
+  time the user clicks an instance.
+
+**New WCP events:**
+
+- `cursor_set { timestamp }` — emitted when the user moves the surfer
+  waveform cursor (any of: drag, keyboard step, marker click). The
+  hub broadcasts this as `cursor_time_changed` (§3).
+- `scope_changed { scope }` — emitted when the user navigates surfer's
+  active scope. The hub broadcasts this as `scope_changed` (§3).
+
+Both events MUST be debounced surfer-side at ≥30 Hz to avoid drag
+storms — the hub does not debounce.
+
+Filing in `rtl-buddy/surfer` will reference this section. Until they
+land, the wave-side adapter operates degraded: `wave_set_scope`
+falls back to `add_scope`, and `cursor_time_changed` /
+`scope_changed` are simply not emitted (the type names remain in §3
+so client code can compile but no broadcasts arrive).
+
+---
+
+## 9. nvim mapping
+
+The nvim plugin (Phase 10c, `rtl-buddy/rtl_buddy#113`, future repo
+`rtl-buddy/rtlbuddy.nvim`) is a thin Lua module that:
+
+- connects to the hub over the TCP socket discovered via
+  `~/.rtl-buddy/hub.json`,
+- exposes `:RtlBuddyShow` as a user command (broadcasts
+  `source_focused` on the current `(file, line, col)`),
+- listens for `open_source` requests and uses nvim's built-in
+  `nvim_command("edit ...")` + `nvim_win_set_cursor(...)` via
+  msgpack-rpc (no custom RPC surface; everything via the standard nvim
+  API).
+
+The plugin does **not** broadcast on every cursor move — only on
+explicit `:RtlBuddyShow`. Continuous broadcasting would saturate the
+bus and is a non-goal in v1.
+
+### nvim API methods used
+
+| API method              | Where used                                                                          |
+| ----------------------- | ----------------------------------------------------------------------------------- |
+| `nvim_command`          | `:edit <file>` when handling `open_source`.                                          |
+| `nvim_win_set_cursor`   | Move cursor to `{line, col}` after `:edit`.                                          |
+| `nvim_get_current_buf`  | Resolve `file` for the `:RtlBuddyShow` payload.                                      |
+| `nvim_buf_get_name`     | Same.                                                                               |
+| `nvim_win_get_cursor`   | Resolve `{line, col}` for the `:RtlBuddyShow` payload.                              |
+
+All are stable nvim 0.9+ API; no external dependencies.
+
+---
+
+## 10. Capability negotiation
+
+Older clients must co-exist with future protocol versions. The contract:
+
+- A client MUST send `hello` first, listing the `type`s it understands
+  in `capabilities`.
+- The hub's `welcome` lists `registered_clients` — but not their
+  capabilities. Clients that need to know whether (say) a wave-side
+  adapter supports `cursor_time_changed` SHOULD probe by issuing the
+  relevant request and treating `error{code: "bad_request"}` /
+  `error{code: "not_connected"}` as "unsupported."
+- When a future v2 adds a new event `type`, v1 clients ignore it
+  (clients MUST silently drop unknown `type`s, logging at DEBUG).
+- When v2 removes or renames a `type`, the major version bumps to
+  `v: 2`; v1 clients receive `error{code: "protocol_mismatch"}` on
+  `hello` and disconnect.
+
+The hub itself can speak multiple protocol versions; the version
+applied per connection is the `v` from that connection's `hello`.
+
+---
+
+## 11. Glossary
+
+| Term            | Definition                                                                                                            |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Adapter         | Process-side component that mediates between the hub and one of the three views (viewer, surfer, nvim).               |
+| Capability      | A `type` name a client advertises in its `hello.capabilities` list.                                                  |
+| Client          | Anything connected to the hub: an adapter, the CLI, or a future programmatic consumer.                                |
+| Hub             | `rtl-buddy-hub`, the daemon defined by this spec; Phase 10b implementation.                                          |
+| `id`            | Per-message UUID for request/response correlation and dedup.                                                          |
+| `instance_path` | A hierarchical instance reference rooted at `view.json.top`, e.g. `top.u_fifo.u_wr_ptr`.                              |
+| `origin`        | One of `view`, `wave`, `src`, `cli` — the conceptual originator of a message.                                       |
+| `tb_prefix`     | Configured prefix stripped from wave paths to recover view instance paths.                                            |
+| `view.json`     | The JSON contract emitted by `rtl-buddy-view --format json` once Phase 4 lands; see `rtl-buddy/rtl-buddy-view#17`.   |
+| `wave_scope`    | A path into the surfer-loaded waveform, e.g. `tb.dut.u_fifo`.                                                       |
+| WCP             | Waveform Control Protocol — surfer's native external-control socket. Source of truth: `surfer-wcp/src/proto.rs`.    |
+
+---
+
+## References
+
+- Tracking issue: `rtl-buddy/rtl-buddy-view#19`
+- Meta: `rtl-buddy/rtl_buddy#112`
+- Phase 10b daemon: `rtl-buddy/rtl_buddy#115`
+- Phase 10c nvim plugin: `rtl-buddy/rtl_buddy#113`
+- Phase 10d viewer wiring: `rtl-buddy/rtl-buddy-view#23`
+- Phase 4 view.json v1 contract: `rtl-buddy/rtl-buddy-view#17`
+- WCP source of truth (fork): https://github.com/rtl-buddy/surfer/blob/rtl-buddy/surfer-wcp/src/proto.rs
+- WCP upstream: https://gitlab.com/surfer-project/surfer/-/blob/main/surfer-wcp/src/proto.rs
+- In-flight WCP work (value annotation, related fork branch): https://github.com/rtl-buddy/surfer/tree/feature/rtl-buddy-52-wcp-src-value-annotation
+- v1 fork additions required (§8.3): to be filed against `rtl-buddy/surfer @ rtl-buddy` after this spec lands
+- JSON Schema: `schemas/hub-protocol-v1.json`
