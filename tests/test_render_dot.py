@@ -241,12 +241,16 @@ def test_no_edge_label_when_no_connections() -> None:
     assert '"top.u_mid" -> "top.u_mid.u" [' not in text
 
 
-# --- multi-clock label + two-tone + HTML grid -------------------------------
+# --- shared helper for port-anchor tests ------------------------------------
 
 
 def _top_with_ports(
     *ports: tuple[str, str], children: tuple[HierNode, ...] = ()
 ) -> HierNode:
+    """Build a top HierNode whose Module carries the given ports.
+
+    Each entry is ``(name, direction)``.
+    """
     from rtl_buddy_view.extractor import Module, Port
 
     mod = Module(
@@ -266,6 +270,9 @@ def _top_with_ports(
         is_blackbox=False,
         children=children,
     )
+
+
+# --- multi-clock label + two-tone + HTML grid -------------------------------
 
 
 def test_clock_label_lists_all_clocks_in_subtree() -> None:
@@ -338,7 +345,6 @@ def test_two_tone_fill_for_single_direction_crossing() -> None:
     text = out.getvalue()
     line = [ln for ln in text.splitlines() if '"top.u_sync"' in ln][0]
     assert 'style="rounded,striped"' in line
-    # Two palette colors separated by ``:`` (the dot stripe syntax).
     fill = line.split("fillcolor=")[1].split("]")[0]
     assert ":" in fill
 
@@ -395,3 +401,175 @@ def test_html_grid_for_bidirectional_crossings() -> None:
     assert "shape=plaintext" in line
     # Two crossing rows × two BGCOLOR cells = 4.
     assert line.count("BGCOLOR") == 4
+
+
+# --- port → child signal-flow edges -----------------------------------------
+
+
+def test_signal_edge_connects_bare_input_to_direct_child() -> None:
+    """A child's ``.port(net)`` with ``net`` matching a top input port
+    name yields a thin edge from the input anchor to the child."""
+    inst = _instance("u_a", "child", connections=(_conn("d", "data_in"),))
+    child = _node("top.u_a", "child", instance=inst)
+    root = _top_with_ports(
+        ("data_in", "input"),
+        ("out0", "output"),
+        children=(child,),
+    )
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    assert '"_in_data_in" -> "top.u_a"' in text
+
+
+def test_signal_edge_connects_child_to_bare_output() -> None:
+    inst = _instance("u_a", "child", connections=(_conn("q", "out0"),))
+    child = _node("top.u_a", "child", instance=inst)
+    root = _top_with_ports(
+        ("data_in", "input"),
+        ("out0", "output"),
+        children=(child,),
+    )
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    assert '"top.u_a" -> "_out_out0"' in text
+
+
+def test_signal_edge_skips_clock_ports_by_name() -> None:
+    """Without a domain map: clock-looking port names (``clk`` token)
+    are dropped — otherwise every flop in the design draws a line to
+    the clock and the diagram becomes a spiderweb."""
+    inst = _instance(
+        "u_a", "child", connections=(_conn("clk", "a_clk"), _conn("d", "data_in"))
+    )
+    child = _node("top.u_a", "child", instance=inst)
+    root = _top_with_ports(
+        ("a_clk", "input"),
+        ("data_in", "input"),
+        children=(child,),
+    )
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    assert '"_in_a_clk" -> "top.u_a"' not in text
+    # Data port still wired.
+    assert '"_in_data_in" -> "top.u_a"' in text
+
+
+def test_signal_edge_skips_reset_ports_by_name() -> None:
+    inst = _instance(
+        "u_a", "child", connections=(_conn("rst_n", "s_rst_n"), _conn("d", "data_in"))
+    )
+    child = _node("top.u_a", "child", instance=inst)
+    root = _top_with_ports(
+        ("s_rst_n", "input"),
+        ("data_in", "input"),
+        children=(child,),
+    )
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    assert '"_in_s_rst_n" -> "top.u_a"' not in text
+    assert '"_in_data_in" -> "top.u_a"' in text
+
+
+def test_signal_edge_skips_complex_net_expressions() -> None:
+    """Slices, concatenations, and arbitrary expressions are not net-
+    traced — only bare identifiers count as port references."""
+    inst = _instance(
+        "u_a",
+        "child",
+        connections=(
+            _conn("a", "data_in[7:0]"),
+            _conn("b", "{x, y}"),
+            _conn("c", "data_in & mask"),
+        ),
+    )
+    child = _node("top.u_a", "child", instance=inst)
+    root = _top_with_ports(("data_in", "input"), children=(child,))
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    assert '"_in_data_in" -> "top.u_a"' not in text
+
+
+def test_signal_edge_dedupes_same_port_multiple_connections() -> None:
+    """Two ``.portA(d), .portB(d)`` connections to the same top port
+    yield a single edge, not two parallel ones."""
+    inst = _instance(
+        "u_a",
+        "child",
+        connections=(_conn("a", "data_in"), _conn("a_alias", "data_in")),
+    )
+    child = _node("top.u_a", "child", instance=inst)
+    root = _top_with_ports(("data_in", "input"), children=(child,))
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    assert text.count('"_in_data_in" -> "top.u_a"') == 1
+
+
+def test_signal_edge_uses_domain_map_clocks_for_filter() -> None:
+    """A name that isn't ``clk``-token-shaped but is named as a clock
+    in the domain map is still filtered."""
+    from rtl_buddy_view.annotations import Clock, DomainMap
+
+    inst = _instance(
+        "u_a", "child", connections=(_conn("c", "freerun"), _conn("d", "data_in"))
+    )
+    child = _node("top.u_a", "child", instance=inst)
+    root = _top_with_ports(
+        ("freerun", "input"),
+        ("data_in", "input"),
+        children=(child,),
+    )
+    m = DomainMap(
+        schema_version="1.0",
+        generator_name="t",
+        generator_version="0",
+        design_top="top",
+        design_frontend="slang",
+        clocks=(
+            Clock(
+                name="freerun", period=10.0, source="create_clock", ports=("freerun",)
+            ),
+        ),
+    )
+    out = io.StringIO()
+    dot_render.render(root, out, domain_map=m)
+    text = out.getvalue()
+    assert '"_in_freerun" -> "top.u_a"' not in text
+    assert '"_in_data_in" -> "top.u_a"' in text
+
+
+def test_signal_edge_colored_by_explicit_port_clock() -> None:
+    """``port_domains[port=X, clock=clk_a]`` colors the edge with the
+    palette swatch for ``clk_a``."""
+    from rtl_buddy_view.annotations import Clock, DomainMap, PortDomain
+
+    inst = _instance("u_a", "child", connections=(_conn("d", "data_in"),))
+    child = _node("top.u_a", "child", instance=inst)
+    root = _top_with_ports(("data_in", "input"), children=(child,))
+    m = DomainMap(
+        schema_version="1.0",
+        generator_name="t",
+        generator_version="0",
+        design_top="top",
+        design_frontend="slang",
+        clocks=(
+            Clock(name="clk_a", period=10.0, source="create_clock", ports=("clk_a",)),
+        ),
+        port_domains=(
+            PortDomain(module="top", port="data_in", clock="clk_a", kind="input"),
+        ),
+    )
+    out = io.StringIO()
+    dot_render.render(root, out, domain_map=m)
+    text = out.getvalue()
+    # Edge exists AND uses a non-neutral palette color (the slate
+    # fallback would be ``#cbd5e1``; any other ``#`` hex is a
+    # palette swatch).
+    edge_line = [ln for ln in text.splitlines() if '"_in_data_in" -> "top.u_a"' in ln][0]
+    assert 'color="#cbd5e1"' not in edge_line
+    assert 'color="#' in edge_line
