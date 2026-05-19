@@ -17,6 +17,22 @@ each node gains a ``clock`` field and a ``crossings_in`` array
 mirroring the async-crossing information. With no map (or an empty
 one) those fields are ``null`` / ``[]`` respectively — same
 graceful-degradation contract as the other renderers.
+
+When a :class:`rtl_buddy_view.reset_annotations.ResetDomainMap` is
+supplied (Phase 3), each node also gains:
+
+- ``reset`` — the flop's reset binding (object: ``name``, ``polarity``,
+  ``type``, ``kind``) when the flop is in the producer's
+  ``flop_resets`` table; ``null`` otherwise.
+- ``reset_crossings_in`` — array of structural RDC crossings into
+  this flop (``reset``, ``kind``, ``polarity``, ``type``,
+  ``flop_clock``); empty when none.
+- ``is_reset_synchronizer`` — bool, ``true`` when the node is in the
+  producer's reset-synchroniser set.
+
+With no reset map (or an explicit ``None``) those fields are
+``null`` / ``[]`` / ``false`` — graceful-degradation matches the
+clock-map contract.
 """
 
 from __future__ import annotations
@@ -52,21 +68,19 @@ def render(
     domain_map: DomainMap | None = None,
     reset_map: ResetDomainMap | None = None,
 ) -> None:
-    """Render ``node`` and its subtree as JSON to ``out``.
-
-    ``reset_map`` is accepted on the signature for CLI plumbing
-    symmetry; the Phase 3 JSON overlay (per-node reset / RDC fields,
-    #3 subtask 6) lands in a follow-up PR.
-    """
-    _ = reset_map  # consumed in #3 follow-up
-    payload = _build_payload(node, domain_map)
+    """Render ``node`` and its subtree as JSON to ``out``."""
+    payload = _build_payload(node, domain_map, reset_map)
     json.dump(payload, out, indent=2, sort_keys=False)
     out.write("\n")
 
 
-def _build_payload(node: HierNode, domain_map: DomainMap | None) -> dict:
+def _build_payload(
+    node: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+) -> dict:
     nodes = sorted(
-        (_node_dict(n, domain_map) for n in _walk(node)),
+        (_node_dict(n, domain_map, reset_map) for n in _walk(node)),
         key=lambda d: d["instance_path"],
     )
     edges = sorted(
@@ -100,7 +114,11 @@ def _version() -> str:
 # --- nodes -------------------------------------------------------------------
 
 
-def _node_dict(node: HierNode, domain_map: DomainMap | None) -> dict:
+def _node_dict(
+    node: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+) -> dict:
     out: dict = {
         "instance_path": node.instance_path,
         "module_name": node.module_name,
@@ -118,7 +136,47 @@ def _node_dict(node: HierNode, domain_map: DomainMap | None) -> dict:
     else:
         out["clock"] = None
         out["crossings_in"] = []
+    if reset_map is not None:
+        flop = reset_map.flop_reset(node.instance_path)
+        out["reset"] = _flop_reset_dict(flop) if flop is not None else None
+        out["reset_crossings_in"] = [
+            _reset_crossing_dict(c)
+            for c in reset_map.crossings_into(node.instance_path)
+        ]
+        out["is_reset_synchronizer"] = (
+            node.instance_path in reset_map.synchronizer_paths()
+        )
+    else:
+        out["reset"] = None
+        out["reset_crossings_in"] = []
+        out["is_reset_synchronizer"] = False
     return out
+
+
+def _flop_reset_dict(flop) -> dict:
+    """Per-flop reset binding emitted under each node's ``reset`` field.
+
+    Matches the field names on the producer-side schema entry so a
+    consumer reading the rtl-buddy-view JSON can join back to the
+    cdc#108 ``flop_resets[]`` artefact without renaming.
+    """
+    return {
+        "name": flop.reset,
+        "polarity": flop.polarity,
+        "type": flop.type,
+        "kind": flop.reset_kind,
+    }
+
+
+def _reset_crossing_dict(c) -> dict:
+    return {
+        "reset": c.reset,
+        "kind": c.kind,
+        "flop_clock": c.flop_clock,
+        "polarity": c.polarity,
+        "type": c.type,
+        "reset_kind": c.reset_kind,
+    }
 
 
 def _safe_overrides(node: HierNode):
