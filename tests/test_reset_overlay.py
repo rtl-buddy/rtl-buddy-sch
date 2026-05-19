@@ -930,6 +930,29 @@ def test_cli_passes_both_annotations_through() -> None:
     assert "⚠RDC[rst_n:async-deassert]" in result.stdout
 
 
+def _normalize_paths(text: str) -> str:
+    """Strip the absolute-path prefix from JSON ``location.file`` values.
+
+    Verible reports source locations with absolute filesystem paths, so
+    the raw golden differs between developer machines and CI runners.
+    The renderer ships the path verbatim by design (consumers like
+    ``rb hier`` want the unambiguous resolved path); we only normalise
+    inside the golden harness so the *content* of the location is what
+    gets pinned, not the filesystem layout of the machine that ran the
+    test.
+
+    Strips everything up to and including ``/tests/fixtures/`` —
+    leaves the fixture-relative path verbatim.
+    """
+    import re
+
+    return re.sub(
+        r'"file":\s*"[^"]*?/tests/fixtures/',
+        '"file": "tests/fixtures/',
+        text,
+    )
+
+
 @pytestmark_integration
 @pytest.mark.parametrize(
     "renderer_name,renderer_fn,golden_name",
@@ -955,13 +978,19 @@ def test_golden_output_per_renderer(
     will fail this test; regenerate the goldens deliberately with
     ``uv run python tests/regen_goldens.py`` (see that script's
     comment block for the full command).
+
+    The JSON golden's ``location.file`` values carry absolute paths
+    from Verible's extractor; we normalise both sides through
+    :func:`_normalize_paths` so the golden pins *content* across
+    machines without baking in a specific filesystem layout.
     """
     cm = load_domain_map(FIXTURE_DIR / "clock_map.json")
     rm = load_reset_domain_map(FIXTURE_DIR / "reset_map.json")
     buf = io.StringIO()
     renderer_fn(integration_root, buf, domain_map=cm, reset_map=rm)
-    expected = (FIXTURE_DIR / "goldens" / golden_name).read_text()
-    assert buf.getvalue() == expected, (
+    actual = _normalize_paths(buf.getvalue())
+    expected = _normalize_paths((FIXTURE_DIR / "goldens" / golden_name).read_text())
+    assert actual == expected, (
         f"{renderer_name} golden drifted — regenerate with "
         f"tests/regen_goldens.py if the change is intentional."
     )

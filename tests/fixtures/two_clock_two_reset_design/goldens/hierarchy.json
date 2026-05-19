@@ -16,7 +16,7 @@
       "param_overrides": [],
       "port_connections": [],
       "location": {
-        "file": "/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/top.sv",
+        "file": "tests/fixtures/two_clock_two_reset_design/top.sv",
         "start_line": 12,
         "start_column": 1,
         "end_line": 20,
@@ -49,7 +49,7 @@
         }
       ],
       "location": {
-        "file": "/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/top.sv",
+        "file": "tests/fixtures/two_clock_two_reset_design/top.sv",
         "start_line": 19,
         "start_column": 10,
         "end_line": 19,
@@ -82,7 +82,7 @@
         }
       ],
       "location": {
-        "file": "/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/fifo.sv",
+        "file": "tests/fixtures/two_clock_two_reset_design/fifo.sv",
         "start_line": 12,
         "start_column": 8,
         "end_line": 12,
@@ -129,7 +129,7 @@
         }
       ],
       "location": {
-        "file": "/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/fifo.sv",
+        "file": "tests/fixtures/two_clock_two_reset_design/fifo.sv",
         "start_line": 11,
         "start_column": 8,
         "end_line": 11,
@@ -167,7 +167,7 @@
         }
       ],
       "location": {
-        "file": "/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/top.sv",
+        "file": "tests/fixtures/two_clock_two_reset_design/top.sv",
         "start_line": 18,
         "start_column": 13,
         "end_line": 18,
@@ -200,7 +200,7 @@
         }
       ],
       "location": {
-        "file": "/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/rstgen.sv",
+        "file": "tests/fixtures/two_clock_two_reset_design/rstgen.sv",
         "start_line": 12,
         "start_column": 8,
         "end_line": 12,

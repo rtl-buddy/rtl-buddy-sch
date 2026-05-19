@@ -10,6 +10,11 @@ fixture (two-clock / two-reset / one-RDC). Cosmetic changes to any
 renderer fail that test; regenerate goldens *deliberately* with this
 script after reviewing the rendered diff.
 
+The JSON ``location.file`` values are normalised to a
+fixture-relative form on the way out — Verible reports absolute
+paths and we don't want a machine-specific filesystem layout
+baked into the goldens.
+
 Keep this script intentionally minimal — it's the operator surface
 for an intentional schema/style change, not a CI hook.
 """
@@ -17,6 +22,7 @@ for an intentional schema/style change, not a CI hook.
 from __future__ import annotations
 
 import io
+import re
 from pathlib import Path
 
 from rtl_buddy_view._filelist import parse_filelist
@@ -25,6 +31,20 @@ from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.graph import build_hierarchy
 from rtl_buddy_view.render import dot, json_render, mermaid, tree
 from rtl_buddy_view.reset_annotations import load_reset_domain_map
+
+
+def _normalize_paths(text: str) -> str:
+    """Strip the absolute-path prefix from JSON ``location.file`` values.
+
+    Must stay in sync with the equivalent helper in
+    ``test_reset_overlay.py``; the test re-applies the same
+    normalisation when comparing.
+    """
+    return re.sub(
+        r'"file":\s*"[^"]*?/tests/fixtures/',
+        '"file": "tests/fixtures/',
+        text,
+    )
 
 
 def main() -> None:
@@ -44,7 +64,7 @@ def main() -> None:
     for name, render_fn in targets:
         buf = io.StringIO()
         render_fn(root, buf, domain_map=cm, reset_map=rm)
-        (gold / name).write_text(buf.getvalue())
+        (gold / name).write_text(_normalize_paths(buf.getvalue()))
         print(f"wrote {gold / name}")
 
 
