@@ -66,6 +66,19 @@ _CLOCK_PALETTE: tuple[str, ...] = (
 _DEFAULT_FILL = "#f5f5f5"
 _BLACKBOX_FILL = "#fff8e0"
 
+#: RDC overlay accent color. Distinct from the CDC red (``#dc2626``)
+#: so a flop that has both crossings can still be read at a glance
+#: when CDC and RDC markers stack on the same node/edge. Tailwind
+#: ``orange-600`` — sits between yellow and red without colliding
+#: with either the clock-palette pastels or the blackbox-yellow fill.
+_RDC_COLOR = "#ea580c"
+
+#: Reset-synchronizer outline color. Tailwind ``teal-600`` — reads
+#: as a "vetted" / safe marker against the warning-coloured RDC
+#: edges; deliberately not green (which would clash with the
+#: clock-palette ``#dcfce7`` swatch on light fills).
+_RSTSYNC_OUTLINE = "#0d9488"
+
 
 def render(
     node: HierNode,
@@ -87,13 +100,18 @@ def render(
     Deeper nesting (children's children, etc.) still renders as the
     usual box-and-arrow tree.
 
-    ``reset_map`` is accepted on the signature so the CLI can plumb it
-    through uniformly, but Phase 3 visual support (reset badges, RDC
-    edges, reset-tree subgraph, synchronizer markers) lands in a
-    follow-up PR — see #3 subtask 4. Today the parameter is ignored.
+    When ``reset_map`` is supplied (Phase 3), the renderer also emits:
+
+    - A ``[resets: rst_n↓, …]`` line on each subtree that contains
+      reset-bearing flops, alongside the existing clock summary.
+    - A teal-outlined node for instances flagged as reset
+      synchronizers (``reset_map.synchronizer_paths()``).
+    - A dashed-orange RDC edge / arrow for crossings — distinct from
+      the dashed-red CDC marker so a node that is both a CDC and RDC
+      destination reads at a glance.
     """
-    _ = reset_map  # consumed in #3 follow-up
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
+    active_reset_map = reset_map if reset_map is not None else None
     out.write("digraph hierarchy {\n")
     # Left-to-right: input ports on the left rank, output ports on
     # the right rank.
@@ -112,13 +130,18 @@ def render(
     )
     out.write('  edge [fontname="Menlo,Courier,monospace"];\n')
     out.write("\n")
-    _emit_top_frame(node, out, active_map)
+    _emit_top_frame(node, out, active_map, active_reset_map)
     if with_legend and active_map is not None:
         _emit_legend(active_map, out)
     out.write("}\n")
 
 
-def _emit_top_frame(top: HierNode, out: IO[str], domain_map: DomainMap | None) -> None:
+def _emit_top_frame(
+    top: HierNode,
+    out: IO[str],
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+) -> None:
     """Emit the top module as a titled cluster with port-rank anchors."""
     title = _escape(top.module_name)
     clocks_in_subtree = (
@@ -151,9 +174,9 @@ def _emit_top_frame(top: HierNode, out: IO[str], domain_map: DomainMap | None) -
     # impossible to read once children have grandchildren that fight
     # the constraint. Subtree depth dictates layout.
     for child in top.children:
-        _emit_node(child, out, domain_map)
+        _emit_node(child, out, domain_map, reset_map=reset_map)
     for child in top.children:
-        _emit_edges(child, out, domain_map)
+        _emit_edges(child, out, domain_map, reset_map=reset_map)
 
     # Port → child signal-flow edges: when a child's port connection
     # has a bare-identifier net that matches a top input/output port
@@ -167,6 +190,13 @@ def _emit_top_frame(top: HierNode, out: IO[str], domain_map: DomainMap | None) -
     # signal-flow edges so the red arrow paints on top of the gray
     # one when both terminate at the same port + child pair.
     _emit_top_cdc_arrows(top, out, domain_map)
+
+    # RDC arrow: dashed-orange overlay edge from the reset port anchor
+    # to the child carrying an RDC crossing. Distinct color from the
+    # CDC arrow so reviewers can tell clock-domain from reset-domain
+    # crossings even when both terminate at the same destination.
+    if reset_map is not None:
+        _emit_top_rdc_arrows(top, out, reset_map)
 
     out.write("  }\n")
 
@@ -362,14 +392,15 @@ def _emit_node(
     domain_map: DomainMap | None,
     *,
     cdc_on_node: bool = False,
+    reset_map: ResetDomainMap | None = None,
 ) -> None:
     """Emit a node line.
 
     ``cdc_on_node`` is set for direct children of the top frame: those
-    children would normally carry their CDC marker on the incoming
-    edge from the top, but in cluster mode that edge doesn't exist —
-    so the marker collapses onto the node itself (label suffix +
-    red border).
+    children would normally carry their CDC / RDC markers on the
+    incoming edge from the top, but in cluster mode that edge doesn't
+    exist — so the markers collapse onto the node itself (label
+    suffix + accent border).
     """
     # Multi-direction CDC: distinct (src, dst) crossing pairs > 1.
     # These need a 2-column grid (one row per direction), which dot's
@@ -381,14 +412,19 @@ def _emit_node(
         else ()
     )
     if len(pairs) > 1:
-        _emit_html_grid_node(node, out, domain_map, pairs, cdc_on_node=cdc_on_node)
+        _emit_html_grid_node(
+            node, out, domain_map, pairs, cdc_on_node=cdc_on_node, reset_map=reset_map
+        )
         for child in node.children:
-            _emit_node(child, out, domain_map)
+            _emit_node(child, out, domain_map, reset_map=reset_map)
         return
 
-    label = _label_for(node, domain_map)
+    label = _label_for(node, domain_map, reset_map)
     attrs = [f'label="{label}"']
     fill, striped = _fill_for(node, domain_map)
+    is_sync = (
+        reset_map is not None and node.instance_path in reset_map.synchronizer_paths()
+    )
     if node.is_blackbox:
         # Blackbox dashed + filled; striped not combined with dashed
         # (Graphviz can't render both). Falls back to solid fill.
@@ -402,18 +438,40 @@ def _emit_node(
         attrs.append(f'fillcolor="{fill}"')
     elif fill != _DEFAULT_FILL:
         attrs.append(f'fillcolor="{fill}"')
+    label_suffix = ""
+    has_border = False
     if cdc_on_node:
         cdc_summary = _format_cdc_summary(node, domain_map)
         if cdc_summary:
-            # Append CDC summary as an extra label line, red the
-            # border + text so it reads at a glance.
-            attrs[0] = f'label="{label}\\n{cdc_summary}"'
+            label_suffix = f"\\n{cdc_summary}"
             attrs.append('color="#dc2626"')
             attrs.append("penwidth=2")
             attrs.append('fontcolor="#dc2626"')
+            has_border = True
+    if cdc_on_node and reset_map is not None:
+        rdc_summary = _format_rdc_summary(node, reset_map)
+        if rdc_summary:
+            label_suffix += f"\\n{rdc_summary}"
+            # Don't override an existing CDC border — the dual-issue
+            # node keeps its red CDC border and surfaces the RDC issue
+            # via the label only. When CDC isn't present, RDC drives
+            # the border on its own.
+            if not has_border:
+                attrs.append(f'color="{_RDC_COLOR}"')
+                attrs.append("penwidth=2")
+                attrs.append(f'fontcolor="{_RDC_COLOR}"')
+                has_border = True
+    if label_suffix:
+        attrs[0] = f'label="{label}{label_suffix}"'
+    # Synchronizer marker: teal outline + slightly thicker pen. Only
+    # applied when no warning border is already in place — clock /
+    # reset issues take precedence visually since they're hazards.
+    if is_sync and not has_border:
+        attrs.append(f'color="{_RSTSYNC_OUTLINE}"')
+        attrs.append("penwidth=2")
     out.write(f'  "{node.instance_path}" [{", ".join(attrs)}];\n')
     for child in node.children:
-        _emit_node(child, out, domain_map)
+        _emit_node(child, out, domain_map, reset_map=reset_map)
 
 
 def _emit_html_grid_node(
@@ -423,6 +481,7 @@ def _emit_html_grid_node(
     pairs: tuple[tuple[str, str], ...],
     *,
     cdc_on_node: bool,
+    reset_map: ResetDomainMap | None = None,
 ) -> None:
     """Emit a node as an HTML-label table — header text + one row per crossing.
 
@@ -432,11 +491,12 @@ def _emit_html_grid_node(
     emit a 2-column grid where each row shows one direction.
 
     The header cell carries the same text content as a regular node
-    label (instance, module, parameter block, clock summary, blackbox
-    marker), using ``<BR ALIGN="LEFT"/>`` for left-aligned line
-    breaks so it visually matches the rest of the diagram.
+    label (instance, module, parameter block, clock summary, reset
+    summary, blackbox marker), using ``<BR ALIGN="LEFT"/>`` for
+    left-aligned line breaks so it visually matches the rest of the
+    diagram.
     """
-    text_lines = _label_text_lines(node, domain_map)
+    text_lines = _label_text_lines(node, domain_map, reset_map)
     header = '<BR ALIGN="LEFT"/>'.join(_html_escape(ln) for ln in text_lines)
     # Trailing <BR/> anchors the last line to the left, matching the
     # ``\l`` behavior in plain labels.
@@ -468,7 +528,11 @@ def _emit_html_grid_node(
     out.write(f'  "{node.instance_path}" [{", ".join(attrs)}];\n')
 
 
-def _label_text_lines(node: HierNode, domain_map: DomainMap | None) -> list[str]:
+def _label_text_lines(
+    node: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+) -> list[str]:
     """Return the per-line text content that ``_label_for`` would render,
     minus the ``\\l`` joining — useful for HTML-label emission.
     """
@@ -485,6 +549,12 @@ def _label_text_lines(node: HierNode, domain_map: DomainMap | None) -> list[str]
         clocks = _clocks_under(node.instance_path, domain_map)
         if clocks:
             lines.append(f"[{', '.join(clocks)}]")
+    if reset_map is not None:
+        resets = _resets_under(node.instance_path, reset_map)
+        if resets:
+            lines.append(f"[{', '.join(resets)}]")
+        if node.instance_path in reset_map.synchronizer_paths():
+            lines.append("✓rstsync")
     if node.is_blackbox:
         lines.append("(blackbox)")
     return lines
@@ -618,6 +688,29 @@ def _clocks_under(instance_path: str, domain_map: DomainMap) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+def _resets_under(instance_path: str, reset_map: ResetDomainMap) -> tuple[str, ...]:
+    """All distinct ``<reset><arrow>`` tags present under ``instance_path``,
+    sorted alphabetically.
+
+    Parallel to :func:`_clocks_under`. The arrow encodes the *flop's*
+    inferred polarity (down = active-low, up = active-high) — a port
+    declared low whose consumer uses it inverted produces an ``↑``
+    tag, surfacing the polarity-mismatch hazard in the rendered
+    label as well as in the RDC summary.
+
+    Reset-tree side-graph emission for source-side (not flop-side)
+    reset annotation is deferred to a follow-up PR (#3 subtask 4
+    ``reset-tree-sidegraph`` bullet).
+    """
+    prefix = instance_path + "."
+    found: set[str] = set()
+    for flop in reset_map.flop_resets:
+        if flop.instance_path == instance_path or flop.instance_path.startswith(prefix):
+            arrow = "↓" if flop.polarity == "low" else "↑"
+            found.add(f"{flop.reset}{arrow}")
+    return tuple(sorted(found))
+
+
 def _emit_legend(domain_map: DomainMap, out: IO[str]) -> None:
     """Emit a clock→swatch legend as a side subgraph.
 
@@ -645,7 +738,11 @@ def _emit_legend(domain_map: DomainMap, out: IO[str]) -> None:
 
 
 def _emit_edges(
-    node: HierNode, out: IO[str], domain_map: DomainMap | None = None
+    node: HierNode,
+    out: IO[str],
+    domain_map: DomainMap | None = None,
+    *,
+    reset_map: ResetDomainMap | None = None,
 ) -> None:
     for child in node.children:
         attr_parts: list[str] = []
@@ -655,20 +752,81 @@ def _emit_edges(
             else ""
         )
         cdc_summary = _format_cdc_summary(child, domain_map)
-        label = port_label
+        rdc_summary = (
+            _format_rdc_summary(child, reset_map) if reset_map is not None else ""
+        )
+        label_parts: list[str] = []
         if cdc_summary:
-            label = f"{cdc_summary}\\n{port_label}" if port_label else cdc_summary
+            label_parts.append(cdc_summary)
+        if rdc_summary:
+            label_parts.append(rdc_summary)
+        if port_label:
+            label_parts.append(port_label)
+        label = "\\n".join(label_parts)
         if label:
             attr_parts.append(f'label="{label}"')
         if cdc_summary:
-            # Distinct edge style for CDC: dashed red so the
-            # hazard reads instantly even on a busy diagram.
+            # CDC is the worse of the two hazards (silicon-failing
+            # metastability vs. reset-deassert metastability) — when
+            # both apply on the same edge, the CDC red wins on the
+            # edge style and the RDC marker sits in the label only.
             attr_parts.append('color="#dc2626"')
             attr_parts.append('style="dashed"')
             attr_parts.append('fontcolor="#dc2626"')
+        elif rdc_summary:
+            # Pure RDC edge: dashed orange so it's distinguishable
+            # from the CDC red at a glance.
+            attr_parts.append(f'color="{_RDC_COLOR}"')
+            attr_parts.append('style="dashed"')
+            attr_parts.append(f'fontcolor="{_RDC_COLOR}"')
         attrs = f" [{', '.join(attr_parts)}]" if attr_parts else ""
         out.write(f'  "{node.instance_path}" -> "{child.instance_path}"{attrs};\n')
-        _emit_edges(child, out, domain_map)
+        _emit_edges(child, out, domain_map, reset_map=reset_map)
+
+
+def _format_rdc_summary(child: HierNode, reset_map: ResetDomainMap | None) -> str:
+    """Build the ``⚠RDC: rst_n:async-deassert`` label fragment for an RDC edge.
+
+    Returns an empty string when no reset crossing terminates at
+    ``child``. Multiple crossings collapse to a deterministic
+    ``(reset, kind)`` list — matches the tree renderer's marker shape
+    so reviewers see the same summary across formats.
+    """
+    if reset_map is None:
+        return ""
+    crossings = reset_map.crossings_into(child.instance_path)
+    if not crossings:
+        return ""
+    parts = sorted({f"{c.reset}:{c.kind}" for c in crossings})
+    return "⚠RDC: " + ", ".join(parts)
+
+
+def _emit_top_rdc_arrows(
+    top: HierNode, out: IO[str], reset_map: ResetDomainMap
+) -> None:
+    """Emit a dashed-orange arrow from a reset-port anchor to a child with
+    an RDC crossing in. The reset name must match one of the top's
+    input ports; otherwise the crossing is left visible only through
+    the destination child's label suffix.
+    """
+    if top.module is None:
+        return
+    input_names = {p.name for p in top.module.ports if p.direction == "input"}
+    for child in top.children:
+        seen: set[tuple[str, str]] = set()
+        for c in reset_map.crossings_into(child.instance_path):
+            if c.reset not in input_names:
+                continue
+            key = (c.reset, c.kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            label = f"⚠RDC: {_escape(c.reset)}:{_escape(c.kind)}"
+            out.write(
+                f'    "_in_{c.reset}" -> "{child.instance_path}" '
+                f'[label="{label}", color="{_RDC_COLOR}", '
+                f'style="dashed", fontcolor="{_RDC_COLOR}"];\n'
+            )
 
 
 def _format_cdc_summary(child: HierNode, domain_map: DomainMap | None) -> str:
@@ -740,19 +898,25 @@ def _format_port_connections(conns: tuple[PortConnection, ...]) -> str:
     return r"\l".join(parts) + (r"\l" if parts else "")
 
 
-def _label_for(node: HierNode, domain_map: DomainMap | None) -> str:
+def _label_for(
+    node: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+) -> str:
     """Build a left-aligned, fixed-width node label.
 
     Lines stack via ``\\l`` (Graphviz left-aligned newline) so the
-    instance name, module name, parameter block, clock tag, and any
-    blackbox marker all flush against the left edge of the box —
-    matches the param-block alignment and reads naturally under the
-    monospace font.
+    instance name, module name, parameter block, clock tag, reset
+    tag, sync-marker, and any blackbox marker all flush against the
+    left edge of the box — matches the param-block alignment and
+    reads naturally under the monospace font.
 
     The clock tag enumerates every clock present in the subtree
     (e.g. ``[a_clk, s_clk, vu_clk]``), not just the predominant one
     — a single-clock label on a multi-clock module hides the
-    crossings that the diagram is meant to surface.
+    crossings that the diagram is meant to surface. The reset tag
+    follows the same shape with polarity arrows
+    (``[rst_n↓, por_n↓]``).
     """
     inst_name = node.instance.name if node.instance is not None else node.module_name
     lines = [_escape(inst_name), _escape(node.module_name)]
@@ -762,6 +926,12 @@ def _label_for(node: HierNode, domain_map: DomainMap | None) -> str:
         clocks = _clocks_under(node.instance_path, domain_map)
         if clocks:
             lines.append(f"[{', '.join(_escape(c) for c in clocks)}]")
+    if reset_map is not None:
+        resets = _resets_under(node.instance_path, reset_map)
+        if resets:
+            lines.append(f"[{', '.join(_escape(r) for r in resets)}]")
+        if node.instance_path in reset_map.synchronizer_paths():
+            lines.append("✓rstsync")
     if node.is_blackbox:
         lines.append("(blackbox)")
     # Trailing ``\l`` anchors the final line to the left margin.

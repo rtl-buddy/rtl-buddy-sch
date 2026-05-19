@@ -26,6 +26,7 @@ from rtl_buddy_view.annotations import (
 from rtl_buddy_view.extractor import Instance
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.graph import HierNode, build_hierarchy
+from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.render import tree as tree_render
 from rtl_buddy_view.reset_annotations import (
     FlopReset,
@@ -289,6 +290,234 @@ def test_tree_cdc_and_rdc_both_render_on_same_flop() -> None:
     assert cdc_pos < rdc_pos
 
 
+# --- unit: dot renderer with synthetic graph -------------------------------
+
+
+def test_dot_renders_reset_bracket_in_node_label() -> None:
+    """A flop with a reset binding gets a ``[rst_n↓]`` line in its label."""
+    leaf_inst = Instance(
+        name="u_a",
+        module_name="ff",
+        param_overrides=(),
+        port_connections=(),
+        location=None,
+    )
+    leaf = HierNode(
+        instance_path="top.u_mid.u_a",
+        module_name="ff",
+        instance=leaf_inst,
+        module=None,
+        is_blackbox=False,
+        children=(),
+    )
+    mid = _node("top.u_mid", "mid", inst_name="u_mid", children=(leaf,))
+    root = _node("top", "top", children=(mid,))
+    rm = _populated_reset_map(flops=[_flop_reset("top.u_mid.u_a")])
+    buf = io.StringIO()
+    dot_render.render(root, buf, reset_map=rm)
+    text = buf.getvalue()
+    assert "[rst_n↓]" in text
+
+
+def test_dot_renders_active_high_reset_with_up_arrow() -> None:
+    leaf_inst = Instance(
+        name="u_a",
+        module_name="ff",
+        param_overrides=(),
+        port_connections=(),
+        location=None,
+    )
+    leaf = HierNode(
+        instance_path="top.u_mid.u_a",
+        module_name="ff",
+        instance=leaf_inst,
+        module=None,
+        is_blackbox=False,
+        children=(),
+    )
+    mid = _node("top.u_mid", "mid", inst_name="u_mid", children=(leaf,))
+    root = _node("top", "top", children=(mid,))
+    rm = _populated_reset_map(
+        flops=[_flop_reset("top.u_mid.u_a", reset="rst", polarity="high")]
+    )
+    buf = io.StringIO()
+    dot_render.render(root, buf, reset_map=rm)
+    text = buf.getvalue()
+    assert "[rst↑]" in text
+
+
+def test_dot_marks_synchronizer_with_teal_outline() -> None:
+    """A flop in the reset-synchronizer set gets a teal outline + ✓rstsync."""
+    leaf_inst = Instance(
+        name="u_sync",
+        module_name="ff",
+        param_overrides=(),
+        port_connections=(),
+        location=None,
+    )
+    leaf = HierNode(
+        instance_path="top.u_mid.u_sync",
+        module_name="ff",
+        instance=leaf_inst,
+        module=None,
+        is_blackbox=False,
+        children=(),
+    )
+    mid = _node("top.u_mid", "mid", inst_name="u_mid", children=(leaf,))
+    root = _node("top", "top", children=(mid,))
+    rm = _populated_reset_map(
+        syncs=[
+            ResetSynchronizer(
+                instance_path="top.u_mid.u_sync",
+                dest_clock="clk_b",
+                async_in="rst_n",
+                async_in_kind="port",
+                location=None,
+            )
+        ]
+    )
+    buf = io.StringIO()
+    dot_render.render(root, buf, reset_map=rm)
+    text = buf.getvalue()
+    assert "✓rstsync" in text
+    # Teal outline on the sync node.
+    sync_line = next(
+        ln for ln in text.splitlines() if ln.lstrip().startswith('"top.u_mid.u_sync"')
+    )
+    assert "#0d9488" in sync_line
+
+
+def test_dot_emits_dashed_orange_rdc_edge() -> None:
+    """An RDC crossing into a child renders the parent→child edge dashed-orange."""
+    leaf_inst = Instance(
+        name="u_dst",
+        module_name="ff",
+        param_overrides=(),
+        port_connections=(),
+        location=None,
+    )
+    leaf = HierNode(
+        instance_path="top.u_mid.u_dst",
+        module_name="ff",
+        instance=leaf_inst,
+        module=None,
+        is_blackbox=False,
+        children=(),
+    )
+    mid = _node("top.u_mid", "mid", inst_name="u_mid", children=(leaf,))
+    root = _node("top", "top", children=(mid,))
+    rm = _populated_reset_map(crossings=[_reset_crossing("top.u_mid.u_dst")])
+    buf = io.StringIO()
+    dot_render.render(root, buf, reset_map=rm)
+    text = buf.getvalue()
+    rdc_edge = next(
+        ln for ln in text.splitlines() if '"top.u_mid" -> "top.u_mid.u_dst"' in ln
+    )
+    assert "⚠RDC: rst_n:async-deassert" in rdc_edge
+    assert "#ea580c" in rdc_edge
+    assert 'style="dashed"' in rdc_edge
+
+
+def test_dot_emits_rdc_arrow_from_top_reset_port() -> None:
+    """An RDC where the reset name matches a top input port gets a dashed-orange
+    arrow from the port anchor to the destination child (mirrors CDC arrows)."""
+    from rtl_buddy_view.extractor import Module, Port
+
+    dst = _node("top.u_dst", "ff", inst_name="u_dst")
+    top_mod = Module(
+        name="top",
+        ports=(
+            Port(name="clk", direction="input", type_text=None, location=None),
+            Port(name="rst_n", direction="input", type_text=None, location=None),
+        ),
+        parameters=(),
+        instances=(),
+        location=None,
+    )
+    root = HierNode(
+        instance_path="top",
+        module_name="top",
+        instance=None,
+        module=top_mod,
+        is_blackbox=False,
+        children=(dst,),
+    )
+    rm = _populated_reset_map(crossings=[_reset_crossing("top.u_dst")])
+    buf = io.StringIO()
+    dot_render.render(root, buf, reset_map=rm)
+    text = buf.getvalue()
+    assert "⚠RDC: rst_n:async-deassert" in text
+    assert '"_in_rst_n" -> "top.u_dst"' in text
+    assert "#ea580c" in text
+
+
+def test_dot_cdc_red_takes_precedence_on_dual_issue_edge() -> None:
+    """When the same edge is both CDC and RDC, the edge stays CDC-red and
+    the RDC marker appears as an additional label line."""
+    from rtl_buddy_view.annotations import Crossing
+
+    leaf_inst = Instance(
+        name="u_dst",
+        module_name="ff",
+        param_overrides=(),
+        port_connections=(),
+        location=None,
+    )
+    leaf = HierNode(
+        instance_path="top.u_mid.u_dst",
+        module_name="ff",
+        instance=leaf_inst,
+        module=None,
+        is_blackbox=False,
+        children=(),
+    )
+    mid = _node("top.u_mid", "mid", inst_name="u_mid", children=(leaf,))
+    root = _node("top", "top", children=(mid,))
+    cm = DomainMap(
+        schema_version="1.0",
+        generator_name="test",
+        generator_version="0",
+        design_top="top",
+        design_frontend="yosys",
+        clocks=(Clock(name="clk_a", period=10.0, source="create_clock", ports=()),),
+        crossings=(
+            Crossing(
+                src_clock="clk_a",
+                dst_clock="clk_b",
+                dst_flop="top.u_mid.u_dst",
+                min_hops=0,
+                width=1,
+                async_per_sdc=True,
+                src_flop="top.src",
+            ),
+        ),
+    )
+    rm = _populated_reset_map(crossings=[_reset_crossing("top.u_mid.u_dst")])
+    buf = io.StringIO()
+    dot_render.render(root, buf, domain_map=cm, reset_map=rm)
+    text = buf.getvalue()
+    edge_line = next(
+        ln for ln in text.splitlines() if '"top.u_mid" -> "top.u_mid.u_dst"' in ln
+    )
+    # Edge is red (CDC), not orange.
+    assert "#dc2626" in edge_line
+    assert "#ea580c" not in edge_line
+    # Both markers appear in the label.
+    assert "⚠CDC: clk_a→clk_b" in edge_line
+    assert "⚠RDC: rst_n:async-deassert" in edge_line
+
+
+def test_dot_no_reset_map_renders_unchanged() -> None:
+    """``reset_map=None`` produces output byte-identical to the legacy
+    Phase-2 dot rendering on the same input."""
+    leaf = _node("top.u_a", "child", inst_name="u_a")
+    root = _node("top", "top", children=(leaf,))
+    buf_none, buf_phase2 = io.StringIO(), io.StringIO()
+    dot_render.render(root, buf_none, reset_map=None)
+    dot_render.render(root, buf_phase2)  # no reset_map kwarg at all
+    assert buf_none.getvalue() == buf_phase2.getvalue()
+
+
 # --- integration: real Verible parse + reset map ----------------------------
 
 
@@ -339,6 +568,42 @@ def test_integration_tree_with_combined_clock_and_reset(
     # u_rd_ptr is the destination of the RDC crossing; no CDC marker
     # in this fixture (clock_map.json has crossings: []).
     assert "u_rd_ptr : ff  [clk_b, rst_n↓]  ⚠RDC[rst_n:async-deassert]" in output
+
+
+@pytestmark_integration
+def test_integration_dot_with_combined_clock_and_reset(
+    integration_root: HierNode,
+) -> None:
+    """Headline Phase 3 dot output: clock + reset overlay together."""
+    cm = load_domain_map(FIXTURE_DIR / "clock_map.json")
+    rm = load_reset_domain_map(FIXTURE_DIR / "reset_map.json")
+    buf = io.StringIO()
+    dot_render.render(integration_root, buf, domain_map=cm, reset_map=rm)
+    output = buf.getvalue()
+    # Reset bracket appears on the flop nodes.
+    assert "[rst_n↓]" in output
+    # RDC edge to u_rd_ptr renders dashed-orange.
+    rd_edge = next(
+        line
+        for line in output.splitlines()
+        if "top.u_fifo.u_rd_ptr" in line and "->" in line and "_in_" not in line
+    )
+    assert "⚠RDC: rst_n:async-deassert" in rd_edge
+    assert "#ea580c" in rd_edge
+    # ``_in_rst_n → top.u_fifo.u_rd_ptr`` doesn't fire here because the
+    # destination is a grandchild of top (not a direct child); the
+    # marker on the u_fifo→u_rd_ptr edge is the surface form for that
+    # nesting depth. Direct-child reset arrows are unit-tested in
+    # ``test_dot_emits_rdc_arrow_from_top_reset_port``.
+    # The reset-synchroniser instance (top.u_rstgen.u_sync) gets the
+    # teal outline + ✓rstsync.
+    sync_line = next(
+        line
+        for line in output.splitlines()
+        if '"top.u_rstgen.u_sync"' in line and "label=" in line
+    )
+    assert "✓rstsync" in sync_line
+    assert "#0d9488" in sync_line
 
 
 @pytestmark_integration
