@@ -164,7 +164,9 @@ class ResetDomainMap:
         bucket synth-internal flops back to a source instance should
         do it at the join layer, not here.
         """
-        return tuple(c for c in self.reset_crossings if c.instance_path == instance_path)
+        return tuple(
+            c for c in self.reset_crossings if c.instance_path == instance_path
+        )
 
     def synchronizer_paths(self) -> frozenset[str]:
         """Set of instance paths in the reset-synchronizer set.
@@ -375,9 +377,7 @@ def _require_dict(payload: dict, key: str, source_path: Path) -> dict:
 def _require_str(payload: dict, key: str, where: str, source_path: Path) -> str:
     value = payload.get(key)
     if not isinstance(value, str):
-        raise ResetAnnotationsError(
-            f"{source_path}: {where}.{key} must be a string"
-        )
+        raise ResetAnnotationsError(f"{source_path}: {where}.{key} must be a string")
     return value
 
 
