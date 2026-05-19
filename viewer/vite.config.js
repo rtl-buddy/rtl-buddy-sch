@@ -38,5 +38,11 @@ export default defineConfig({
   test: {
     environment: 'happy-dom',
     globals: true,
+    // Vitest auto-discovers ``*.spec.js`` under the project root,
+    // which would pull in the Playwright suite under ``e2e/`` and
+    // crash with "Playwright Test did not expect test.describe()
+    // to be called here". Constrain it to ``tests/``.
+    include: ['tests/**/*.spec.js'],
+    exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
   },
 })
