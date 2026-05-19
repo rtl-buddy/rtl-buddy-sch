@@ -570,6 +570,8 @@ def test_signal_edge_colored_by_explicit_port_clock() -> None:
     # Edge exists AND uses a non-neutral palette color (the slate
     # fallback would be ``#cbd5e1``; any other ``#`` hex is a
     # palette swatch).
-    edge_line = [ln for ln in text.splitlines() if '"_in_data_in" -> "top.u_a"' in ln][0]
+    edge_line = [ln for ln in text.splitlines() if '"_in_data_in" -> "top.u_a"' in ln][
+        0
+    ]
     assert 'color="#cbd5e1"' not in edge_line
     assert 'color="#' in edge_line
