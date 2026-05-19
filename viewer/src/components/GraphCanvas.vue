@@ -3,6 +3,7 @@
     <div class="graph-toolbar">
       <button type="button" @click="zoomIn">+</button>
       <button type="button" @click="zoomOut">−</button>
+      <button type="button" @click="fitToWindow">Fit</button>
       <button type="button" @click="resetView">Reset</button>
     </div>
     <div class="svg-host" ref="svgHostEl"></div>
@@ -167,6 +168,40 @@ function zoomOut() {
 
 function resetView() {
   transform.value = { x: 0, y: 0, scale: 1 }
+  applyTransform()
+}
+
+// Fit the rendered graph tightly into the visible canvas. viz.js's
+// default viewBox already does an aspect-fit, but it leaves a lot of
+// dead space when the graph's aspect ratio differs from the canvas's
+// (common for tall hierarchies in wide windows, or vice versa).
+// This drops viewBox so user-space units map 1:1 to host pixels, then
+// uses the existing g-transform pipeline to scale and centre the
+// content bbox into the host rect.
+function fitToWindow() {
+  if (!_svgEl || !svgHostEl.value) return
+  const root = _svgEl.querySelector('g')
+  if (!root) return
+  _svgEl.removeAttribute('viewBox')
+  _svgEl.removeAttribute('width')
+  _svgEl.removeAttribute('height')
+  // Strip any prior transform so getBBox returns the content's
+  // bbox in its own coord system; the new transform we apply below
+  // is what positions it.
+  root.removeAttribute('transform')
+  const bb = root.getBBox()
+  const rect = svgHostEl.value.getBoundingClientRect()
+  if (!bb.width || !bb.height || !rect.width || !rect.height) {
+    applyTransform()
+    return
+  }
+  const margin = 0.95
+  const scale = Math.min(rect.width / bb.width, rect.height / bb.height) * margin
+  transform.value = {
+    scale,
+    x: (rect.width - bb.width * scale) / 2 - bb.x * scale,
+    y: (rect.height - bb.height * scale) / 2 - bb.y * scale,
+  }
   applyTransform()
 }
 
