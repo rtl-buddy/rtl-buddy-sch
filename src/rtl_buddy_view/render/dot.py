@@ -37,6 +37,7 @@ from typing import IO
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.extractor import ParameterOverride, PortConnection
 from rtl_buddy_view.graph import HierNode
+from rtl_buddy_view.reset_annotations import ResetDomainMap
 
 MAX_EDGE_LABEL_CONNECTIONS = 6
 """Cap on port connections rendered inline on an edge label.
@@ -71,6 +72,7 @@ def render(
     out: IO[str],
     *,
     domain_map: DomainMap | None = None,
+    reset_map: ResetDomainMap | None = None,
     with_legend: bool = False,
 ) -> None:
     """Render ``node`` and its subtree as a Graphviz ``.dot`` digraph.
@@ -84,7 +86,13 @@ def render(
 
     Deeper nesting (children's children, etc.) still renders as the
     usual box-and-arrow tree.
+
+    ``reset_map`` is accepted on the signature so the CLI can plumb it
+    through uniformly, but Phase 3 visual support (reset badges, RDC
+    edges, reset-tree subgraph, synchronizer markers) lands in a
+    follow-up PR — see #3 subtask 4. Today the parameter is ignored.
     """
+    _ = reset_map  # consumed in #3 follow-up
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
     out.write("digraph hierarchy {\n")
     # Left-to-right: input ports on the left rank, output ports on

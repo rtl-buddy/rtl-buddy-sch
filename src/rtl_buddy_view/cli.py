@@ -35,6 +35,11 @@ from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.render import json_render
 from rtl_buddy_view.render import mermaid as mermaid_render
 from rtl_buddy_view.render import tree as tree_render
+from rtl_buddy_view.reset_annotations import (
+    ResetAnnotationsError,
+    ResetDomainMap,
+    load_reset_domain_map,
+)
 
 app = typer.Typer(
     help="RTL hierarchy and connectivity visualization.",
@@ -98,6 +103,17 @@ def main(
         "When present, renderers overlay clock-domain context onto "
         "the hierarchy; absent → identical to un-annotated output.",
     ),
+    rdc_annotations: Path | None = typer.Option(
+        None,
+        "--rdc-annotations",
+        exists=True,
+        readable=True,
+        help="Optional reset-domain map JSON emitted by "
+        "`rtl-buddy-cdc --emit-reset-domain-map` (rtl-buddy-cdc#108). "
+        "When present, renderers overlay per-flop reset-source and "
+        "RDC crossings onto the hierarchy; absent → no reset overlay. "
+        "Composable with --cdc-annotations.",
+    ),
     clock_legend: bool = typer.Option(
         False,
         "--clock-legend",
@@ -113,6 +129,14 @@ def main(
             domain_map = load_domain_map(cdc_annotations)
         except AnnotationsError as e:
             typer.echo(f"cdc-annotations: {e}", err=True)
+            raise typer.Exit(code=1) from None
+
+    reset_map: ResetDomainMap | None = None
+    if rdc_annotations is not None:
+        try:
+            reset_map = load_reset_domain_map(rdc_annotations)
+        except ResetAnnotationsError as e:
+            typer.echo(f"rdc-annotations: {e}", err=True)
             raise typer.Exit(code=1) from None
 
     try:
@@ -139,10 +163,10 @@ def main(
     sink: IO[str]
     if output_path is None:
         sink = sys.stdout
-        _render(root, output_format, sink, domain_map, clock_legend)
+        _render(root, output_format, sink, domain_map, reset_map, clock_legend)
     else:
         with output_path.open("w") as sink:
-            _render(root, output_format, sink, domain_map, clock_legend)
+            _render(root, output_format, sink, domain_map, reset_map, clock_legend)
 
 
 def _render(
@@ -150,15 +174,22 @@ def _render(
     fmt: OutputFormat,
     sink: IO[str],
     domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None,
     clock_legend: bool,
 ) -> None:
     if fmt is OutputFormat.tree:
-        tree_render.render(root, sink, domain_map=domain_map)
+        tree_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
     elif fmt is OutputFormat.dot:
-        dot_render.render(root, sink, domain_map=domain_map, with_legend=clock_legend)
+        dot_render.render(
+            root,
+            sink,
+            domain_map=domain_map,
+            reset_map=reset_map,
+            with_legend=clock_legend,
+        )
     elif fmt is OutputFormat.mermaid:
-        mermaid_render.render(root, sink, domain_map=domain_map)
+        mermaid_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
     elif fmt is OutputFormat.json:
-        json_render.render(root, sink, domain_map=domain_map)
+        json_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
     else:  # pragma: no cover
         raise ValueError(f"Unknown format: {fmt}")
