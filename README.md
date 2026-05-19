@@ -122,37 +122,67 @@ uv run rtl-buddy-view \
     --format json --output hier.json
 ```
 
-### Clock-domain overlay
+### Overlays — `--overlay name=path`
+
+Every overlay (clock, reset, and the Phase 6+ coverage / physical /
+waveform ones) is dispatched through a single repeatable flag:
+
+```bash
+uv run rtl-buddy-view --list-overlays
+# clock    1.0
+# reset    1.0
+
+uv run rtl-buddy-view \
+    --top top \
+    --filelist tests/fixtures/two_clock_two_reset_design/files.f \
+    --overlay clock=tests/fixtures/two_clock_two_reset_design/clock_map.json \
+    --overlay reset=tests/fixtures/two_clock_two_reset_design/reset_map.json \
+    --format tree
+```
+
+`--list-overlays` enumerates the registered overlay names + their
+schema versions. Unknown overlay names surface the registered set
+in the error message so typos self-correct. Third-party packages
+register additional overlays via the
+`rtl_buddy_view.overlays` entry-point group.
+
+> **Deprecation note.** The pre-Phase-4 `--cdc-annotations` and
+> `--rdc-annotations` flags still work as aliases (with a
+> deprecation warning each), rewriting internally to
+> `--overlay clock=…` / `--overlay reset=…`. They'll be removed in
+> the next major bump.
+
+### Clock-domain overlay (consuming `--overlay clock=…`)
 
 When rtl-buddy-cdc has produced a `--emit-domain-map` JSON for the
-same design, pass it via `--cdc-annotations`. Every renderer picks up
-clock coloring, per-node clock tags, and `⚠CDC` markers on the
-asynchronous crossings:
+same design, the `clock` overlay tints subtree nodes by their
+clock domain, tags per-node labels, and marks asynchronous
+crossings with `⚠CDC`:
 
 ```bash
 uv run rtl-buddy-view \
     --top two_clock_design \
     --filelist tests/fixtures/two_clock_design/files.f \
-    --cdc-annotations tests/fixtures/two_clock_design/domain_map.json \
+    --overlay clock=tests/fixtures/two_clock_design/domain_map.json \
     --format dot --clock-legend --output two_clock.dot
 ```
 
-Without `--cdc-annotations` (or with an empty map), output is
+Without `--overlay clock=…` (or with an empty map), output is
 byte-identical to the un-annotated case.
 
-### Reset-domain overlay (Phase 3)
+### Reset-domain overlay (consuming `--overlay reset=…`)
 
 When rtl-buddy-cdc has produced a `--emit-reset-domain-map` JSON for
-the same design, pass it via `--rdc-annotations`. Composable with
-`--cdc-annotations` — both flags can appear in the same invocation
-to overlay clock and reset analysis on a single diagram.
+the same design, the `reset` overlay adds per-flop reset
+binding/polarity, reset-synchroniser markers, and `⚠RDC` markers
+on reset crossings. Composable with `--overlay clock=…`:
 
 ```bash
 uv run rtl-buddy-view \
     --top top \
     --filelist tests/fixtures/two_clock_two_reset_design/files.f \
-    --cdc-annotations tests/fixtures/two_clock_two_reset_design/clock_map.json \
-    --rdc-annotations tests/fixtures/two_clock_two_reset_design/reset_map.json \
+    --overlay clock=tests/fixtures/two_clock_two_reset_design/clock_map.json \
+    --overlay reset=tests/fixtures/two_clock_two_reset_design/reset_map.json \
     --format tree
 ```
 
@@ -198,15 +228,44 @@ rtl-buddy-view [OPTIONS]
 --frontend [verible|slang]
                         Parser frontend. [default: verible]
                         (slang activation is a Phase 2 follow-up.)
---cdc-annotations PATH  Optional clock-domain map JSON from
-                        `rtl-buddy-cdc --emit-domain-map`.
---rdc-annotations PATH  Optional reset-domain map JSON from
-                        `rtl-buddy-cdc --emit-reset-domain-map`.
-                        Composable with --cdc-annotations.
+--overlay name=path     Apply the named overlay. Repeatable.
+                        Built-ins: clock, reset.
+                        Examples: --overlay clock=clock-map.json
+                                  --overlay reset=reset-map.json
+--list-overlays         List registered overlays + their schema
+                        versions and exit.
+--cdc-annotations PATH  (Deprecated; use --overlay clock=PATH.)
+--rdc-annotations PATH  (Deprecated; use --overlay reset=PATH.)
 --clock-legend          Dot-format only: emit a side legend mapping
-                        clocks → palette colors. Requires
-                        --cdc-annotations.
+                        clocks → palette colors. Requires a clock
+                        overlay.
 ```
+
+### `view.json` v1 (`--format json`)
+
+The JSON output is the locked v1 contract that the Phase 5 web
+viewer (#18) and `rb hier` consume. Schema lives at
+`schemas/view-v1.json`; each node carries:
+
+- a stable `id` (full instance path), `module`, `instance_name`,
+  `is_blackbox`, `parameters` dict, and `ports[]` with `expr` +
+  `anchor` joined from the parent instantiation;
+- a `source` block with `decl_line` / `decl_col` for the module
+  declaration alongside the instance anchor;
+- a `link` URI of the form
+  `rtlbuddy://open?file=…&line=…&col=…` (the hub in Phase 10b is
+  the URI handler);
+- an `overlays` block keyed by overlay name with per-node
+  metadata.
+
+`overlays_present` at the top level lists the active overlays so a
+viewer can render its panel of toggles without scanning every node.
+
+Tree output running on a real terminal also wraps each instance
+name in an OSC-8 hyperlink pointing at the same `rtlbuddy://` URI
+— click-through into the hub straight from your terminal. Pipes /
+redirects auto-disable OSC-8 so plain-text capture stays
+machine-readable; `NO_COLOR=1` is also respected.
 
 ## Roadmap
 
@@ -222,6 +281,10 @@ rtl-buddy-view [OPTIONS]
   reset-synchroniser markers, dashed-orange RDC edges, and
   combined-overlay rendering across all four output formats.
   ([#3](https://github.com/rtl-buddy/rtl-buddy-view/issues/3))
+- **Phase 4** — Generalised overlay plugin layer
+  (`--overlay name=path`), locked `view.json` v1 schema, OSC-8
+  hyperlinks in the tree renderer.
+  ([#17](https://github.com/rtl-buddy/rtl-buddy-view/issues/17))
 
 ## License
 

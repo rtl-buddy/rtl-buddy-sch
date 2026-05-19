@@ -43,11 +43,20 @@ Designed to be terminal-friendly and easy to feed to an LLM.
 
 from __future__ import annotations
 
+import os
 from typing import IO
+from urllib.parse import quote
 
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.reset_annotations import ResetDomainMap
+
+# OSC-8 hyperlink terminal escape sequence. Supported by iTerm2,
+# GNOME Terminal, modern xterm, Windows Terminal, kitty, wezterm.
+# Terminals that don't understand it strip the escape on display —
+# the visible text stays exactly the same.
+_OSC8_OPEN = "\x1b]8;;{uri}\x1b\\"
+_OSC8_CLOSE = "\x1b]8;;\x1b\\"
 
 
 def render(
@@ -56,10 +65,25 @@ def render(
     *,
     domain_map: DomainMap | None = None,
     reset_map: ResetDomainMap | None = None,
+    links: bool | None = None,
 ) -> None:
-    """Render ``node`` and its subtree as ASCII to ``out``."""
+    """Render ``node`` and its subtree as ASCII to ``out``.
+
+    When ``links`` is ``True`` (or ``None`` and ``out`` looks like a
+    real TTY), each instance name is wrapped in an OSC-8 hyperlink
+    pointing at ``rtlbuddy://open?file=...&line=...&col=...`` — the
+    same URI the JSON renderer emits under ``link``. Modern
+    terminals render this as a clickable link; ones that don't
+    understand the escape silently strip it.
+
+    The default ``links=None`` auto-detects: if ``out`` has an
+    ``isatty()`` method that returns True we emit links; otherwise
+    we don't. Tests + golden files set ``links=False`` explicitly
+    so the byte output stays portable.
+    """
+    use_links = _should_emit_links(out, links)
     out.write(
-        f"{node.module_name}"
+        f"{_wrap(node.module_name, node, use_links)}"
         f"{_attr_suffix(node, domain_map, reset_map)}"
         f"{_cdc_suffix(node, domain_map)}"
         f"{_rdc_suffix(node, reset_map)}\n"
@@ -70,7 +94,63 @@ def render(
         out=out,
         domain_map=domain_map,
         reset_map=reset_map,
+        use_links=use_links,
     )
+
+
+def _should_emit_links(out: IO[str], links: bool | None) -> bool:
+    """Decide whether to emit OSC-8 hyperlinks for this render.
+
+    Explicit ``True`` / ``False`` wins. ``None`` (the default) falls
+    back to TTY detection: a real terminal gets clickable links; a
+    redirect (file, pipe, capture buffer) does not.
+    Respects the ``NO_COLOR`` environment variable as a stricter
+    veto — some power users disable terminal styling globally and
+    expect OSC-8 to follow suit.
+    """
+    if links is True:
+        return True
+    if links is False:
+        return False
+    if os.environ.get("NO_COLOR"):
+        return False
+    isatty = getattr(out, "isatty", None)
+    return bool(isatty()) if callable(isatty) else False
+
+
+def _wrap(text: str, node: HierNode, use_links: bool) -> str:
+    """Wrap ``text`` in an OSC-8 hyperlink if appropriate.
+
+    No-op when ``use_links`` is False or the node has no source
+    anchor (top of a parse-failure tree, synthetic test nodes).
+    """
+    if not use_links:
+        return text
+    link = _node_link(node)
+    if link is None:
+        return text
+    return _OSC8_OPEN.format(uri=link) + text + _OSC8_CLOSE
+
+
+def _node_link(node: HierNode) -> str | None:
+    """Build the ``rtlbuddy://`` URI for this node, or None if no anchor.
+
+    Prefers the instance's location (where this child was
+    instantiated) over the module declaration — matches the
+    JSON renderer's `_link_for` selection logic exactly.
+    """
+    if node.instance is not None and node.instance.location is not None:
+        loc = node.instance.location
+    elif node.module is not None and node.module.location is not None:
+        loc = node.module.location
+    else:
+        return None
+    parts = [f"file={quote(str(loc.file), safe='/:')}"]
+    if loc.start_line is not None:
+        parts.append(f"line={loc.start_line}")
+    if loc.start_column is not None:
+        parts.append(f"col={loc.start_column}")
+    return "rtlbuddy://open?" + "&".join(parts)
 
 
 def _render_children(
@@ -80,6 +160,7 @@ def _render_children(
     out: IO[str],
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
+    use_links: bool,
 ) -> None:
     last_idx = len(children) - 1
     for i, child in enumerate(children):
@@ -93,8 +174,9 @@ def _render_children(
         attr = _attr_suffix(child, domain_map, reset_map)
         cdc = _cdc_suffix(child, domain_map)
         rdc = _rdc_suffix(child, reset_map)
+        wrapped_inst = _wrap(inst_name, child, use_links)
         out.write(
-            f"{prefix}{branch}{inst_name} : {child.module_name}{tag}{attr}{cdc}{rdc}\n"
+            f"{prefix}{branch}{wrapped_inst} : {child.module_name}{tag}{attr}{cdc}{rdc}\n"
         )
         _render_children(
             child.children,
@@ -102,6 +184,7 @@ def _render_children(
             out=out,
             domain_map=domain_map,
             reset_map=reset_map,
+            use_links=use_links,
         )
 
 
