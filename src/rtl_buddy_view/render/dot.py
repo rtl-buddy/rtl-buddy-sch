@@ -175,21 +175,32 @@ def _emit_port_anchors(top: HierNode, out: IO[str]) -> None:
     outputs = [p for p in top.module.ports if p.direction in ("output", "inout")]
 
     if inputs:
+        # Right-edge alignment: pad each name on the LEFT to the max
+        # name width so all ``▶`` glyphs land in the same column under
+        # the monospace font. Padding has to be applied after
+        # ``_escape`` since the escape pass would otherwise collapse
+        # the padding spaces.
+        escaped = {p.name: _escape(p.name) for p in inputs}
+        max_w = max((len(s) for s in escaped.values()), default=0)
         out.write("    { rank=source;\n")
         for p in inputs:
-            label = _escape(p.name)
+            padded = escaped[p.name].rjust(max_w)
             out.write(
                 f'      "_in_{p.name}" '
-                f'[shape=plaintext, label="{label} ▶\\r", fontsize=9];\n'
+                f'[shape=plaintext, label="{padded} ▶", fontsize=9];\n'
             )
         out.write("    }\n")
     if outputs:
+        # Left-edge alignment: pad each name on the RIGHT instead, so
+        # the ``▶`` glyph leading each output label forms a column.
+        escaped = {p.name: _escape(p.name) for p in outputs}
+        max_w = max((len(s) for s in escaped.values()), default=0)
         out.write("    { rank=sink;\n")
         for p in outputs:
-            label = _escape(p.name)
+            padded = escaped[p.name].ljust(max_w)
             out.write(
                 f'      "_out_{p.name}" '
-                f'[shape=plaintext, label="▶ {label}\\l", fontsize=9];\n'
+                f'[shape=plaintext, label="▶ {padded}", fontsize=9];\n'
             )
         out.write("    }\n")
 
