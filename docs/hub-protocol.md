@@ -191,10 +191,25 @@ session is composed.
 ### 4.1 Hub startup
 
 The hub runs as the `rb hub` subcommand (Phase 10b,
-`rtl-buddy/rtl_buddy#115`). It is started either explicitly by the
-user, or auto-spawned by another rtl-buddy command that needs
-cross-view sync (`rb hier --serve`, future variants). On startup the
-hub:
+`rtl-buddy/rtl_buddy#115`). Exactly two commands start it; everything
+else only *connects* to a hub that already exists:
+
+| Starter             | Lifecycle                                                                                                 |
+| ------------------- | --------------------------------------------------------------------------------------------------------- |
+| `rb hub`            | Long-running daemon. Stays alive until Ctrl-C or `rb hub stop`. The canonical way to start a hub.         |
+| `rb hier --serve`   | Convenience: auto-spawns `rb hub --daemon` as a child if no hub is running for the project, then bundles the viewer. Exits the hub on viewer close iff `rb hier --serve` started it. |
+
+The following commands **never spawn the hub**:
+
+- `rb wave <test>` — opportunistically registers if a hub is running (§4.5); otherwise operates standalone. Spawning a hub per-`rb wave` invocation would create ambiguity when several tests are open at once.
+- The nvim plugin — pure consumer; shows `[rtlbuddy: no hub]` in the statusline if absent.
+- The viewer (browser SPA) — has no shell access; can only be served by a hub that's already running (`rb hub --serve-viewer` or `rb hier --serve`).
+
+If a user wants cross-view sync without `rb hier --serve`, the
+expected flow is: `rb hub &` in one terminal, then `rb wave` / open
+nvim / open the viewer URL — each connects to that hub.
+
+On startup the hub:
 
 1. Reads `<project_root>/.rtl-buddy/hub.toml` (§5).
 2. Binds a TCP socket on `[hub] listen_port` (`0` = auto-assign).
@@ -305,39 +320,48 @@ For Phase 5 development against a separate Vite dev server: the SPA
 falls back to a `?hub=host:port` URL query parameter when
 `window.__RTL_BUDDY_HUB__` is absent.
 
-### 4.5 surfer (`wave` client)
+### 4.5 surfer via `rb wave` (`wave` client)
 
-surfer is **launched by the user**, not by the hub — this preserves
-the user's surfer config, theme, recent-files list, and lets the user
-choose which waveform to load. The hub connects *out* to surfer's WCP
-socket, not the other way around.
+surfer is launched through `rb wave <test>`, the existing
+rtl_buddy subcommand that handles FST discovery (running the debug
+sim if needed), surfer config (`cfg-surfer` in
+`root_config.yaml`), and WCP port allocation. `rb wave` *is* the
+wave adapter — the hub never speaks raw WCP itself.
 
 User flow:
 
-1. User starts surfer with WCP enabled, listening on the address
-   that matches `[adapters.surfer] wcp_address` in `hub.toml`
-   (default `127.0.0.1:54321`):
+1. User runs `rb wave <test>` in the project. `rb wave`:
+   - Resolves the test's FST (running the debug sim if absent).
+   - Binds a WCP listener socket on an ephemeral port.
+   - Launches surfer with `--wcp-initiate <port>` pointing at that
+     socket.
+   - Starts its WCP listener thread, as today.
+2. `rb wave` then checks for a project hub via §4.2's lookup. If
+   `hub.json` resolves and the hub accepts a TCP connect:
+   - `rb wave` connects to the hub, sends
+     `hello { client: "wave", ... }`.
+   - On `welcome`, the wave adapter is live: WCP events received
+     from surfer are translated and broadcast onto the hub bus
+     (§9.2), and hub `wave_*` requests are translated into WCP
+     commands going back to surfer (§9.1).
+   - When the hub is absent, `rb wave` continues to operate
+     standalone exactly as before — no behavior change for the
+     non-hub case.
+3. `rb wave` exits when surfer exits (or on Ctrl-C); it sends `bye`
+   to the hub on shutdown.
 
-   ```
-   $ surfer dump.fst --wcp-initiate 127.0.0.1:54321
-   ```
+This split keeps responsibilities clean: `rb wave` owns the surfer
+lifecycle and WCP transport (which already work and are tested in
+rtl_buddy), and the hub owns the cross-client bus. The hub config
+does **not** need an `[adapters.surfer]` section — surfer
+configuration is in `root_config.yaml` where `rb wave` already
+reads it.
 
-2. Hub on startup (or on config reload) attempts a TCP connect to
-   that address. On success:
-   - Exchanges WCP `greeting` (§9) — this is surfer's native
-     handshake, not the hub's `hello`.
-   - Internally registers the surfer connection as the `wave`
-     client. There is no separate hub-side `hello/welcome` for
-     surfer because surfer doesn't speak the hub envelope directly;
-     the hub-side wave adapter is what translates.
-3. If surfer is not yet running, the hub retries every 2 s while
-   logging WARN `waiting for surfer at <addr>`. Once connected, the
-   hub broadcasts a synthetic `welcome` (with `origin: cli`) to other
-   clients listing the now-registered `wave`.
-
-Multi-surfer: only the first WCP-connected surfer instance becomes
-the `wave` client; additional instances are ignored with a WARN. v2
-may multiplex.
+Multi-surfer: a project can have multiple `rb wave` instances
+running concurrently for different tests; the hub admits the first
+one as the `wave` client and refuses additional ones with `error{code:
+"not_connected", message: "wave client already registered"}` on
+their `hello`. v2 may multiplex by test name.
 
 ### 4.6 Typical user session
 
@@ -348,26 +372,29 @@ $ cd ~/proj
 $ rb hub --serve-viewer &                              # writes ./.rtl-buddy/hub.json
 [hub] listening on 127.0.0.1:54320
 [hub] viewer ready at http://localhost:54321
-$ surfer dump.fst --wcp-initiate 127.0.0.1:54322 &     # matches [adapters.surfer]
+$ rb wave my_test &                                    # spawns surfer; auto-joins hub
 $ nvim rtl/fifo.sv                                     # plugin auto-connects on first
                                                        # :RtlBuddyShow
 # browser opened to http://localhost:54321 by --serve-viewer
 ```
 
-The simpler shape — auto-spawned hub from another command:
+The simpler shape — auto-spawned hub from `rb hier`:
 
 ```
 $ cd ~/proj && rb hier my_top --serve
 # rb spawns rb hub --serve-viewer in the background; viewer opens;
-# user opens surfer / nvim as above. The hub exits with rb hier on Ctrl-C.
+# user runs `rb wave <test>` / opens nvim as above. The hub exits
+# when rb hier --serve does, on Ctrl-C.
 ```
 
-The single-view shape (no hub, no cross-view sync) — the viewer or
-nvim plugin operates standalone, reading `view.json` only:
+The single-view shape (no hub, no cross-view sync) — `rb wave`, the
+viewer, or the nvim plugin all operate standalone:
 
 ```
 $ cd ~/proj && rb hier my_top --format json > view.json
 # open view.json in any compatible viewer; no hub required.
+# rb wave my_test continues to work without a hub — surfer launches,
+# WCP runs locally inside rb wave as before.
 ```
 
 ### 4.7 Multi-project isolation
@@ -394,14 +421,16 @@ collision entirely and is the recommended default.
 
 ## 5. Config
 
-`<project_root>/.rtl-buddy/hub.toml` (preferred), falling back to
-`~/.rtl-buddy/hub.toml` for user-global defaults:
+`<project_root>/.rtl-buddy/hub.toml` — per-project, alongside the
+runtime `hub.json` discovery file. The hub does not read any
+user-global config file; defaults are baked into `rb hub`.
 
 ```toml
 [hub]
 listen_port = 0          # 0 = auto-assign; the chosen port is written
-                         # to ~/.rtl-buddy/hub.json for client discovery
-log_path    = "~/.rtl-buddy/hub.log"
+                         # to .rtl-buddy/hub.json for client discovery
+http_port   = 0          # 0 = auto-assign; serves the viewer SPA + /ws
+log_path    = ".rtl-buddy/hub.log"
 
 [mapping]
 # Stripped from wave paths to recover view instance paths.
@@ -412,21 +441,22 @@ tb_prefix      = "tb.dut."
 signal_aliases = [
   # { wave = "tb.dut.foo_pre_renamed", view = "top.foo" },
 ]
-
-[adapters.surfer]
-# WCP TCP address surfer is listening on. Required if `auto_connect`.
-wcp_address  = "127.0.0.1:54321"
-auto_connect = true
-
-[adapters.nvim]
-# Either an explicit socket path or a glob that picks the most recent
-# matching socket (so multiple nvim instances can share a hub).
-socket_glob = "/tmp/rtlbuddy.sock"
 ```
 
+Surfer configuration is **not** here — surfer is launched by
+`rb wave`, which reads its own `cfg-surfer` section in
+`root_config.yaml` (see rtl_buddy docs). The hub never speaks WCP
+directly.
+
+The nvim plugin needs no hub-side config — it discovers the hub via
+the project-local `hub.json` (§4.2) and uses standard nvim API
+methods (§10).
+
 The hub writes its actual listen address (after the `0` auto-assign)
-to `~/.rtl-buddy/hub.json` on startup. Clients discover the hub by
-reading this file; no environment variables, no service discovery.
+into `<project_root>/.rtl-buddy/hub.json` on startup (§4.1). Clients
+discover the hub by reading that file; no environment variables
+required for the common case, but `$RTL_BUDDY_HUB` overrides it for
+tests and scripted launches.
 
 ---
 
