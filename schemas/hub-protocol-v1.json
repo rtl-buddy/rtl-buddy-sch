@@ -420,5 +420,5 @@
       }
     }
   ],
-  "$comment": "Loop prevention and origin-suppression rules (docs §5) are runtime invariants the hub enforces; they are not expressible in JSON Schema."
+  "$comment": "Loop prevention and origin-suppression rules (docs §6) are runtime invariants the hub enforces; they are not expressible in JSON Schema."
 }
