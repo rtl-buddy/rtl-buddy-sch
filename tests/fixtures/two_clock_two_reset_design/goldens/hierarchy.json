@@ -41,7 +41,7 @@
         "decl_line": 12,
         "decl_col": 1
       },
-      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/top.sv&line=12&col=1",
+      "link": "rtlbuddy://open?file=tests/fixtures/two_clock_two_reset_design/top.sv&line=12&col=1",
       "overlays": {
         "clock": {
           "clock": "clk_b"
@@ -92,7 +92,7 @@
         "decl_line": 6,
         "decl_col": 1
       },
-      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/top.sv&line=19&col=10",
+      "link": "rtlbuddy://open?file=tests/fixtures/two_clock_two_reset_design/top.sv&line=19&col=10",
       "overlays": {
         "clock": {
           "clock": "clk_a"
@@ -143,7 +143,7 @@
         "decl_line": 4,
         "decl_col": 1
       },
-      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/fifo.sv&line=12&col=8",
+      "link": "rtlbuddy://open?file=tests/fixtures/two_clock_two_reset_design/fifo.sv&line=12&col=8",
       "overlays": {
         "clock": {
           "clock": "clk_b"
@@ -199,7 +199,7 @@
         "decl_line": 4,
         "decl_col": 1
       },
-      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/fifo.sv&line=11&col=8",
+      "link": "rtlbuddy://open?file=tests/fixtures/two_clock_two_reset_design/fifo.sv&line=11&col=8",
       "overlays": {
         "clock": {
           "clock": "clk_a"
@@ -255,7 +255,7 @@
         "decl_line": 7,
         "decl_col": 1
       },
-      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/top.sv&line=18&col=13",
+      "link": "rtlbuddy://open?file=tests/fixtures/two_clock_two_reset_design/top.sv&line=18&col=13",
       "overlays": {
         "clock": {
           "clock": "clk_b"
@@ -306,7 +306,7 @@
         "decl_line": 4,
         "decl_col": 1
       },
-      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/rstgen.sv&line=12&col=8",
+      "link": "rtlbuddy://open?file=tests/fixtures/two_clock_two_reset_design/rstgen.sv&line=12&col=8",
       "overlays": {
         "clock": {
           "clock": "clk_b"

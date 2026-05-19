@@ -34,17 +34,24 @@ from rtl_buddy_view.reset_annotations import load_reset_domain_map
 
 
 def _normalize_paths(text: str) -> str:
-    """Strip the absolute-path prefix from JSON ``location.file`` values.
+    """Strip the absolute-path prefix from every Verible-reported path.
 
-    Must stay in sync with the equivalent helper in
-    ``test_reset_overlay.py``; the test re-applies the same
-    normalisation when comparing.
+    Normalises both the ``"file":`` JSON key and the ``link`` URI's
+    ``file=`` query parameter, since both carry Verible's
+    machine-absolute path verbatim. Must stay in sync with the
+    equivalent helper in ``test_reset_overlay.py``.
     """
-    return re.sub(
+    text = re.sub(
         r'"file":\s*"[^"]*?/tests/fixtures/',
         '"file": "tests/fixtures/',
         text,
     )
+    text = re.sub(
+        r"rtlbuddy://open\?file=[^&\"]*?/tests/fixtures/",
+        "rtlbuddy://open?file=tests/fixtures/",
+        text,
+    )
+    return text
 
 
 def main() -> None:

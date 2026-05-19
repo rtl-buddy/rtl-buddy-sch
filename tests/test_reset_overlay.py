@@ -924,26 +924,33 @@ def test_cli_passes_both_annotations_through() -> None:
 
 
 def _normalize_paths(text: str) -> str:
-    """Strip the absolute-path prefix from JSON ``location.file`` values.
+    """Strip the absolute-path prefix from every Verible-reported path.
 
-    Verible reports source locations with absolute filesystem paths, so
-    the raw golden differs between developer machines and CI runners.
-    The renderer ships the path verbatim by design (consumers like
-    ``rb hier`` want the unambiguous resolved path); we only normalise
-    inside the golden harness so the *content* of the location is what
-    gets pinned, not the filesystem layout of the machine that ran the
-    test.
+    Two forms of absolute path land in the JSON golden:
 
-    Strips everything up to and including ``/tests/fixtures/`` —
-    leaves the fixture-relative path verbatim.
+    1. ``"file": "/abs/.../tests/fixtures/..."`` — the ``source.file``
+       block on each node.
+    2. ``rtlbuddy://open?file=/abs/.../tests/fixtures/...&line=...&col=...``
+       — the Phase 4 ``link`` URI.
+
+    Both come straight from Verible's source-location output, which
+    is absolute by design (consumers like ``rb hier`` and the hub
+    want the unambiguous resolved path). We only normalise inside
+    the golden harness so the *content* survives a machine swap.
     """
     import re
 
-    return re.sub(
+    text = re.sub(
         r'"file":\s*"[^"]*?/tests/fixtures/',
         '"file": "tests/fixtures/',
         text,
     )
+    text = re.sub(
+        r"rtlbuddy://open\?file=[^&\"]*?/tests/fixtures/",
+        "rtlbuddy://open?file=tests/fixtures/",
+        text,
+    )
+    return text
 
 
 @pytestmark_integration
