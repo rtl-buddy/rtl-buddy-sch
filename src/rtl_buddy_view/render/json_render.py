@@ -188,10 +188,15 @@ def _ports_for_node(node: HierNode) -> list[dict]:
     if node.module is not None and node.module.ports:
         return [_port_dict_from_module(p, expr_by_name) for p in node.module.ports]
     if node.is_blackbox and node.instance is not None:
-        # Best-effort: render whatever the parent named, with no
-        # direction (we don't know — the module wasn't found).
+        # Best-effort: render the named bindings from the parent
+        # side; positional bindings are skipped here because v1's
+        # ``port.name`` is required-string. The full sequence
+        # (including positionals) is still available on the edge's
+        # ``port_pairs`` array.
         return [
-            _port_dict_from_connection(conn) for conn in node.instance.port_connections
+            _port_dict_from_connection(conn)
+            for conn in node.instance.port_connections
+            if conn.port_name is not None
         ]
     return []
 
