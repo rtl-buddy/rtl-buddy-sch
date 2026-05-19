@@ -53,23 +53,37 @@ def _conn(port_name: str | None, net: str) -> PortConnection:
     return PortConnection(port_name=port_name, net_expr_text=net, location=None)
 
 
-def test_renders_single_node() -> None:
+def test_top_renders_as_titled_cluster() -> None:
+    """Top module is the frame, not a regular node."""
     out = io.StringIO()
     dot_render.render(_node("top", "top"), out)
     text = out.getvalue()
     assert text.startswith("digraph hierarchy {\n")
-    assert '"top" [label="top\\ntop"];' in text
+    assert "subgraph cluster_top {" in text
+    assert 'label="top"' in text
+    # Frame uses outline only — no fillcolor on the cluster itself
+    # (per-child clock fills carry the cue when annotations are on).
+    assert 'fillcolor="' not in text.split("cluster_top")[1].split("}")[0]
     assert text.rstrip().endswith("}")
 
 
-def test_renders_parent_child_edge() -> None:
-    child = _node("top.u_child", "child", instance=_instance("u_child", "child"))
-    root = _node("top", "top", children=(child,))
+def test_mid_to_leaf_edge_survives_frame_mode() -> None:
+    """Frame mode drops top→child edges but keeps every deeper edge."""
+    leaf = _node("top.u_mid.u_leaf", "leaf", instance=_instance("u_leaf", "leaf"))
+    mid = _node(
+        "top.u_mid",
+        "mid",
+        instance=_instance("u_mid", "mid"),
+        children=(leaf,),
+    )
+    root = _node("top", "top", children=(mid,))
     out = io.StringIO()
     dot_render.render(root, out)
     text = out.getvalue()
-    assert '"top" -> "top.u_child";' in text
-    assert '"u_child\\nchild"' in text
+    assert '"top.u_mid" -> "top.u_mid.u_leaf"' in text
+    assert "u_leaf\\nleaf" in text
+    # No top→mid edge — that's containment, not a drawn arrow.
+    assert '"top" -> "top.u_mid"' not in text
 
 
 def test_blackbox_uses_dashed_style() -> None:
@@ -88,6 +102,7 @@ def test_blackbox_uses_dashed_style() -> None:
 
 
 def test_param_overrides_in_label() -> None:
+    """Param overrides go on the child's node label, one per line."""
     inst = _instance(
         "u_core",
         "core",
@@ -101,7 +116,9 @@ def test_param_overrides_in_label() -> None:
     out = io.StringIO()
     dot_render.render(root, out)
     text = out.getvalue()
-    assert "#(.WIDTH(16), .DEPTH(32))" in text
+    # Multi-line format — each override on its own ``\l``-aligned
+    # line, two-space indented inside the ``#( … )`` block.
+    assert r"#(\l  .WIDTH(16)\l  .DEPTH(32)\l)" in text
 
 
 def test_label_escapes_quotes_and_backslashes() -> None:
@@ -126,47 +143,62 @@ def test_label_escapes_quotes_and_backslashes() -> None:
 
 
 def test_edge_label_lists_port_connections() -> None:
-    inst = _instance(
-        "u_ff",
-        "ff",
-        connections=(_conn("clk", "clk"), _conn("q", "q[0]")),
+    """Port-connection labels appear on edges below the top frame.
+
+    Top→child edges don't exist in frame mode, so this test uses a
+    mid→leaf edge to pin the label format.
+    """
+    leaf_inst = _instance(
+        "u_ff", "ff", connections=(_conn("clk", "clk"), _conn("q", "q[0]"))
     )
-    child = _node("top.u_ff", "ff", instance=inst)
-    root = _node("top", "top", children=(child,))
+    leaf = _node("top.u_mid.u_ff", "ff", instance=leaf_inst)
+    mid = _node(
+        "top.u_mid",
+        "mid",
+        instance=_instance("u_mid", "mid"),
+        children=(leaf,),
+    )
+    root = _node("top", "top", children=(mid,))
     out = io.StringIO()
     dot_render.render(root, out)
     text = out.getvalue()
-    # Multiline label: ``\l`` is Graphviz's left-aligned newline.
-    # One port-connection per line, trailing ``\l`` anchors the last
-    # line to the left margin.
-    assert r'"top" -> "top.u_ff" [label=".clk(clk)\l.q(q[0])\l"];' in text
+    assert r'"top.u_mid" -> "top.u_mid.u_ff" [label=".clk(clk)\l.q(q[0])\l"];' in text
 
 
 def test_edge_label_truncates_long_port_lists() -> None:
     conns = tuple(_conn(f"p{i}", f"n{i}") for i in range(20))
-    inst = _instance("u", "wide", connections=conns)
-    child = _node("top.u", "wide", instance=inst)
-    root = _node("top", "top", children=(child,))
+    leaf = _node(
+        "top.u_mid.u", "wide", instance=_instance("u", "wide", connections=conns)
+    )
+    mid = _node(
+        "top.u_mid",
+        "mid",
+        instance=_instance("u_mid", "mid"),
+        children=(leaf,),
+    )
+    root = _node("top", "top", children=(mid,))
     out = io.StringIO()
     dot_render.render(root, out)
     text = out.getvalue()
     # First few connections appear; later ones are summarised.
     assert ".p0(n0)" in text
     assert ".p1(n1)" in text
-    # Last few that fit before the cap should be there; everything
-    # beyond is rolled into the "(+N more)" overflow note.
     assert "(+" in text and " more)" in text
-    # The very last connection (.p19) should NOT appear inline.
     assert ".p19(n19)" not in text
 
 
 def test_no_edge_label_when_no_connections() -> None:
-    inst = _instance("u", "child")
-    child = _node("top.u", "child", instance=inst)
-    root = _node("top", "top", children=(child,))
+    leaf = _node("top.u_mid.u", "child", instance=_instance("u", "child"))
+    mid = _node(
+        "top.u_mid",
+        "mid",
+        instance=_instance("u_mid", "mid"),
+        children=(leaf,),
+    )
+    root = _node("top", "top", children=(mid,))
     out = io.StringIO()
     dot_render.render(root, out)
     text = out.getvalue()
-    assert '"top" -> "top.u";' in text
+    assert '"top.u_mid" -> "top.u_mid.u";' in text
     # No label= attribute on this edge.
-    assert '"top" -> "top.u" [' not in text
+    assert '"top.u_mid" -> "top.u_mid.u" [' not in text

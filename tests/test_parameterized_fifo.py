@@ -86,11 +86,12 @@ def test_dot_renders_param_overrides_in_label() -> None:
     assert ".WIDTH(16)" in output
     # Both children are blackbox → dashed style appears.
     assert "dashed" in output
-    # Edges exist from root to each child; each carries a port-
-    # connection label since both children are instantiated with
-    # `.clk(clk)`.
-    assert r'"fifo" -> "fifo.u_core" [label=".clk(clk)\l"];' in output
-    assert r'"fifo" -> "fifo.u_ptr" [label=".clk(clk)\l"];' in output
+    # Top frame draws children inside the cluster; top→child edges no
+    # longer exist (containment carries the relationship). Both child
+    # nodes still appear with their labels.
+    assert '"fifo.u_core"' in output
+    assert '"fifo.u_ptr"' in output
+    assert '"fifo" -> "fifo.u_core"' not in output
 
 
 def test_cli_dot_end_to_end() -> None:
