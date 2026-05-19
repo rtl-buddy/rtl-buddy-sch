@@ -63,7 +63,9 @@ async function renderSvg() {
     if (to) group.setAttribute('data-edge-to', to.trim())
   }
   applyOverlays(_svgEl, graph.value, store.enabledOverlays)
-  applyTransform()
+  // Defer to next frame so flex layout has settled and the host
+  // rect is its final size before we compute the fit scale.
+  requestAnimationFrame(fitToWindow)
 }
 
 watch(graph, renderSvg)
