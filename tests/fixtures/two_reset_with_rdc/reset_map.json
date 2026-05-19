@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "generator": {"name": "rtl-buddy-cdc", "version": "0.2.0"},
+  "design": {"top": "top", "frontend": "yosys"},
+  "reset_sources": [
+    {
+      "name": "rst_a_n",
+      "source": "port",
+      "polarity": "low",
+      "type": "async",
+      "clock": null,
+      "via_synchronizer": false
+    },
+    {
+      "name": "rst_b_n",
+      "source": "port",
+      "polarity": "low",
+      "type": "async",
+      "clock": null,
+      "via_synchronizer": false
+    }
+  ],
+  "reset_synchronizers": [],
+  "flop_resets": [
+    {
+      "instance_path": "top.u_a",
+      "clock": "clk_a",
+      "reset": "rst_a_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async"
+    },
+    {
+      "instance_path": "top.u_b",
+      "clock": "clk_b",
+      "reset": "rst_a_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async"
+    }
+  ],
+  "reset_crossings": [
+    {
+      "instance_path": "top.u_b",
+      "kind": "async-deassert",
+      "flop_clock": "clk_b",
+      "reset": "rst_a_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async"
+    }
+  ]
+}

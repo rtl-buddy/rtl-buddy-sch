@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "generator": {"name": "rtl-buddy-cdc", "version": "0.2.0"},
+  "design": {"top": "top", "frontend": "yosys"},
+  "clocks": [
+    {"name": "clk_a", "period": 10.0, "source": "create_clock", "ports": ["clk_a"]},
+    {"name": "clk_b", "period": 8.0,  "source": "create_clock", "ports": ["clk_b"]}
+  ],
+  "generated_clocks": [],
+  "clock_groups": [
+    {"kind": "asynchronous", "members": [["clk_a"], ["clk_b"]]}
+  ],
+  "false_path_pairs": [],
+  "flop_domains": [
+    {"instance_path": "top.u_a", "clock": "clk_a"},
+    {"instance_path": "top.u_b", "clock": "clk_b"}
+  ],
+  "port_domains": [],
+  "crossings": []
+}

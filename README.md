@@ -140,6 +140,50 @@ uv run rtl-buddy-view \
 Without `--cdc-annotations` (or with an empty map), output is
 byte-identical to the un-annotated case.
 
+### Reset-domain overlay (Phase 3)
+
+When rtl-buddy-cdc has produced a `--emit-reset-domain-map` JSON for
+the same design, pass it via `--rdc-annotations`. Composable with
+`--cdc-annotations` — both flags can appear in the same invocation
+to overlay clock and reset analysis on a single diagram.
+
+```bash
+uv run rtl-buddy-view \
+    --top top \
+    --filelist tests/fixtures/two_clock_two_reset_design/files.f \
+    --cdc-annotations tests/fixtures/two_clock_two_reset_design/clock_map.json \
+    --rdc-annotations tests/fixtures/two_clock_two_reset_design/reset_map.json \
+    --format tree
+```
+
+Output:
+
+```
+top  [clk_b]
+├── u_rstgen : rstsync  [clk_b]
+│   └── u_sync : ff  [clk_b]  ✓rstsync
+└── u_fifo : fifo  [clk_a]
+    ├── u_wr_ptr : ff  [clk_a, rst_n↓]
+    └── u_rd_ptr : ff  [clk_b, rst_n↓]  ⚠RDC[rst_n:async-deassert]
+```
+
+Reset overlay surface, by renderer:
+
+| Format | Reset binding | Synchronizer | RDC crossing |
+|---|---|---|---|
+| `tree` | `[<reset>↓]` (down for active-low, up for active-high) joined into the clock bracket | `✓rstsync` after the bracket | `⚠RDC[reset:kind]` suffix |
+| `dot` | reset bracket line in node label | teal outline (`#0d9488`) + `✓rstsync` line | dashed-orange edge (`#ea580c`); dashed-orange arrow from top frame's reset-port anchor when applicable |
+| `mermaid` | reset bracket line in node label | teal stroke + `✓rstsync` line | dashed arrow + orange stroke on destination |
+| `json` | per-node `reset` object | per-node `is_reset_synchronizer: true` | per-node `reset_crossings_in[]` |
+
+When CDC and RDC both apply to the same flop, **CDC takes
+precedence on stroke / border colour** (silicon-failing
+metastability is the more severe hazard), while the RDC marker rides
+on the label. The other warning still surfaces — nothing is hidden.
+
+Without `--rdc-annotations`, no reset decoration is emitted; the
+output is byte-identical to the clock-only / un-annotated case.
+
 ## CLI
 
 ```
@@ -156,6 +200,9 @@ rtl-buddy-view [OPTIONS]
                         (slang activation is a Phase 2 follow-up.)
 --cdc-annotations PATH  Optional clock-domain map JSON from
                         `rtl-buddy-cdc --emit-domain-map`.
+--rdc-annotations PATH  Optional reset-domain map JSON from
+                        `rtl-buddy-cdc --emit-reset-domain-map`.
+                        Composable with --cdc-annotations.
 --clock-legend          Dot-format only: emit a side legend mapping
                         clocks → palette colors. Requires
                         --cdc-annotations.
@@ -170,9 +217,10 @@ rtl-buddy-view [OPTIONS]
   consuming rtl-buddy-cdc's schema-v1.0 domain map, deterministic
   output across all formats, JSON contract pinned for downstream
   `rb hier`. ([#2](https://github.com/rtl-buddy/rtl-buddy-view/issues/2))
-- **Phase 3** — Reset-domain overlay. Unblocked:
-  rtl-buddy-cdc#107 (analysis) and #108 (`--emit-reset-domain-map`)
-  shipped on rtl-buddy-cdc `main`.
+- **Phase 3** ✅ — Reset-domain overlay consuming rtl-buddy-cdc's
+  schema-v1.0 reset-domain map: per-flop reset binding + polarity,
+  reset-synchroniser markers, dashed-orange RDC edges, and
+  combined-overlay rendering across all four output formats.
   ([#3](https://github.com/rtl-buddy/rtl-buddy-view/issues/3))
 
 ## License

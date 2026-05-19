@@ -1,0 +1,6 @@
+top  [clk_b]
+├── u_rstgen : rstsync  [clk_b]
+│   └── u_sync : ff  [clk_b]  ✓rstsync
+└── u_fifo : fifo  [clk_a]
+    ├── u_wr_ptr : ff  [clk_a, rst_n↓]
+    └── u_rd_ptr : ff  [clk_b, rst_n↓]  ⚠RDC[rst_n:async-deassert]

@@ -1,0 +1,238 @@
+{
+  "schema_version": "1.0",
+  "tool": {
+    "name": "rtl-buddy-view",
+    "version": "0.1.0"
+  },
+  "design": {
+    "top": "top"
+  },
+  "nodes": [
+    {
+      "instance_path": "top",
+      "module_name": "top",
+      "instance_name": null,
+      "is_blackbox": false,
+      "param_overrides": [],
+      "port_connections": [],
+      "location": {
+        "file": "tests/fixtures/two_clock_two_reset_design/top.sv",
+        "start_line": 12,
+        "start_column": 1,
+        "end_line": 20,
+        "end_column": 10
+      },
+      "clock": "clk_b",
+      "crossings_in": [],
+      "reset": null,
+      "reset_crossings_in": [],
+      "is_reset_synchronizer": false
+    },
+    {
+      "instance_path": "top.u_fifo",
+      "module_name": "fifo",
+      "instance_name": "u_fifo",
+      "is_blackbox": false,
+      "param_overrides": [],
+      "port_connections": [
+        {
+          "port_name": "clk_a",
+          "net_expr_text": "clk_a"
+        },
+        {
+          "port_name": "clk_b",
+          "net_expr_text": "clk_b"
+        },
+        {
+          "port_name": "rst_n",
+          "net_expr_text": "rst_n"
+        }
+      ],
+      "location": {
+        "file": "tests/fixtures/two_clock_two_reset_design/top.sv",
+        "start_line": 19,
+        "start_column": 10,
+        "end_line": 19,
+        "end_column": 62
+      },
+      "clock": "clk_a",
+      "crossings_in": [],
+      "reset": null,
+      "reset_crossings_in": [],
+      "is_reset_synchronizer": false
+    },
+    {
+      "instance_path": "top.u_fifo.u_rd_ptr",
+      "module_name": "ff",
+      "instance_name": "u_rd_ptr",
+      "is_blackbox": false,
+      "param_overrides": [],
+      "port_connections": [
+        {
+          "port_name": "clk",
+          "net_expr_text": "clk_b"
+        },
+        {
+          "port_name": "rst_n",
+          "net_expr_text": "rst_n"
+        },
+        {
+          "port_name": "q",
+          "net_expr_text": ""
+        }
+      ],
+      "location": {
+        "file": "tests/fixtures/two_clock_two_reset_design/fifo.sv",
+        "start_line": 12,
+        "start_column": 8,
+        "end_line": 12,
+        "end_column": 51
+      },
+      "clock": "clk_b",
+      "crossings_in": [],
+      "reset": {
+        "name": "rst_n",
+        "polarity": "low",
+        "type": "async",
+        "kind": "port"
+      },
+      "reset_crossings_in": [
+        {
+          "reset": "rst_n",
+          "kind": "async-deassert",
+          "flop_clock": "clk_b",
+          "polarity": "low",
+          "type": "async",
+          "reset_kind": "port"
+        }
+      ],
+      "is_reset_synchronizer": false
+    },
+    {
+      "instance_path": "top.u_fifo.u_wr_ptr",
+      "module_name": "ff",
+      "instance_name": "u_wr_ptr",
+      "is_blackbox": false,
+      "param_overrides": [],
+      "port_connections": [
+        {
+          "port_name": "clk",
+          "net_expr_text": "clk_a"
+        },
+        {
+          "port_name": "rst_n",
+          "net_expr_text": "rst_n"
+        },
+        {
+          "port_name": "q",
+          "net_expr_text": ""
+        }
+      ],
+      "location": {
+        "file": "tests/fixtures/two_clock_two_reset_design/fifo.sv",
+        "start_line": 11,
+        "start_column": 8,
+        "end_line": 11,
+        "end_column": 51
+      },
+      "clock": "clk_a",
+      "crossings_in": [],
+      "reset": {
+        "name": "rst_n",
+        "polarity": "low",
+        "type": "async",
+        "kind": "port"
+      },
+      "reset_crossings_in": [],
+      "is_reset_synchronizer": false
+    },
+    {
+      "instance_path": "top.u_rstgen",
+      "module_name": "rstsync",
+      "instance_name": "u_rstgen",
+      "is_blackbox": false,
+      "param_overrides": [],
+      "port_connections": [
+        {
+          "port_name": "clk",
+          "net_expr_text": "clk_b"
+        },
+        {
+          "port_name": "rst_n",
+          "net_expr_text": "rst_n"
+        },
+        {
+          "port_name": "rst_sync",
+          "net_expr_text": "rst_sync"
+        }
+      ],
+      "location": {
+        "file": "tests/fixtures/two_clock_two_reset_design/top.sv",
+        "start_line": 18,
+        "start_column": 13,
+        "end_line": 18,
+        "end_column": 71
+      },
+      "clock": "clk_b",
+      "crossings_in": [],
+      "reset": null,
+      "reset_crossings_in": [],
+      "is_reset_synchronizer": false
+    },
+    {
+      "instance_path": "top.u_rstgen.u_sync",
+      "module_name": "ff",
+      "instance_name": "u_sync",
+      "is_blackbox": false,
+      "param_overrides": [],
+      "port_connections": [
+        {
+          "port_name": "clk",
+          "net_expr_text": "clk"
+        },
+        {
+          "port_name": "rst_n",
+          "net_expr_text": "rst_n"
+        },
+        {
+          "port_name": "q",
+          "net_expr_text": "rst_sync"
+        }
+      ],
+      "location": {
+        "file": "tests/fixtures/two_clock_two_reset_design/rstgen.sv",
+        "start_line": 12,
+        "start_column": 8,
+        "end_line": 12,
+        "end_column": 55
+      },
+      "clock": "clk_b",
+      "crossings_in": [],
+      "reset": null,
+      "reset_crossings_in": [],
+      "is_reset_synchronizer": true
+    }
+  ],
+  "edges": [
+    {
+      "parent": "top",
+      "child": "top.u_fifo"
+    },
+    {
+      "parent": "top",
+      "child": "top.u_rstgen"
+    },
+    {
+      "parent": "top.u_fifo",
+      "child": "top.u_fifo.u_rd_ptr"
+    },
+    {
+      "parent": "top.u_fifo",
+      "child": "top.u_fifo.u_wr_ptr"
+    },
+    {
+      "parent": "top.u_rstgen",
+      "child": "top.u_rstgen.u_sync"
+    }
+  ]
+}
