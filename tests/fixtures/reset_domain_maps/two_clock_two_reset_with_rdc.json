@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "generator": {"name": "rtl-buddy-cdc", "version": "0.2.0"},
+  "design": {"top": "top", "frontend": "yosys"},
+  "reset_sources": [
+    {
+      "name": "rst_n",
+      "source": "port",
+      "polarity": "low",
+      "type": "async",
+      "clock": null,
+      "via_synchronizer": false,
+      "location": {"file": "top.sv", "start_line": 12, "start_column": 4}
+    },
+    {
+      "name": "top.u_rstgen.rst_sync",
+      "source": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "clock": null,
+      "via_synchronizer": true,
+      "location": {"file": "rstgen.sv", "start_line": 34, "start_column": 8}
+    }
+  ],
+  "reset_synchronizers": [
+    {
+      "instance_path": "top.u_rstgen.u_sync",
+      "dest_clock": "clk_b",
+      "async_in": "rst_n",
+      "async_in_kind": "port",
+      "location": {"file": "rstgen.sv", "start_line": 28, "start_column": 4}
+    }
+  ],
+  "flop_resets": [
+    {
+      "instance_path": "top.u_core.u_reg",
+      "clock": "clk_a",
+      "reset": "rst_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async",
+      "location": {"file": "core.sv", "start_line": 42, "start_column": 4}
+    },
+    {
+      "instance_path": "top.u_fifo.u_rd_ptr",
+      "clock": "clk_b",
+      "reset": "rst_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async",
+      "location": {"file": "fifo.sv", "start_line": 60, "start_column": 4}
+    }
+  ],
+  "reset_crossings": [
+    {
+      "instance_path": "top.u_fifo.u_rd_ptr",
+      "kind": "async-deassert",
+      "flop_clock": "clk_b",
+      "reset": "rst_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async",
+      "location": {"file": "fifo.sv", "start_line": 60, "start_column": 4}
+    }
+  ]
+}

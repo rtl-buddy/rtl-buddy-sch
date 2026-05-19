@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0",
+  "generator": {"name": "rtl-buddy-cdc", "version": "0.2.0"},
+  "design": {"top": "counter", "frontend": "yosys"},
+  "reset_sources": [],
+  "reset_synchronizers": [],
+  "flop_resets": [],
+  "reset_crossings": []
+}
