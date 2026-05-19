@@ -702,11 +702,11 @@ from this spec but are listed here as load-bearing for v1.
 Both events MUST be debounced surfer-side at ≥30 Hz to avoid drag
 storms — the hub does not debounce.
 
-Filing in `rtl-buddy/surfer` will reference this section. Until they
-land, the wave-side adapter operates degraded: `wave_set_scope`
-falls back to `add_scope`, and `cursor_time_changed` /
-`scope_changed` are simply not emitted (the type names remain in §3
-so client code can compile but no broadcasts arrive).
+Tracked in [`rtl-buddy/surfer#2`](https://github.com/rtl-buddy/surfer/issues/2). Until those land, the wave-side
+adapter operates degraded: `wave_set_scope` falls back to
+`add_scope`, and `cursor_time_changed` / `scope_changed` are simply
+not emitted (the type names remain in §3 so client code can compile
+but no broadcasts arrive).
 
 ---
 
@@ -793,5 +793,5 @@ applied per connection is the `v` from that connection's `hello`.
 - WCP source of truth (fork): https://github.com/rtl-buddy/surfer/blob/rtl-buddy/surfer-wcp/src/proto.rs
 - WCP upstream: https://gitlab.com/surfer-project/surfer/-/blob/main/surfer-wcp/src/proto.rs
 - In-flight WCP work (value annotation, related fork branch): https://github.com/rtl-buddy/surfer/tree/feature/rtl-buddy-52-wcp-src-value-annotation
-- v1 fork additions required (§9.3): to be filed against `rtl-buddy/surfer @ rtl-buddy` after this spec lands
+- v1 fork additions required (§9.3): [`rtl-buddy/surfer#2`](https://github.com/rtl-buddy/surfer/issues/2)
 - JSON Schema: `schemas/hub-protocol-v1.json`
