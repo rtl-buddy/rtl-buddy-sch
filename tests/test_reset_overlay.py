@@ -997,7 +997,14 @@ def test_golden_output_per_renderer(
 
 
 def test_cli_rejects_malformed_rdc_annotations(tmp_path: Path) -> None:
-    """A bad map surfaces ``rdc-annotations: …`` (not ``cdc-annotations:``)."""
+    """A bad map surfaces ``overlay reset: …``.
+
+    Phase 4 (#17) rerouted ``--rdc-annotations`` through the generic
+    ``--overlay reset=…`` path with a deprecation warning. The error
+    prefix matches the new dispatch surface so multi-overlay
+    invocations (``--overlay reset=X --overlay clock=Y``) can tell
+    which artefact failed.
+    """
     bad = tmp_path / "bad.json"
     bad.write_text('{"schema_version": "9.9"}')
     result = subprocess.run(
@@ -1017,6 +1024,7 @@ def test_cli_rejects_malformed_rdc_annotations(tmp_path: Path) -> None:
         text=True,
     )
     assert result.returncode == 1
-    assert "rdc-annotations:" in result.stderr
-    # And specifically not the cdc-annotations error prefix.
+    assert "overlay reset:" in result.stderr
+    assert "--rdc-annotations is deprecated" in result.stderr
+    # And specifically not the legacy cdc-annotations error prefix.
     assert "cdc-annotations:" not in result.stderr
