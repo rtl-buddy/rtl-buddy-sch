@@ -78,6 +78,14 @@ class FlopDomain:
     instance_path: str
     clock: str | None  # None = untraceable / no SDC
     location: SourceLocation | None
+    # rtl-buddy-cdc#136 (schema v1.x additive): the deepest enclosing
+    # source-level instance path for this flop. ``None`` for old
+    # producers that didn't emit the field; consumers should fall
+    # back to ``instance_path`` (or string-prefix walking) in that
+    # case. Renderers prefer this when present because the synth
+    # backend's ``instance_path`` is a netlist-flop name that never
+    # matches a source-instance path exactly.
+    source_instance_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +114,11 @@ class Crossing:
     async_per_sdc: bool
     src_flop: str | None = None
     src_port: str | None = None
+    # rtl-buddy-cdc#136 fields: resolved source-instance paths for the
+    # destination and (optional) source flops. See ``FlopDomain`` for
+    # the same rationale.
+    dst_source_instance_path: str | None = None
+    src_source_instance_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -136,40 +149,48 @@ class DomainMap:
     def crossings_into(
         self, instance_path: str, *, async_only: bool = True
     ) -> tuple["Crossing", ...]:
-        """Crossings whose destination flop is at ``instance_path``.
+        """Crossings whose destination is the source instance ``instance_path``.
+
+        When the producer emitted ``dst_source_instance_path``
+        (rtl-buddy-cdc#136), match against that — the field maps the
+        synth-internal ``dst_flop`` to the deepest enclosing source
+        instance, so renderers don't need to know about synth naming
+        conventions. Falls back to exact ``dst_flop`` match for
+        producers that predate the field.
 
         Default filters to ``async_per_sdc=True`` — the SDC-confirmed
         true-CDC subset. Pass ``async_only=False`` to get every
-        crossing the analyzer found regardless of SDC verdict (rare
-        outside of debugging).
+        crossing the analyzer found regardless of SDC verdict.
         """
         return tuple(
             c
             for c in self.crossings
-            if c.dst_flop == instance_path and (not async_only or c.async_per_sdc)
+            if _crossing_targets(c, instance_path)
+            and (not async_only or c.async_per_sdc)
         )
 
     def predominant_clock(self, instance_path: str) -> str | None:
         """Return the most common clock among flops under ``instance_path``.
 
-        "Under" means the flop's ``instance_path`` equals ``instance_path``
-        or starts with ``instance_path + "."``. Flops with ``clock=None``
-        (untraceable) are ignored. Ties between clocks with the same
-        flop count are broken alphabetically so the result is stable
-        across runs.
+        "Under" is computed against ``source_instance_path`` when the
+        producer emitted it (rtl-buddy-cdc#136) — that's the field that
+        maps a synth-internal flop name to the source instance it lives
+        in. For older producers, falls back to the netlist
+        ``instance_path``, which prefix-matched correctly for
+        slang-style ``…u_sync.$slang$sdff$N`` names but silently misses
+        on flattened synthesis.
 
-        Returns ``None`` when no flop under the subtree has a known
-        clock — that's the "no annotation to show" signal for
-        renderers, which fall back to un-annotated styling.
+        Flops with ``clock=None`` (untraceable) are ignored. Ties
+        between clocks with the same flop count are broken
+        alphabetically so the result is stable across runs.
         """
         prefix = instance_path + "."
         counts: dict[str, int] = {}
         for flop in self.flop_domains:
             if flop.clock is None:
                 continue
-            if flop.instance_path == instance_path or flop.instance_path.startswith(
-                prefix
-            ):
+            owner = flop.source_instance_path or flop.instance_path
+            if owner == instance_path or owner.startswith(prefix):
                 counts[flop.clock] = counts.get(flop.clock, 0) + 1
         if not counts:
             return None
@@ -178,6 +199,17 @@ class DomainMap:
         # key makes Python's default ascending sort do both jobs.
         ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
         return ordered[0][0]
+
+
+def _crossing_targets(c: "Crossing", instance_path: str) -> bool:
+    """``True`` when ``c`` terminates at ``instance_path`` in source space.
+
+    Prefers ``dst_source_instance_path`` when set (rtl-buddy-cdc#136),
+    else falls back to exact match on ``dst_flop``.
+    """
+    if c.dst_source_instance_path is not None:
+        return c.dst_source_instance_path == instance_path
+    return c.dst_flop == instance_path
 
 
 def load_domain_map(path: Path) -> DomainMap:
@@ -297,10 +329,16 @@ def _parse_flop_domain(entry: dict, source_path: Path) -> FlopDomain:
         raise AnnotationsError(
             f"{source_path}: flop_domains[].clock must be string or null"
         )
+    sip = entry.get("source_instance_path")
+    if sip is not None and not isinstance(sip, str):
+        raise AnnotationsError(
+            f"{source_path}: flop_domains[].source_instance_path must be string or null"
+        )
     return FlopDomain(
         instance_path=path,
         clock=clock,
         location=_parse_location(entry.get("location")),
+        source_instance_path=sip,
     )
 
 
@@ -314,6 +352,16 @@ def _parse_port_domain(entry: dict, source_path: Path) -> PortDomain:
 
 
 def _parse_crossing(entry: dict, source_path: Path) -> Crossing:
+    dsip = entry.get("dst_source_instance_path")
+    if dsip is not None and not isinstance(dsip, str):
+        raise AnnotationsError(
+            f"{source_path}: crossings[].dst_source_instance_path must be string or null"
+        )
+    ssip = entry.get("src_source_instance_path")
+    if ssip is not None and not isinstance(ssip, str):
+        raise AnnotationsError(
+            f"{source_path}: crossings[].src_source_instance_path must be string or null"
+        )
     return Crossing(
         src_clock=_require_str(entry, "src_clock", "crossings[]", source_path),
         dst_clock=_require_str(entry, "dst_clock", "crossings[]", source_path),
@@ -323,6 +371,8 @@ def _parse_crossing(entry: dict, source_path: Path) -> Crossing:
         async_per_sdc=bool(entry.get("async_per_sdc", False)),
         src_flop=entry.get("src_flop"),
         src_port=entry.get("src_port"),
+        dst_source_instance_path=dsip,
+        src_source_instance_path=ssip,
     )
 
 
