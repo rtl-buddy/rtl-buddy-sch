@@ -617,7 +617,8 @@ def test_mermaid_no_reset_map_renders_unchanged() -> None:
 # --- unit: JSON renderer with synthetic graph -------------------------------
 
 
-def test_json_renders_reset_fields_on_each_node() -> None:
+def test_json_renders_reset_fields_in_per_node_overlays() -> None:
+    """Phase 4 v1: per-node reset block lives under ``overlays.reset``."""
     import json
 
     leaf = _node("top.u_a", "ff", inst_name="u_a")
@@ -626,21 +627,21 @@ def test_json_renders_reset_fields_on_each_node() -> None:
     buf = io.StringIO()
     json_render.render(root, buf, reset_map=rm)
     payload = json.loads(buf.getvalue())
-    nodes_by_path = {n["instance_path"]: n for n in payload["nodes"]}
-    flop = nodes_by_path["top.u_a"]
-    assert flop["reset"] == {
-        "name": "rst_n",
+    nodes_by_id = {n["id"]: n for n in payload["nodes"]}
+    flop = nodes_by_id["top.u_a"]
+    assert flop["overlays"]["reset"] == {
+        "reset": "rst_n",
         "polarity": "low",
         "type": "async",
-        "kind": "port",
     }
-    assert flop["reset_crossings_in"] == []
-    assert flop["is_reset_synchronizer"] is False
-    # Top has no reset binding → null + empty
-    assert nodes_by_path["top"]["reset"] is None
+    # Top has no reset binding → no `reset` key in its overlays.
+    assert "reset" not in nodes_by_id["top"]["overlays"]
+    # Overlay is listed as present at the envelope level.
+    assert "reset" in payload["overlays_present"]
 
 
-def test_json_renders_reset_crossings_in() -> None:
+def test_json_marks_edge_with_reset_crossing() -> None:
+    """RDC crossings surface as ``edges[].overlays.reset.crossing``."""
     import json
 
     dst = _node("top.u_dst", "ff", inst_name="u_dst")
@@ -649,20 +650,12 @@ def test_json_renders_reset_crossings_in() -> None:
     buf = io.StringIO()
     json_render.render(root, buf, reset_map=rm)
     payload = json.loads(buf.getvalue())
-    nodes_by_path = {n["instance_path"]: n for n in payload["nodes"]}
-    crossings = nodes_by_path["top.u_dst"]["reset_crossings_in"]
-    assert len(crossings) == 1
-    assert crossings[0] == {
-        "reset": "rst_n",
-        "kind": "async-deassert",
-        "flop_clock": None,
-        "polarity": "low",
-        "type": "async",
-        "reset_kind": "port",
-    }
+    edge = next(e for e in payload["edges"] if e["to"] == "top.u_dst")
+    assert edge["overlays"]["reset"] == {"crossing": True}
 
 
 def test_json_marks_reset_synchronizer_flag() -> None:
+    """Sync-set membership surfaces under ``overlays.reset.is_synchronizer``."""
     import json
 
     sync = _node("top.u_sync", "ff", inst_name="u_sync")
@@ -681,15 +674,15 @@ def test_json_marks_reset_synchronizer_flag() -> None:
     buf = io.StringIO()
     json_render.render(root, buf, reset_map=rm)
     payload = json.loads(buf.getvalue())
-    nodes_by_path = {n["instance_path"]: n for n in payload["nodes"]}
-    assert nodes_by_path["top.u_sync"]["is_reset_synchronizer"] is True
-    assert nodes_by_path["top"]["is_reset_synchronizer"] is False
+    nodes_by_id = {n["id"]: n for n in payload["nodes"]}
+    assert nodes_by_id["top.u_sync"]["overlays"]["reset"]["is_synchronizer"] is True
+    # Non-sync nodes don't carry a ``reset`` key at all (graceful absence).
+    assert "reset" not in nodes_by_id["top"]["overlays"]
 
 
-def test_json_no_reset_map_emits_null_and_false_defaults() -> None:
-    """``reset_map=None`` still emits the reset-shaped fields with
-    graceful-degradation values, so downstream consumers can rely on
-    their presence."""
+def test_json_no_reset_map_omits_reset_overlay_entirely() -> None:
+    """``reset_map=None`` leaves the ``overlays`` block empty for all
+    nodes and keeps ``reset`` out of ``overlays_present``."""
     import json
 
     leaf = _node("top.u_a", "ff", inst_name="u_a")
@@ -698,9 +691,8 @@ def test_json_no_reset_map_emits_null_and_false_defaults() -> None:
     json_render.render(root, buf)
     payload = json.loads(buf.getvalue())
     for n in payload["nodes"]:
-        assert n["reset"] is None
-        assert n["reset_crossings_in"] == []
-        assert n["is_reset_synchronizer"] is False
+        assert n["overlays"] == {}
+    assert payload["overlays_present"] == []
 
 
 # --- integration: real Verible parse + reset map ----------------------------
@@ -862,18 +854,19 @@ def test_integration_json_with_combined_clock_and_reset(
     buf = io.StringIO()
     json_render.render(integration_root, buf, domain_map=cm, reset_map=rm)
     payload = json.loads(buf.getvalue())
-    nodes_by_path = {n["instance_path"]: n for n in payload["nodes"]}
+    assert payload["overlays_present"] == ["clock", "reset"]
+    nodes_by_id = {n["id"]: n for n in payload["nodes"]}
 
-    rd_ptr = nodes_by_path["top.u_fifo.u_rd_ptr"]
-    assert rd_ptr["clock"] == "clk_b"
-    assert rd_ptr["reset"]["name"] == "rst_n"
-    assert rd_ptr["reset"]["polarity"] == "low"
-    assert len(rd_ptr["reset_crossings_in"]) == 1
-    assert rd_ptr["reset_crossings_in"][0]["kind"] == "async-deassert"
-    assert rd_ptr["is_reset_synchronizer"] is False
+    rd_ptr = nodes_by_id["top.u_fifo.u_rd_ptr"]
+    assert rd_ptr["overlays"]["clock"] == {"clock": "clk_b"}
+    assert rd_ptr["overlays"]["reset"]["reset"] == "rst_n"
+    assert rd_ptr["overlays"]["reset"]["polarity"] == "low"
+    # RDC crossing surfaces on the edge into this flop.
+    rd_edge = next(e for e in payload["edges"] if e["to"] == "top.u_fifo.u_rd_ptr")
+    assert rd_edge["overlays"]["reset"] == {"crossing": True}
 
-    sync = nodes_by_path["top.u_rstgen.u_sync"]
-    assert sync["is_reset_synchronizer"] is True
+    sync = nodes_by_id["top.u_rstgen.u_sync"]
+    assert sync["overlays"]["reset"]["is_synchronizer"] is True
 
 
 @pytestmark_integration
@@ -931,26 +924,33 @@ def test_cli_passes_both_annotations_through() -> None:
 
 
 def _normalize_paths(text: str) -> str:
-    """Strip the absolute-path prefix from JSON ``location.file`` values.
+    """Strip the absolute-path prefix from every Verible-reported path.
 
-    Verible reports source locations with absolute filesystem paths, so
-    the raw golden differs between developer machines and CI runners.
-    The renderer ships the path verbatim by design (consumers like
-    ``rb hier`` want the unambiguous resolved path); we only normalise
-    inside the golden harness so the *content* of the location is what
-    gets pinned, not the filesystem layout of the machine that ran the
-    test.
+    Two forms of absolute path land in the JSON golden:
 
-    Strips everything up to and including ``/tests/fixtures/`` —
-    leaves the fixture-relative path verbatim.
+    1. ``"file": "/abs/.../tests/fixtures/..."`` — the ``source.file``
+       block on each node.
+    2. ``rtlbuddy://open?file=/abs/.../tests/fixtures/...&line=...&col=...``
+       — the Phase 4 ``link`` URI.
+
+    Both come straight from Verible's source-location output, which
+    is absolute by design (consumers like ``rb hier`` and the hub
+    want the unambiguous resolved path). We only normalise inside
+    the golden harness so the *content* survives a machine swap.
     """
     import re
 
-    return re.sub(
+    text = re.sub(
         r'"file":\s*"[^"]*?/tests/fixtures/',
         '"file": "tests/fixtures/',
         text,
     )
+    text = re.sub(
+        r"rtlbuddy://open\?file=[^&\"]*?/tests/fixtures/",
+        "rtlbuddy://open?file=tests/fixtures/",
+        text,
+    )
+    return text
 
 
 @pytestmark_integration
