@@ -792,6 +792,48 @@ def test_integration_dot_with_combined_clock_and_reset(
 
 
 @pytestmark_integration
+def test_integration_two_separate_resets_with_rdc() -> None:
+    """Fixture (c) from issue #3 subtask 8: two clocks, two separate resets,
+    one async-deassert RDC where rst_a_n is sampled by clk_b on u_b.
+    """
+    fix = Path(__file__).parent / "fixtures" / "two_reset_with_rdc"
+    table = parse_to_modules(parse_filelist(fix / "files.f"), frontend=Frontend.verible)
+    root = build_hierarchy(table, "top")
+    cm = load_domain_map(fix / "clock_map.json")
+    rm = load_reset_domain_map(fix / "reset_map.json")
+    buf = io.StringIO()
+    tree_render.render(root, buf, domain_map=cm, reset_map=rm)
+    output = buf.getvalue()
+    # u_a — clean (no RDC), reset by rst_a_n in its own clock domain.
+    assert "u_a : ff  [clk_a, rst_a_n↓]" in output
+    # u_b — rst_a_n crosses into clk_b. RDC marker present.
+    assert "u_b : ff  [clk_b, rst_a_n↓]  ⚠RDC[rst_a_n:async-deassert]" in output
+
+
+@pytestmark_integration
+def test_integration_reset_synchronizer_chain() -> None:
+    """Fixture (d) from issue #3 subtask 8: a two-stage reset
+    synchronizer chain. Both sync flops are in ``reset_synchronizers``
+    and pick up the ``✓rstsync`` marker; u_data is reset by the
+    synchronizer output (``top.u_sync_stage2``) without an RDC
+    crossing, exercising the "vetted sync, no warning" path.
+    """
+    fix = Path(__file__).parent / "fixtures" / "reset_synchronizer_chain"
+    table = parse_to_modules(parse_filelist(fix / "files.f"), frontend=Frontend.verible)
+    root = build_hierarchy(table, "top")
+    rm = load_reset_domain_map(fix / "reset_map.json")
+    buf = io.StringIO()
+    tree_render.render(root, buf, reset_map=rm)
+    output = buf.getvalue()
+    # Both sync stages get the marker.
+    assert "u_sync_stage1 : ff  ✓rstsync" in output
+    assert "u_sync_stage2 : ff  ✓rstsync" in output
+    # u_data reset by the synchronizer output, no RDC marker.
+    assert "u_data : ff  [top.u_sync_stage2↓]" in output
+    assert "⚠RDC" not in output
+
+
+@pytestmark_integration
 def test_integration_mermaid_with_combined_clock_and_reset(
     integration_root: HierNode,
 ) -> None:
@@ -886,6 +928,43 @@ def test_cli_passes_both_annotations_through() -> None:
     assert "[clk_a, rst_n↓]" in result.stdout
     assert "[clk_b, rst_n↓]" in result.stdout
     assert "⚠RDC[rst_n:async-deassert]" in result.stdout
+
+
+@pytestmark_integration
+@pytest.mark.parametrize(
+    "renderer_name,renderer_fn,golden_name",
+    [
+        ("tree", tree_render.render, "tree.txt"),
+        ("dot", dot_render.render, "hierarchy.dot"),
+        ("mermaid", mermaid_render.render, "hierarchy.mmd"),
+        ("json", json_render.render, "hierarchy.json"),
+    ],
+)
+def test_golden_output_per_renderer(
+    integration_root: HierNode,
+    renderer_name: str,
+    renderer_fn,
+    golden_name: str,
+) -> None:
+    """Subtask 9 of #3: byte-for-byte golden regression per renderer.
+
+    The fixtures under ``two_clock_two_reset_design/goldens/`` are the
+    pinned acceptance shape — both annotation flags supplied, the
+    headline two-clock / two-reset / one-RDC scenario. Cosmetic
+    changes (palette tweaks, label rephrasing, edge-attribute order)
+    will fail this test; regenerate the goldens deliberately with
+    ``uv run python tests/regen_goldens.py`` (see that script's
+    comment block for the full command).
+    """
+    cm = load_domain_map(FIXTURE_DIR / "clock_map.json")
+    rm = load_reset_domain_map(FIXTURE_DIR / "reset_map.json")
+    buf = io.StringIO()
+    renderer_fn(integration_root, buf, domain_map=cm, reset_map=rm)
+    expected = (FIXTURE_DIR / "goldens" / golden_name).read_text()
+    assert buf.getvalue() == expected, (
+        f"{renderer_name} golden drifted — regenerate with "
+        f"tests/regen_goldens.py if the change is intentional."
+    )
 
 
 def test_cli_rejects_malformed_rdc_annotations(tmp_path: Path) -> None:

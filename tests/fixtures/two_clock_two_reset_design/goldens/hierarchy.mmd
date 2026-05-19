@@ -1,0 +1,20 @@
+```mermaid
+flowchart TB
+  top["top<br/>top<br/>[clk_b]"]
+  top_u_rstgen["u_rstgen<br/>rstsync<br/>[clk_b]"]
+  top_u_rstgen_u_sync["u_sync<br/>ff<br/>[clk_b]<br/>✓rstsync"]
+  top_u_fifo["u_fifo<br/>fifo<br/>[clk_a]"]
+  top_u_fifo_u_wr_ptr["u_wr_ptr<br/>ff<br/>[clk_a]<br/>[rst_n↓]"]
+  top_u_fifo_u_rd_ptr["u_rd_ptr<br/>ff<br/>[clk_b]<br/>[rst_n↓]"]
+  top -->|".clk(clk_b), .rst_n(rst_n), .rst_sync(rst_sync)"| top_u_rstgen
+  top_u_rstgen -->|".clk(clk), .rst_n(rst_n), .q(rst_sync)"| top_u_rstgen_u_sync
+  top -->|".clk_a(clk_a), .clk_b(clk_b), .rst_n(rst_n)"| top_u_fifo
+  top_u_fifo -->|".clk(clk_a), .rst_n(rst_n), .q"| top_u_fifo_u_wr_ptr
+  top_u_fifo -.->|"⚠RDC: rst_n:async-deassert<br/>.clk(clk_b), .rst_n(rst_n), .q"| top_u_fifo_u_rd_ptr
+  style top fill:#dcfce7
+  style top_u_rstgen fill:#dcfce7
+  style top_u_rstgen_u_sync fill:#dcfce7,stroke:#0d9488
+  style top_u_fifo fill:#fef9c3
+  style top_u_fifo_u_wr_ptr fill:#fef9c3
+  style top_u_fifo_u_rd_ptr fill:#dcfce7,stroke:#ea580c
+```

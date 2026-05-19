@@ -1,0 +1,30 @@
+digraph hierarchy {
+  rankdir="LR";
+  compound=true;
+  nodesep=0.18;
+  ranksep=0.45;
+  fontname="Menlo,Courier,monospace";
+  node [shape=box, style="rounded,filled", fillcolor="#f5f5f5", fontname="Menlo,Courier,monospace"];
+  edge [fontname="Menlo,Courier,monospace"];
+
+  subgraph cluster_top {
+    label="top  [clk_a, clk_b]";
+    labelloc="t";
+    style="rounded";
+    color="#94a3b8";
+    penwidth=2;
+    { rank=source;
+      "_in_clk_a" [shape=plaintext, label="clk_a ▶", fontsize=9];
+      "_in_clk_b" [shape=plaintext, label="clk_b ▶", fontsize=9];
+      "_in_rst_n" [shape=plaintext, label="rst_n ▶", fontsize=9];
+    }
+  "top.u_rstgen" [label="u_rstgen\lrstsync\l[clk_b]\l", fillcolor="#dcfce7"];
+  "top.u_rstgen.u_sync" [label="u_sync\lff\l[clk_b]\l✓rstsync\l", fillcolor="#dcfce7", color="#0d9488", penwidth=2];
+  "top.u_fifo" [label="u_fifo\lfifo\l[clk_a, clk_b]\l[rst_n↓]\l"];
+  "top.u_fifo.u_wr_ptr" [label="u_wr_ptr\lff\l[clk_a]\l[rst_n↓]\l", fillcolor="#fef9c3"];
+  "top.u_fifo.u_rd_ptr" [label="u_rd_ptr\lff\l[clk_b]\l[rst_n↓]\l", fillcolor="#dcfce7"];
+  "top.u_rstgen" -> "top.u_rstgen.u_sync" [label=".clk  (clk)\l.rst_n(rst_n)\l.q    (rst_sync)\l"];
+  "top.u_fifo" -> "top.u_fifo.u_wr_ptr" [label=".clk  (clk_a)\l.rst_n(rst_n)\l.q\l"];
+  "top.u_fifo" -> "top.u_fifo.u_rd_ptr" [label="⚠RDC: rst_n:async-deassert\n.clk  (clk_b)\l.rst_n(rst_n)\l.q\l", color="#ea580c", style="dashed", fontcolor="#ea580c"];
+  }
+}
