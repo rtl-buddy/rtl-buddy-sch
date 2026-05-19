@@ -1,0 +1,62 @@
+name: Viewer
+
+# Build + test the Vue 3 viewer on every push that touches the
+# viewer/ tree. Kept on a separate workflow from the Python suite
+# so a Python-only PR doesn't trigger an npm install (and vice
+# versa).
+#
+# Phase 5 scope: lint-equivalent (vite build catches syntax) +
+# vitest unit suite. The Playwright snapshot test that exercises
+# real fixture goldens lands in a follow-up subtask.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/viewer.yml'
+      - 'viewer/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/viewer.yml'
+      - 'viewer/**'
+
+defaults:
+  run:
+    working-directory: viewer
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: viewer/package-lock.json
+
+      - name: Install
+        # ``npm ci`` would be stricter but requires a checked-in
+        # lockfile from the same npm version CI runs. Until the
+        # initial lockfile lands we use ``npm install``; once the
+        # lockfile is in tree, swap to ``npm ci`` here.
+        run: npm install
+
+      - name: Vitest
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Bundle-size check
+        # Standalone HTML budget from #18 is ≤2 MB gzipped. Run
+        # embed.py without a payload to produce the bare shell and
+        # measure it; the script prints both raw + gzipped sizes
+        # so a regression surfaces in the log.
+        run: python embed.py --output /tmp/viewer.html
