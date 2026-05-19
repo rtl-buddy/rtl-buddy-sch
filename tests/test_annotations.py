@@ -153,3 +153,135 @@ def test_rejects_invalid_json(tmp_path: Path) -> None:
     p.write_text("not valid json {")
     with pytest.raises(ann.AnnotationsError, match="invalid JSON"):
         ann.load_domain_map(p)
+
+
+# --- rtl-buddy-cdc#136: source_instance_path fields -------------------------
+
+
+def _v136_payload() -> dict:
+    """Shape of a real ``--emit-domain-map`` payload from cdc≥#136.
+
+    Mirrors the credit_cdc style: synth-internal ``instance_path`` /
+    ``dst_flop`` strings sit alongside the new ``source_instance_path``
+    fields that point at the deepest enclosing source-level instance.
+    """
+    return {
+        "schema_version": "1.0",
+        "generator": {"name": "rtl-buddy-cdc", "version": "0.2.0"},
+        "design": {"top": "top", "frontend": "slang"},
+        "clocks": [
+            {
+                "name": "src_clk",
+                "period": 5.0,
+                "source": "create_clock",
+                "ports": ["src_clk"],
+            },
+            {
+                "name": "dst_clk",
+                "period": 5.0,
+                "source": "create_clock",
+                "ports": ["dst_clk"],
+            },
+        ],
+        "clock_groups": [
+            {"kind": "asynchronous", "members": [["src_clk"], ["dst_clk"]]}
+        ],
+        "flop_domains": [
+            {
+                "instance_path": "top.u_sync.$slang$sdff$3",
+                "source_instance_path": "top.u_sync",
+                "clock": "dst_clk",
+                "location": {
+                    "file": "ip_cdc_sync.sv",
+                    "start_line": 18,
+                    "end_line": 27,
+                },
+            }
+        ],
+        "crossings": [
+            {
+                "src_clock": "src_clk",
+                "dst_clock": "dst_clk",
+                "dst_flop": "top.u_sync.$slang$sdff$3",
+                "dst_source_instance_path": "top.u_sync",
+                "src_flop": "top.$slang$sdff$2",
+                "src_source_instance_path": "top",
+                "min_hops": 0,
+                "width": 1,
+                "async_per_sdc": True,
+            }
+        ],
+    }
+
+
+def test_parses_source_instance_path_on_flop_domain(tmp_path: Path) -> None:
+    p = tmp_path / "v136.json"
+    p.write_text(json.dumps(_v136_payload()))
+    m = ann.load_domain_map(p)
+    assert m.flop_domains[0].source_instance_path == "top.u_sync"
+    # Original (netlist) ``instance_path`` is preserved verbatim.
+    assert m.flop_domains[0].instance_path == "top.u_sync.$slang$sdff$3"
+
+
+def test_parses_source_instance_paths_on_crossing(tmp_path: Path) -> None:
+    p = tmp_path / "v136.json"
+    p.write_text(json.dumps(_v136_payload()))
+    m = ann.load_domain_map(p)
+    c = m.crossings[0]
+    assert c.dst_source_instance_path == "top.u_sync"
+    assert c.src_source_instance_path == "top"
+    # Original synth-flop names still readable for debugging.
+    assert c.dst_flop == "top.u_sync.$slang$sdff$3"
+    assert c.src_flop == "top.$slang$sdff$2"
+
+
+def test_crossings_into_uses_source_instance_path_when_set(
+    tmp_path: Path,
+) -> None:
+    """Renderers ask ``crossings_into('top.u_sync')`` — that must match
+    a crossing whose ``dst_flop`` is a synth-internal name as long as
+    its ``dst_source_instance_path`` resolves the right way."""
+    p = tmp_path / "v136.json"
+    p.write_text(json.dumps(_v136_payload()))
+    m = ann.load_domain_map(p)
+    hits = m.crossings_into("top.u_sync")
+    assert len(hits) == 1
+    assert hits[0].src_clock == "src_clk"
+
+
+def test_crossings_into_falls_back_to_dst_flop_for_old_producers(
+    tmp_path: Path,
+) -> None:
+    """Maps without the new field still resolve via exact ``dst_flop`` match."""
+    payload = _v136_payload()
+    del payload["crossings"][0]["dst_source_instance_path"]
+    del payload["crossings"][0]["src_source_instance_path"]
+    p = tmp_path / "v136_no_sip.json"
+    p.write_text(json.dumps(payload))
+    m = ann.load_domain_map(p)
+    # Exact-match lookup against the synth name still works — that's
+    # the legacy behavior, preserved.
+    assert len(m.crossings_into("top.u_sync.$slang$sdff$3")) == 1
+    # But asking for the source-instance path returns nothing —
+    # exactly the gap that motivated cdc#136.
+    assert m.crossings_into("top.u_sync") == ()
+
+
+def test_predominant_clock_uses_source_instance_path(tmp_path: Path) -> None:
+    """``predominant_clock('top.u_sync')`` must aggregate flops whose
+    ``source_instance_path`` is under ``top.u_sync``, even when their
+    ``instance_path`` is a synth-internal name that doesn't share the
+    source-path prefix."""
+    p = tmp_path / "v136.json"
+    p.write_text(json.dumps(_v136_payload()))
+    m = ann.load_domain_map(p)
+    assert m.predominant_clock("top.u_sync") == "dst_clk"
+
+
+def test_rejects_non_string_source_instance_path(tmp_path: Path) -> None:
+    payload = _v136_payload()
+    payload["flop_domains"][0]["source_instance_path"] = 42
+    p = tmp_path / "bad.json"
+    p.write_text(json.dumps(payload))
+    with pytest.raises(ann.AnnotationsError, match="source_instance_path"):
+        ann.load_domain_map(p)
