@@ -11,6 +11,10 @@ authors = [
 ]
 dependencies = [
     "typer>=0.25.1",
+    # JSON Schema validator for view.json v1 (#17). Lightweight,
+    # widely used, and required by the contract test so the schema
+    # file under schemas/ stays a live constraint rather than docs.
+    "jsonschema>=4.21.0",
 ]
 
 [project.optional-dependencies]

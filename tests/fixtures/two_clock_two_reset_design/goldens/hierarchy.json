@@ -1,238 +1,425 @@
 {
   "schema_version": "1.0",
+  "top": "top",
   "tool": {
     "name": "rtl-buddy-view",
     "version": "0.1.0"
   },
-  "design": {
-    "top": "top"
-  },
   "nodes": [
     {
-      "instance_path": "top",
-      "module_name": "top",
+      "id": "top",
+      "module": "top",
       "instance_name": null,
       "is_blackbox": false,
-      "param_overrides": [],
-      "port_connections": [],
-      "location": {
+      "parameters": {},
+      "ports": [
+        {
+          "name": "clk_a",
+          "dir": "input",
+          "expr": null,
+          "anchor": null
+        },
+        {
+          "name": "clk_b",
+          "dir": "input",
+          "expr": null,
+          "anchor": null
+        },
+        {
+          "name": "rst_n",
+          "dir": "input",
+          "expr": null,
+          "anchor": null
+        }
+      ],
+      "source": {
         "file": "tests/fixtures/two_clock_two_reset_design/top.sv",
         "start_line": 12,
         "start_column": 1,
         "end_line": 20,
-        "end_column": 10
+        "end_column": 10,
+        "decl_line": 12,
+        "decl_col": 1
       },
-      "clock": "clk_b",
-      "crossings_in": [],
-      "reset": null,
-      "reset_crossings_in": [],
-      "is_reset_synchronizer": false
+      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/top.sv&line=12&col=1",
+      "overlays": {
+        "clock": {
+          "clock": "clk_b"
+        }
+      }
     },
     {
-      "instance_path": "top.u_fifo",
-      "module_name": "fifo",
+      "id": "top.u_fifo",
+      "module": "fifo",
       "instance_name": "u_fifo",
       "is_blackbox": false,
-      "param_overrides": [],
-      "port_connections": [
+      "parameters": {},
+      "ports": [
         {
-          "port_name": "clk_a",
-          "net_expr_text": "clk_a"
+          "name": "clk_a",
+          "dir": "input",
+          "expr": "clk_a",
+          "anchor": {
+            "line": 19,
+            "col": 25
+          }
         },
         {
-          "port_name": "clk_b",
-          "net_expr_text": "clk_b"
+          "name": "clk_b",
+          "dir": "input",
+          "expr": "clk_b",
+          "anchor": {
+            "line": 19,
+            "col": 40
+          }
         },
         {
-          "port_name": "rst_n",
-          "net_expr_text": "rst_n"
+          "name": "rst_n",
+          "dir": "input",
+          "expr": "rst_n",
+          "anchor": {
+            "line": 19,
+            "col": 55
+          }
         }
       ],
-      "location": {
+      "source": {
         "file": "tests/fixtures/two_clock_two_reset_design/top.sv",
         "start_line": 19,
         "start_column": 10,
         "end_line": 19,
-        "end_column": 62
+        "end_column": 62,
+        "decl_line": 6,
+        "decl_col": 1
       },
-      "clock": "clk_a",
-      "crossings_in": [],
-      "reset": null,
-      "reset_crossings_in": [],
-      "is_reset_synchronizer": false
+      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/top.sv&line=19&col=10",
+      "overlays": {
+        "clock": {
+          "clock": "clk_a"
+        }
+      }
     },
     {
-      "instance_path": "top.u_fifo.u_rd_ptr",
-      "module_name": "ff",
+      "id": "top.u_fifo.u_rd_ptr",
+      "module": "ff",
       "instance_name": "u_rd_ptr",
       "is_blackbox": false,
-      "param_overrides": [],
-      "port_connections": [
+      "parameters": {},
+      "ports": [
         {
-          "port_name": "clk",
-          "net_expr_text": "clk_b"
+          "name": "clk",
+          "dir": "input",
+          "expr": "clk_b",
+          "anchor": {
+            "line": 12,
+            "col": 23
+          }
         },
         {
-          "port_name": "rst_n",
-          "net_expr_text": "rst_n"
+          "name": "rst_n",
+          "dir": "input",
+          "expr": "rst_n",
+          "anchor": {
+            "line": 12,
+            "col": 38
+          }
         },
         {
-          "port_name": "q",
-          "net_expr_text": ""
+          "name": "q",
+          "dir": "output",
+          "expr": "",
+          "anchor": {
+            "line": 12,
+            "col": 46
+          }
         }
       ],
-      "location": {
+      "source": {
         "file": "tests/fixtures/two_clock_two_reset_design/fifo.sv",
         "start_line": 12,
         "start_column": 8,
         "end_line": 12,
-        "end_column": 51
+        "end_column": 51,
+        "decl_line": 4,
+        "decl_col": 1
       },
-      "clock": "clk_b",
-      "crossings_in": [],
-      "reset": {
-        "name": "rst_n",
-        "polarity": "low",
-        "type": "async",
-        "kind": "port"
-      },
-      "reset_crossings_in": [
-        {
+      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/fifo.sv&line=12&col=8",
+      "overlays": {
+        "clock": {
+          "clock": "clk_b"
+        },
+        "reset": {
           "reset": "rst_n",
-          "kind": "async-deassert",
-          "flop_clock": "clk_b",
           "polarity": "low",
-          "type": "async",
-          "reset_kind": "port"
+          "type": "async"
         }
-      ],
-      "is_reset_synchronizer": false
+      }
     },
     {
-      "instance_path": "top.u_fifo.u_wr_ptr",
-      "module_name": "ff",
+      "id": "top.u_fifo.u_wr_ptr",
+      "module": "ff",
       "instance_name": "u_wr_ptr",
       "is_blackbox": false,
-      "param_overrides": [],
-      "port_connections": [
+      "parameters": {},
+      "ports": [
         {
-          "port_name": "clk",
-          "net_expr_text": "clk_a"
+          "name": "clk",
+          "dir": "input",
+          "expr": "clk_a",
+          "anchor": {
+            "line": 11,
+            "col": 23
+          }
         },
         {
-          "port_name": "rst_n",
-          "net_expr_text": "rst_n"
+          "name": "rst_n",
+          "dir": "input",
+          "expr": "rst_n",
+          "anchor": {
+            "line": 11,
+            "col": 38
+          }
         },
         {
-          "port_name": "q",
-          "net_expr_text": ""
+          "name": "q",
+          "dir": "output",
+          "expr": "",
+          "anchor": {
+            "line": 11,
+            "col": 46
+          }
         }
       ],
-      "location": {
+      "source": {
         "file": "tests/fixtures/two_clock_two_reset_design/fifo.sv",
         "start_line": 11,
         "start_column": 8,
         "end_line": 11,
-        "end_column": 51
+        "end_column": 51,
+        "decl_line": 4,
+        "decl_col": 1
       },
-      "clock": "clk_a",
-      "crossings_in": [],
-      "reset": {
-        "name": "rst_n",
-        "polarity": "low",
-        "type": "async",
-        "kind": "port"
-      },
-      "reset_crossings_in": [],
-      "is_reset_synchronizer": false
+      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/fifo.sv&line=11&col=8",
+      "overlays": {
+        "clock": {
+          "clock": "clk_a"
+        },
+        "reset": {
+          "reset": "rst_n",
+          "polarity": "low",
+          "type": "async"
+        }
+      }
     },
     {
-      "instance_path": "top.u_rstgen",
-      "module_name": "rstsync",
+      "id": "top.u_rstgen",
+      "module": "rstsync",
       "instance_name": "u_rstgen",
       "is_blackbox": false,
-      "param_overrides": [],
-      "port_connections": [
+      "parameters": {},
+      "ports": [
         {
-          "port_name": "clk",
-          "net_expr_text": "clk_b"
+          "name": "clk",
+          "dir": "input",
+          "expr": "clk_b",
+          "anchor": {
+            "line": 18,
+            "col": 28
+          }
         },
         {
-          "port_name": "rst_n",
-          "net_expr_text": "rst_n"
+          "name": "rst_n",
+          "dir": "input",
+          "expr": "rst_n",
+          "anchor": {
+            "line": 18,
+            "col": 43
+          }
         },
         {
-          "port_name": "rst_sync",
-          "net_expr_text": "rst_sync"
+          "name": "rst_sync",
+          "dir": "output",
+          "expr": "rst_sync",
+          "anchor": {
+            "line": 18,
+            "col": 61
+          }
         }
       ],
-      "location": {
+      "source": {
         "file": "tests/fixtures/two_clock_two_reset_design/top.sv",
         "start_line": 18,
         "start_column": 13,
         "end_line": 18,
-        "end_column": 71
+        "end_column": 71,
+        "decl_line": 7,
+        "decl_col": 1
       },
-      "clock": "clk_b",
-      "crossings_in": [],
-      "reset": null,
-      "reset_crossings_in": [],
-      "is_reset_synchronizer": false
+      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/top.sv&line=18&col=13",
+      "overlays": {
+        "clock": {
+          "clock": "clk_b"
+        }
+      }
     },
     {
-      "instance_path": "top.u_rstgen.u_sync",
-      "module_name": "ff",
+      "id": "top.u_rstgen.u_sync",
+      "module": "ff",
       "instance_name": "u_sync",
       "is_blackbox": false,
-      "param_overrides": [],
-      "port_connections": [
+      "parameters": {},
+      "ports": [
         {
-          "port_name": "clk",
-          "net_expr_text": "clk"
+          "name": "clk",
+          "dir": "input",
+          "expr": "clk",
+          "anchor": {
+            "line": 12,
+            "col": 21
+          }
         },
         {
-          "port_name": "rst_n",
-          "net_expr_text": "rst_n"
+          "name": "rst_n",
+          "dir": "input",
+          "expr": "rst_n",
+          "anchor": {
+            "line": 12,
+            "col": 34
+          }
         },
         {
-          "port_name": "q",
-          "net_expr_text": "rst_sync"
+          "name": "q",
+          "dir": "output",
+          "expr": "rst_sync",
+          "anchor": {
+            "line": 12,
+            "col": 45
+          }
         }
       ],
-      "location": {
+      "source": {
         "file": "tests/fixtures/two_clock_two_reset_design/rstgen.sv",
         "start_line": 12,
         "start_column": 8,
         "end_line": 12,
-        "end_column": 55
+        "end_column": 55,
+        "decl_line": 4,
+        "decl_col": 1
       },
-      "clock": "clk_b",
-      "crossings_in": [],
-      "reset": null,
-      "reset_crossings_in": [],
-      "is_reset_synchronizer": true
+      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/two_clock_two_reset_design/rstgen.sv&line=12&col=8",
+      "overlays": {
+        "clock": {
+          "clock": "clk_b"
+        },
+        "reset": {
+          "is_synchronizer": true
+        }
+      }
     }
   ],
   "edges": [
     {
-      "parent": "top",
-      "child": "top.u_fifo"
+      "from": "top",
+      "to": "top.u_fifo",
+      "port_pairs": [
+        [
+          "clk_a",
+          "clk_a"
+        ],
+        [
+          "clk_b",
+          "clk_b"
+        ],
+        [
+          "rst_n",
+          "rst_n"
+        ]
+      ],
+      "overlays": {}
     },
     {
-      "parent": "top",
-      "child": "top.u_rstgen"
+      "from": "top",
+      "to": "top.u_rstgen",
+      "port_pairs": [
+        [
+          "clk_b",
+          "clk"
+        ],
+        [
+          "rst_n",
+          "rst_n"
+        ],
+        [
+          "rst_sync",
+          "rst_sync"
+        ]
+      ],
+      "overlays": {}
     },
     {
-      "parent": "top.u_fifo",
-      "child": "top.u_fifo.u_rd_ptr"
+      "from": "top.u_fifo",
+      "to": "top.u_fifo.u_rd_ptr",
+      "port_pairs": [
+        [
+          "clk_b",
+          "clk"
+        ],
+        [
+          "rst_n",
+          "rst_n"
+        ],
+        [
+          "",
+          "q"
+        ]
+      ],
+      "overlays": {
+        "reset": {
+          "crossing": true
+        }
+      }
     },
     {
-      "parent": "top.u_fifo",
-      "child": "top.u_fifo.u_wr_ptr"
+      "from": "top.u_fifo",
+      "to": "top.u_fifo.u_wr_ptr",
+      "port_pairs": [
+        [
+          "clk_a",
+          "clk"
+        ],
+        [
+          "rst_n",
+          "rst_n"
+        ],
+        [
+          "",
+          "q"
+        ]
+      ],
+      "overlays": {}
     },
     {
-      "parent": "top.u_rstgen",
-      "child": "top.u_rstgen.u_sync"
+      "from": "top.u_rstgen",
+      "to": "top.u_rstgen.u_sync",
+      "port_pairs": [
+        [
+          "clk",
+          "clk"
+        ],
+        [
+          "rst_n",
+          "rst_n"
+        ],
+        [
+          "rst_sync",
+          "q"
+        ]
+      ],
+      "overlays": {}
     }
+  ],
+  "overlays_present": [
+    "clock",
+    "reset"
   ]
 }

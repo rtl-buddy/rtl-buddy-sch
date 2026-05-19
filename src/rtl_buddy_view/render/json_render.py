@@ -1,64 +1,49 @@
-"""JSON renderer.
+"""``view.json`` v1 renderer (Phase 4 — #17).
 
 Emits a deterministic, schema-versioned JSON representation of the
-hierarchy. This is the format ``rtl_buddy`` will consume via
-``rb hier`` — the keys pinned in :data:`JSON_CONTRACT` are the
-downstream-stable surface (renaming or retyping any of them is a
-breaking change; AGENTS.md "Cross-repo coupling" enumerates the
-contract).
+hierarchy + every overlay's per-node and per-edge metadata. This
+is the **locked v1 contract** that the Phase 5 interactive web
+viewer (#18) and the ``rb hier`` consumer in rtl-buddy both parse.
 
-Everything that can vary across runs (dict ordering, instance
-order at the same level, instance paths) is sorted before
-emission so two runs over the same input produce identical bytes —
-keeps golden tests and rb-hier-side diffs noise-free.
+Pin points (renaming or retyping any of these is a breaking change):
 
-When a :class:`rtl_buddy_view.annotations.DomainMap` is supplied,
-each node gains a ``clock`` field and a ``crossings_in`` array
-mirroring the async-crossing information. With no map (or an empty
-one) those fields are ``null`` / ``[]`` respectively — same
-graceful-degradation contract as the other renderers.
+- ``schema_version: "1.0"`` — 1.x payloads are backward-compatible
+  by contract; consumers may add new keys freely, never rename or
+  retype existing ones.
+- ``nodes[].id`` — full instance path, dot-separated from
+  ``top``. Reproducible across runs given the same RTL.
+- ``nodes[].source.file`` — absolute path; ``decl_line`` /
+  ``decl_col`` mark the module declaration's anchor.
+- ``nodes[].link`` — ``rtlbuddy://open?file=...&line=...&col=...``
+  pointing the hub (or any URI handler) at the node's source.
+- ``nodes[].overlays`` — per-overlay metadata, keyed by overlay
+  name. Empty when no overlay contributes.
+- ``edges[].port_pairs`` — ``[net_expr_at_parent, child_port]``
+  pairs; the wave→view joiner (Phase 9) traces signals across the
+  hierarchy through these.
+- ``overlays_present`` — sorted overlay names whose annotations
+  contributed to this view.
 
-When a :class:`rtl_buddy_view.reset_annotations.ResetDomainMap` is
-supplied (Phase 3), each node also gains:
+The schema file at ``schemas/view-v1.json`` is the authoritative
+constraint; the test suite validates every fixture against it.
 
-- ``reset`` — the flop's reset binding (object: ``name``, ``polarity``,
-  ``type``, ``kind``) when the flop is in the producer's
-  ``flop_resets`` table; ``null`` otherwise.
-- ``reset_crossings_in`` — array of structural RDC crossings into
-  this flop (``reset``, ``kind``, ``polarity``, ``type``,
-  ``flop_clock``); empty when none.
-- ``is_reset_synchronizer`` — bool, ``true`` when the node is in the
-  producer's reset-synchroniser set.
-
-With no reset map (or an explicit ``None``) those fields are
-``null`` / ``[]`` / ``false`` — graceful-degradation matches the
-clock-map contract.
+Everything that can vary across runs is sorted before emission so
+two runs over the same input produce identical bytes — keeps the
+golden tests and rb-hier-side diffs noise-free.
 """
 
 from __future__ import annotations
 
 import json
 from typing import IO
+from urllib.parse import quote
 
 from rtl_buddy_view.annotations import DomainMap
+from rtl_buddy_view.extractor import Port, PortConnection, SourceLocation
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 
 SCHEMA_VERSION = "1.0"
-
-#: Dotted JSON paths that downstream consumers (rtl_buddy) parse
-#: out of this output. Renaming or retyping any of these is a
-#: downstream-breaking change. A contract test pins the keys to
-#: catch accidental drift. Anything *else* in the payload can
-#: evolve freely.
-JSON_CONTRACT: dict[str, type] = {
-    "schema_version": str,
-    "tool.name": str,
-    "tool.version": str,
-    "design.top": str,
-    "nodes": list,
-    "edges": list,
-}
 
 
 def render(
@@ -68,7 +53,7 @@ def render(
     domain_map: DomainMap | None = None,
     reset_map: ResetDomainMap | None = None,
 ) -> None:
-    """Render ``node`` and its subtree as JSON to ``out``."""
+    """Render ``node`` and its subtree as ``view.json`` v1."""
     payload = _build_payload(node, domain_map, reset_map)
     json.dump(payload, out, indent=2, sort_keys=False)
     out.write("\n")
@@ -77,32 +62,58 @@ def render(
 def _build_payload(
     node: HierNode,
     domain_map: DomainMap | None,
-    reset_map: ResetDomainMap | None = None,
+    reset_map: ResetDomainMap | None,
 ) -> dict:
     nodes = sorted(
         (_node_dict(n, domain_map, reset_map) for n in _walk(node)),
-        key=lambda d: d["instance_path"],
+        key=lambda d: d["id"],
     )
     edges = sorted(
-        _walk_edges(node),
-        key=lambda d: (d["parent"], d["child"]),
+        _walk_edges(node, domain_map, reset_map),
+        key=lambda d: (d["from"], d["to"]),
     )
-    payload: dict = {
+    overlays_present = _overlays_present(domain_map, reset_map)
+    return {
         "schema_version": SCHEMA_VERSION,
+        "top": node.module_name,
         "tool": {"name": "rtl-buddy-view", "version": _version()},
-        "design": {"top": node.module_name},
         "nodes": nodes,
         "edges": edges,
+        "overlays_present": overlays_present,
     }
-    return payload
+
+
+def _overlays_present(
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None,
+) -> list[str]:
+    """Sorted list of overlay names whose payloads contributed to this view.
+
+    Each map gets its own per-collection check rather than gating on
+    the map-level ``is_empty`` — a producer that emitted only
+    synchronizers (no flop_resets) still has something to say about
+    the reset overlay, and the viewer's toggle should reflect that.
+    The clock overlay correspondingly looks at ``clocks`` *or*
+    ``flop_domains`` *or* ``crossings`` so a clock-only-crossings
+    map surfaces too.
+    """
+    present: list[str] = []
+    if domain_map is not None and (
+        domain_map.clocks or domain_map.flop_domains or domain_map.crossings
+    ):
+        present.append("clock")
+    if reset_map is not None and (
+        reset_map.flop_resets
+        or reset_map.reset_synchronizers
+        or reset_map.reset_crossings
+        or reset_map.reset_sources
+    ):
+        present.append("reset")
+    return sorted(present)
 
 
 def _version() -> str:
-    """Project version, late-imported to keep this module light.
-
-    Pulled at runtime rather than baked at import time so a version
-    bump in pyproject.toml flows through without code changes.
-    """
+    """Project version, late-imported to keep this module light."""
     try:
         from importlib.metadata import version as _v
 
@@ -111,122 +122,140 @@ def _version() -> str:
         return "0.0.0"
 
 
-# --- nodes -------------------------------------------------------------------
+# --- nodes ------------------------------------------------------------------
 
 
 def _node_dict(
     node: HierNode,
     domain_map: DomainMap | None,
-    reset_map: ResetDomainMap | None = None,
+    reset_map: ResetDomainMap | None,
 ) -> dict:
+    """One ``view.json`` v1 node entry.
+
+    Pulls the port list off the node's *own* module (the module
+    being instantiated) but the per-port expression + anchor off
+    the parent's instantiation site — exactly the join the wave
+    overlay needs.
+    """
     out: dict = {
-        "instance_path": node.instance_path,
-        "module_name": node.module_name,
+        "id": node.instance_path,
+        "module": node.module_name,
         "instance_name": node.instance.name if node.instance is not None else None,
         "is_blackbox": node.is_blackbox,
-        "param_overrides": [_param_override_dict(p) for p in _safe_overrides(node)],
-        "port_connections": [_port_conn_dict(p) for p in _safe_port_conns(node)],
-        "location": _location_dict(node),
+        "parameters": _parameters_dict(node),
+        "ports": _ports_for_node(node),
+        "source": _source_block(node),
+        "link": _link_for(node),
+        "overlays": _node_overlays(node, domain_map, reset_map),
     }
-    if domain_map is not None and not domain_map.is_empty:
-        out["clock"] = domain_map.predominant_clock(node.instance_path)
-        out["crossings_in"] = [
-            _crossing_dict(c) for c in domain_map.crossings_into(node.instance_path)
-        ]
-    else:
-        out["clock"] = None
-        out["crossings_in"] = []
-    if reset_map is not None:
-        flop = reset_map.flop_reset(node.instance_path)
-        out["reset"] = _flop_reset_dict(flop) if flop is not None else None
-        out["reset_crossings_in"] = [
-            _reset_crossing_dict(c)
-            for c in reset_map.crossings_into(node.instance_path)
-        ]
-        out["is_reset_synchronizer"] = (
-            node.instance_path in reset_map.synchronizer_paths()
-        )
-    else:
-        out["reset"] = None
-        out["reset_crossings_in"] = []
-        out["is_reset_synchronizer"] = False
     return out
 
 
-def _flop_reset_dict(flop) -> dict:
-    """Per-flop reset binding emitted under each node's ``reset`` field.
+def _parameters_dict(node: HierNode) -> dict[str, str]:
+    """Parameter overrides as ``{name: value_text}``.
 
-    Matches the field names on the producer-side schema entry so a
-    consumer reading the rtl-buddy-view JSON can join back to the
-    cdc#108 ``flop_resets[]`` artefact without renaming.
+    Positional overrides (``param_name is None``) are skipped here —
+    callers needing the position-indexed form should consult the
+    extractor model directly. v1 stays focused on the named form
+    because that's what the viewer's NodeDetail panel surfaces.
     """
-    return {
-        "name": flop.reset,
-        "polarity": flop.polarity,
-        "type": flop.type,
-        "kind": flop.reset_kind,
-    }
-
-
-def _reset_crossing_dict(c) -> dict:
-    return {
-        "reset": c.reset,
-        "kind": c.kind,
-        "flop_clock": c.flop_clock,
-        "polarity": c.polarity,
-        "type": c.type,
-        "reset_kind": c.reset_kind,
-    }
-
-
-def _safe_overrides(node: HierNode):
     if node.instance is None:
-        return ()
-    return node.instance.param_overrides
+        return {}
+    return {
+        ov.param_name: ov.value_text
+        for ov in node.instance.param_overrides
+        if ov.param_name is not None
+    }
 
 
-def _safe_port_conns(node: HierNode):
+def _ports_for_node(node: HierNode) -> list[dict]:
+    """Render the node's port list with expr/anchor joined from the parent.
+
+    For a non-blackbox child instance, every port the *module*
+    declares appears here; ``expr`` and ``anchor`` come from the
+    parent-side connection that bound the port (if any).
+    Unconnected ports surface with ``expr: null``.
+
+    For blackbox children (module never resolved) we don't know the
+    port list, but the *parent's* port_connections tells us which
+    port names the parent thought it was connecting to — emit those
+    so the viewer can still show the binding.
+
+    For the top node we don't have a parent; ports come from the
+    module declaration with ``expr: null``.
+    """
+    expr_by_name = _expr_by_port(node)
+    if node.module is not None and node.module.ports:
+        return [_port_dict_from_module(p, expr_by_name) for p in node.module.ports]
+    if node.is_blackbox and node.instance is not None:
+        # Best-effort: render whatever the parent named, with no
+        # direction (we don't know — the module wasn't found).
+        return [
+            _port_dict_from_connection(conn) for conn in node.instance.port_connections
+        ]
+    return []
+
+
+def _expr_by_port(node: HierNode) -> dict[str, PortConnection]:
+    """Map port_name → PortConnection for this node's parent-side bindings.
+
+    Positional connections (port_name is None) are kept under a
+    pseudo-name ``$pos$<index>`` so multiple positional bindings
+    don't collide; the JSON emit path filters those out (port
+    declarations on the module side always carry real names, and
+    positional connections without a matching declared port are
+    blackbox-only territory).
+    """
+    by_name: dict[str, PortConnection] = {}
     if node.instance is None:
-        return ()
-    return node.instance.port_connections
+        return by_name
+    pos_idx = 0
+    for conn in node.instance.port_connections:
+        if conn.port_name is None:
+            by_name[f"$pos${pos_idx}"] = conn
+            pos_idx += 1
+        else:
+            by_name[conn.port_name] = conn
+    return by_name
 
 
-def _param_override_dict(ov) -> dict:
+def _port_dict_from_module(port: Port, expr_by_name: dict[str, PortConnection]) -> dict:
+    conn = expr_by_name.get(port.name)
     return {
-        "param_name": ov.param_name,
-        "value_text": ov.value_text,
+        "name": port.name,
+        "dir": port.direction,
+        "expr": conn.net_expr_text if conn is not None else None,
+        "anchor": _anchor_dict(conn.location) if conn is not None else None,
     }
 
 
-def _port_conn_dict(pc) -> dict:
+def _port_dict_from_connection(conn: PortConnection) -> dict:
     return {
-        "port_name": pc.port_name,
-        "net_expr_text": pc.net_expr_text,
+        "name": conn.port_name,
+        "dir": None,
+        "expr": conn.net_expr_text,
+        "anchor": _anchor_dict(conn.location),
     }
 
 
-def _crossing_dict(c) -> dict:
-    out: dict = {
-        "src_clock": c.src_clock,
-        "dst_clock": c.dst_clock,
-        "min_hops": c.min_hops,
-        "width": c.width,
-        "async_per_sdc": c.async_per_sdc,
-    }
-    if c.src_flop is not None:
-        out["src_flop"] = c.src_flop
-    if c.src_port is not None:
-        out["src_port"] = c.src_port
-    return out
+def _anchor_dict(loc: SourceLocation | None) -> dict | None:
+    if loc is None:
+        return None
+    return {"line": loc.start_line, "col": loc.start_column}
 
 
-def _location_dict(node: HierNode) -> dict | None:
-    """Source anchor for the node's own decl, or its instantiation.
+def _source_block(node: HierNode) -> dict | None:
+    """``source`` block — file path + line range + declaration anchor.
 
-    Prefers the instance's location (i.e. the line where this child
-    is instantiated in its parent) since that's the more actionable
-    anchor — "where is this instance?" — but falls back to the
-    module declaration when there's no instance (root node).
+    Prefers the instance's location (where this child is instantiated
+    in its parent) since that's the more actionable anchor for the
+    "jump to this instance" link; falls back to the module
+    declaration when there's no instance (root node).
+
+    The ``decl_line`` / ``decl_col`` fields point specifically at
+    the *module* declaration so the viewer can offer two distinct
+    jumps: "open this instance" (the instance file/line) vs "open
+    the module definition" (decl_*).
     """
     if node.instance is not None and node.instance.location is not None:
         loc = node.instance.location
@@ -234,25 +263,153 @@ def _location_dict(node: HierNode) -> dict | None:
         loc = node.module.location
     else:
         return None
+    decl_line = None
+    decl_col = None
+    if node.module is not None and node.module.location is not None:
+        decl_line = node.module.location.start_line
+        decl_col = node.module.location.start_column
     return {
         "file": loc.file,
         "start_line": loc.start_line,
         "start_column": loc.start_column,
         "end_line": loc.end_line,
         "end_column": loc.end_column,
+        "decl_line": decl_line,
+        "decl_col": decl_col,
     }
 
 
-# --- traversal ---------------------------------------------------------------
+def _link_for(node: HierNode) -> str | None:
+    """``rtlbuddy://open?file=...&line=...&col=...`` for this node.
+
+    Returns None when no source location is known — only happens for
+    blackbox nodes the extractor never saw. Real instances always
+    carry an ``Instance.location`` and the link surfaces.
+    """
+    block = _source_block(node)
+    if block is None or block.get("file") is None:
+        return None
+    line = block.get("start_line")
+    col = block.get("start_column")
+    parts = [f"file={quote(str(block['file']), safe='/:')}"]
+    if line is not None:
+        parts.append(f"line={line}")
+    if col is not None:
+        parts.append(f"col={col}")
+    return "rtlbuddy://open?" + "&".join(parts)
+
+
+def _node_overlays(
+    node: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None,
+) -> dict:
+    """Per-overlay contributions for ``node``.
+
+    Each contributor checks the specific data slice it cares about
+    rather than the map-level ``is_empty`` — same per-collection
+    gating as the tree/dot/mermaid renderers, so sparse producer
+    outputs (or synthetic test maps with only one section
+    populated) still surface the fields that *are* present.
+
+    Keys absent in the returned dict mean the overlay didn't
+    contribute *for this node*; never an error.
+    """
+    overlays: dict[str, dict] = {}
+    if domain_map is not None:
+        clock_block = _clock_node_contribution(node, domain_map)
+        if clock_block:
+            overlays["clock"] = clock_block
+    if reset_map is not None:
+        reset_block = _reset_node_contribution(node, reset_map)
+        if reset_block:
+            overlays["reset"] = reset_block
+    return overlays
+
+
+def _clock_node_contribution(node: HierNode, domain_map: DomainMap) -> dict:
+    """The ``clock`` overlay's per-node contribution.
+
+    For a flop with an explicit ``flop_domains`` entry, surface that
+    clock directly — it's the precise per-flop binding. For a
+    container/module, fall back to ``predominant_clock`` so the
+    viewer can colour subtrees by their dominant domain.
+    """
+    flop = next(
+        (f for f in domain_map.flop_domains if f.instance_path == node.instance_path),
+        None,
+    )
+    if flop is not None and flop.clock is not None:
+        return {"clock": flop.clock}
+    predominant = domain_map.predominant_clock(node.instance_path)
+    if predominant is not None:
+        return {"clock": predominant}
+    return {}
+
+
+def _reset_node_contribution(node: HierNode, reset_map: ResetDomainMap) -> dict:
+    """The ``reset`` overlay's per-node contribution."""
+    out: dict = {}
+    flop = reset_map.flop_reset(node.instance_path)
+    if flop is not None:
+        out["reset"] = flop.reset
+        out["polarity"] = flop.polarity
+        out["type"] = flop.type
+    if node.instance_path in reset_map.synchronizer_paths():
+        out["is_synchronizer"] = True
+    return out
+
+
+# --- edges -------------------------------------------------------------------
+
+
+def _walk_edges(
+    node: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None,
+):
+    for child in node.children:
+        yield {
+            "from": node.instance_path,
+            "to": child.instance_path,
+            "port_pairs": _port_pairs(child),
+            "overlays": _edge_overlays(child, domain_map, reset_map),
+        }
+        yield from _walk_edges(child, domain_map, reset_map)
+
+
+def _port_pairs(child: HierNode) -> list[list[str | None]]:
+    """``[net_expr_at_parent, child_port_name]`` pairs.
+
+    Wave overlay (Phase 9) traces signals across hierarchy levels
+    through these. Positional connections fall back to a ``None``
+    child-port slot — the consumer can still see the net but loses
+    the port-name binding.
+    """
+    if child.instance is None:
+        return []
+    return [
+        [conn.net_expr_text, conn.port_name] for conn in child.instance.port_connections
+    ]
+
+
+def _edge_overlays(
+    child: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None,
+) -> dict:
+    overlays: dict[str, dict] = {}
+    if domain_map is not None and domain_map.crossings_into(child.instance_path):
+        overlays["clock"] = {"crossing": True}
+    if reset_map is not None and reset_map.crossings_into(child.instance_path):
+        overlays["reset"] = {"crossing": True}
+    return overlays
+
+
+# --- traversal --------------------------------------------------------------
 
 
 def _walk(node: HierNode):
     yield node
     for child in node.children:
         yield from _walk(child)
-
-
-def _walk_edges(node: HierNode):
-    for child in node.children:
-        yield {"parent": node.instance_path, "child": child.instance_path}
-        yield from _walk_edges(child)

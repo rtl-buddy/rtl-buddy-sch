@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rtl-buddy.dev/schemas/view-v1.json",
+  "title": "rtl-buddy-view view.json v1",
+  "description": "Locked schema for the JSON hierarchy + overlay payload consumed by the rtl-buddy-view interactive web viewer (#18). Producer is rtl-buddy-view's --format json renderer. Phase 5 viewer treats this as a stable contract; consumers can rely on field presence + type per this schema for any 1.x payload.",
+  "type": "object",
+  "required": ["schema_version", "top", "nodes", "edges", "overlays_present"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version as MAJOR.MINOR. 1.x payloads are backward-compatible — minor bumps may add fields, never rename or retype them."
+    },
+    "top": {
+      "type": "string",
+      "description": "Top module name."
+    },
+    "tool": {
+      "type": "object",
+      "description": "Producer self-identification — purely informational; consumers don't gate on it.",
+      "required": ["name", "version"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {"type": "string"},
+        "version": {"type": "string"}
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/node"},
+      "description": "Every elaborated instance in the hierarchy, sorted by id."
+    },
+    "edges": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/edge"},
+      "description": "Parent→child instantiation edges, sorted by (from, to)."
+    },
+    "overlays_present": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Sorted list of overlay names whose annotation payloads contributed to this view. The viewer dispatches per-overlay JS modules off this list."
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["id", "module", "is_blackbox", "parameters", "ports", "overlays"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable instance path, dot-separated from the top module. Reproducible across runs given the same RTL."
+        },
+        "module": {
+          "type": "string",
+          "description": "Module-type name this instance refers to."
+        },
+        "instance_name": {
+          "type": ["string", "null"],
+          "description": "Source-level instance name. null for the top node (the top isn't 'instantiated')."
+        },
+        "is_blackbox": {
+          "type": "boolean",
+          "description": "True when the module wasn't found in the filelist — viewers render with a dashed border."
+        },
+        "source": {
+          "anyOf": [
+            {"$ref": "#/$defs/source_block"},
+            {"type": "null"}
+          ],
+          "description": "Source anchor for this node. May be null for synthetic / blackbox nodes the extractor never saw; real-world payloads populate this on every non-blackbox node."
+        },
+        "ports": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/port"},
+          "description": "Per-port binding for THIS instance. ``expr`` is the net expression the parent connected to the port at the instantiation site."
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "description": "Parameter overrides applied to this instance. Empty object when none. Values are verbatim source slices ('32', '\"hello\"', '`MAX_WIDTH')."
+        },
+        "link": {
+          "type": ["string", "null"],
+          "description": "rtlbuddy:// URI pointing the hub at this node's source anchor. Null when no source location is known (blackboxes that the extractor never saw)."
+        },
+        "overlays": {
+          "type": "object",
+          "additionalProperties": {"type": "object"},
+          "description": "Per-overlay metadata, keyed by overlay name. Missing keys mean no contribution; never an error."
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to", "port_pairs", "overlays"],
+      "additionalProperties": true,
+      "properties": {
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "port_pairs": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {"type": ["string", "null"]},
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Tuples of [net_expr_at_parent, child_port_name]. Used by the wave→view joiner (Phase 9) to trace signals across hierarchy levels."
+        },
+        "overlays": {
+          "type": "object",
+          "additionalProperties": {"type": "object"},
+          "description": "Per-overlay edge metadata. ``clock.crossing: true`` marks a CDC edge; ``reset.crossing: true`` an RDC edge."
+        }
+      }
+    },
+    "source_block": {
+      "type": "object",
+      "required": ["file"],
+      "additionalProperties": true,
+      "properties": {
+        "file": {"type": "string"},
+        "start_line": {"type": ["integer", "null"]},
+        "start_column": {"type": ["integer", "null"]},
+        "end_line": {"type": ["integer", "null"]},
+        "end_column": {"type": ["integer", "null"]},
+        "decl_line": {"type": ["integer", "null"]},
+        "decl_col": {"type": ["integer", "null"]}
+      }
+    },
+    "port": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {"type": "string"},
+        "dir": {
+          "type": ["string", "null"],
+          "enum": ["input", "output", "inout", null]
+        },
+        "expr": {
+          "type": ["string", "null"],
+          "description": "Net expression bound to this port at instantiation. Null when no binding (the port is declared on the module but unconnected at this instance)."
+        },
+        "anchor": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "properties": {
+            "line": {"type": ["integer", "null"]},
+            "col": {"type": ["integer", "null"]}
+          }
+        }
+      }
+    }
+  }
+}
