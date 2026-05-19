@@ -1,18 +1,15 @@
 # rtl-buddy-view
 
-RTL hierarchy and connectivity visualization tool. Pluggable parser
+RTL hierarchy and connectivity visualization. Pluggable parser
 frontend ([Verible](https://github.com/chipsalliance/verible) for
 source-faithful CST, [slang](https://github.com/MikePopoloski/slang)
 via [pyslang](https://pypi.org/project/pyslang/) for elaborated views
 of generates / parameterized instances) → in-memory hierarchy graph →
-multiple renderers (ASCII tree, Graphviz `.dot`, Mermaid, JSON).
-Designed to integrate with [rtl-buddy](https://github.com/rtl-buddy/rtl_buddy).
-
-## Status
-
-**Pre-alpha — scaffolding only.** Phase 1 work in progress; nothing
-runs end-to-end yet. See [issue #1](https://github.com/rtl-buddy/rtl-buddy-view/issues/1)
-for the Phase 1 scope and acceptance criteria.
+four renderers (ASCII tree, Graphviz `.dot`, Mermaid, JSON). With an
+optional clock-domain map from [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc),
+every renderer overlays clock-domain context and flags asynchronous
+CDC crossings inline. Designed to plug into [rtl-buddy](https://github.com/rtl-buddy/rtl_buddy)
+as `rb hier`.
 
 ## Why
 
@@ -40,46 +37,126 @@ design from.
   ┌─────────────────┐
   │   frontend      │
   │   ├─ verible    │  verible-verilog-syntax --export_json
-  │   │             │  CST cached by file content hash
-  │   └─ slang      │  pyslang elaborate, in-process (Phase 2)
+  │   │             │  content-hashed CST cache (XDG)
+  │   └─ slang      │  pyslang elaborate (Phase 2 fallback)
   └────────┬────────┘
            ▼
   ┌─────────────────┐
-  │ semantic        │  Module { name, file, line, ports,
-  │ extractor       │           parameters, instances }
+  │ extractor       │  Module { name, ports, params, instances,
+  │ (CST → model)   │           location }  (frozen dataclasses)
   └────────┬────────┘
            ▼
   ┌─────────────────┐
-  │ hierarchy       │  resolves instances → tree/DAG
-  │ graph builder   │  verible-first; slang fallback for
-  │                 │  generates / parameterized instances
+  │ hierarchy graph │  build_hierarchy(table, top) → HierNode tree
+  │                 │  unresolved children → blackbox leaves
   └────────┬────────┘
-           ├────► renderers (dot, tree, …)
-           └────► query API (find_module, subtree, …)
+           │              ┌─ optional: rtl-buddy-cdc domain map
+           │              │  (annotations.load_domain_map)
+           ▼              ▼
+  ┌─────────────────────────────────┐
+  │ renderers       │ query API     │
+  │ tree / dot /    │ walk, subtree,│
+  │ mermaid / json  │ port_…, …     │
+  └─────────────────────────────────┘
 ```
 
 Same shape as [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc):
 pure analyzer at the core, frontend is a thin wrapper, source
 anchors carried through every layer.
 
-## Quickstart
+## Install
 
 ```bash
 uv sync
-uv run rtl-buddy-view --help    # currently prints help only; Phase 1 in progress
+# optional elaboration frontend
+uv sync --extra slang
+# fetch the pinned Verible binary into vendor/
+uv run python scripts/fetch_verible.py
+```
+
+On macOS, `brew install verible` is also fine — the tool prefers a
+PATH binary over the vendored copy.
+
+## Quickstart
+
+```bash
+# ASCII tree — the fastest way to eyeball a design
+uv run rtl-buddy-view \
+    --top counter_with_subs \
+    --filelist tests/fixtures/counter_with_subs/files.f \
+    --format tree
+
+# Graphviz .dot, written to a file for piping through `dot -Tsvg`
+uv run rtl-buddy-view \
+    --top counter_with_subs \
+    --filelist tests/fixtures/counter_with_subs/files.f \
+    --format dot --output hier.dot
+dot -Tsvg hier.dot -o hier.svg
+
+# Mermaid — paste straight into a GitHub PR or README
+uv run rtl-buddy-view \
+    --top counter_with_subs \
+    --filelist tests/fixtures/counter_with_subs/files.f \
+    --format mermaid
+
+# Machine-readable JSON (the format `rb hier` consumes)
+uv run rtl-buddy-view \
+    --top counter_with_subs \
+    --filelist tests/fixtures/counter_with_subs/files.f \
+    --format json --output hier.json
+```
+
+### Clock-domain overlay
+
+When rtl-buddy-cdc has produced a `--emit-domain-map` JSON for the
+same design, pass it via `--cdc-annotations`. Every renderer picks up
+clock coloring, per-node clock tags, and `⚠CDC` markers on the
+asynchronous crossings:
+
+```bash
+uv run rtl-buddy-view \
+    --top two_clock_design \
+    --filelist tests/fixtures/two_clock_design/files.f \
+    --cdc-annotations tests/fixtures/two_clock_design/domain_map.json \
+    --format dot --clock-legend --output two_clock.dot
+```
+
+Without `--cdc-annotations` (or with an empty map), output is
+byte-identical to the un-annotated case.
+
+## CLI
+
+```
+rtl-buddy-view [OPTIONS]
+
+--top, -t TEXT          Top module name. [required]
+--filelist, -f PATH     One source file per line; +incdir+/-y/-f rejected.
+                        [required]
+--format [tree|dot|mermaid|json]
+                        Output format. [default: tree]
+--output, -o PATH       Write to file instead of stdout.
+--frontend [verible|slang]
+                        Parser frontend. [default: verible]
+                        (slang activation is a Phase 2 follow-up.)
+--cdc-annotations PATH  Optional clock-domain map JSON from
+                        `rtl-buddy-cdc --emit-domain-map`.
+--clock-legend          Dot-format only: emit a side legend mapping
+                        clocks → palette colors. Requires
+                        --cdc-annotations.
 ```
 
 ## Roadmap
 
-- **Phase 1** (in progress): Verible frontend, semantic extractor,
-  hierarchy graph, ASCII tree + Graphviz renderers, basic query API.
-  Tracked in [#1](https://github.com/rtl-buddy/rtl-buddy-view/issues/1).
-- **Phase 2**: slang fallback for generates / parameters, Mermaid +
-  JSON renderers, `rb hier` integration in `rtl_buddy`, clock-domain
-  overlay consuming rtl-buddy-cdc's domain map. Tracked in
-  [#2](https://github.com/rtl-buddy/rtl-buddy-view/issues/2).
-- **Phase 3**: Reset-domain overlay. Tracked in
-  [#3](https://github.com/rtl-buddy/rtl-buddy-view/issues/3).
+- **Phase 1** ✅ — Verible frontend, semantic extractor, hierarchy
+  graph, ASCII tree + Graphviz renderers, query API.
+  ([#1](https://github.com/rtl-buddy/rtl-buddy-view/issues/1))
+- **Phase 2** ✅ — Mermaid + JSON renderers, clock-domain overlay
+  consuming rtl-buddy-cdc's schema-v1.0 domain map, deterministic
+  output across all formats, JSON contract pinned for downstream
+  `rb hier`. ([#2](https://github.com/rtl-buddy/rtl-buddy-view/issues/2))
+- **Phase 3** — Reset-domain overlay (blocked on rtl-buddy-cdc#107 /
+  #108 producer-side work).
+  ([#3](https://github.com/rtl-buddy/rtl-buddy-view/issues/3))
 
 ## License
 
