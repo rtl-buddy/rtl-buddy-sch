@@ -60,3 +60,22 @@ jobs:
         # measure it; the script prints both raw + gzipped sizes
         # so a regression surfaces in the log.
         run: python embed.py --output /tmp/viewer.html
+
+      # Phase 5 acceptance criterion: snapshot tests green on all
+      # Phase 1-3 fixtures. The fixture JSONs in viewer/e2e/fixtures/
+      # are checked into the repo so this step doesn't require a
+      # Python re-render — Playwright loads them via addInitScript.
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright e2e
+        run: npm run test:e2e
+
+      - name: Upload Playwright trace on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-trace-${{ matrix.node-version }}
+          path: viewer/test-results/
+          if-no-files-found: ignore
+          retention-days: 7

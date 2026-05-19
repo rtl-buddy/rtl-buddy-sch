@@ -1,0 +1,144 @@
+{
+  "schema_version": "1.0",
+  "top": "counter",
+  "tool": {
+    "name": "rtl-buddy-view",
+    "version": "0.1.0"
+  },
+  "nodes": [
+    {
+      "id": "counter",
+      "module": "counter",
+      "instance_name": null,
+      "is_blackbox": false,
+      "parameters": {},
+      "ports": [
+        {
+          "name": "clk",
+          "dir": "input",
+          "expr": null,
+          "anchor": null
+        },
+        {
+          "name": "rst_n",
+          "dir": "input",
+          "expr": null,
+          "anchor": null
+        },
+        {
+          "name": "q",
+          "dir": "output",
+          "expr": null,
+          "anchor": null
+        }
+      ],
+      "source": {
+        "file": "/private/tmp/rtl-buddy-view-review/tests/fixtures/counter_with_subs/counter.sv",
+        "start_line": 5,
+        "start_column": 1,
+        "end_line": 12,
+        "end_column": 10,
+        "decl_line": 5,
+        "decl_col": 1
+      },
+      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/counter_with_subs/counter.sv&line=5&col=1",
+      "overlays": {}
+    },
+    {
+      "id": "counter.u_ff",
+      "module": "counter_ff",
+      "instance_name": "u_ff",
+      "is_blackbox": false,
+      "parameters": {},
+      "ports": [
+        {
+          "name": "clk",
+          "dir": "input",
+          "expr": "clk",
+          "anchor": {
+            "line": 10,
+            "col": 27
+          }
+        },
+        {
+          "name": "q",
+          "dir": "output",
+          "expr": "q",
+          "anchor": {
+            "line": 10,
+            "col": 36
+          }
+        }
+      ],
+      "source": {
+        "file": "/private/tmp/rtl-buddy-view-review/tests/fixtures/counter_with_subs/counter.sv",
+        "start_line": 10,
+        "start_column": 16,
+        "end_line": 10,
+        "end_column": 39,
+        "decl_line": 2,
+        "decl_col": 1
+      },
+      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/counter_with_subs/counter.sv&line=10&col=16",
+      "overlays": {}
+    },
+    {
+      "id": "counter.u_x",
+      "module": "sub_x",
+      "instance_name": "u_x",
+      "is_blackbox": true,
+      "parameters": {},
+      "ports": [
+        {
+          "name": "clk",
+          "dir": null,
+          "expr": "clk",
+          "anchor": {
+            "line": 11,
+            "col": 27
+          }
+        }
+      ],
+      "source": {
+        "file": "/private/tmp/rtl-buddy-view-review/tests/fixtures/counter_with_subs/counter.sv",
+        "start_line": 11,
+        "start_column": 16,
+        "end_line": 11,
+        "end_column": 32,
+        "decl_line": null,
+        "decl_col": null
+      },
+      "link": "rtlbuddy://open?file=/private/tmp/rtl-buddy-view-review/tests/fixtures/counter_with_subs/counter.sv&line=11&col=16",
+      "overlays": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "counter",
+      "to": "counter.u_ff",
+      "port_pairs": [
+        [
+          "clk",
+          "clk"
+        ],
+        [
+          "q",
+          "q"
+        ]
+      ],
+      "overlays": {}
+    },
+    {
+      "from": "counter",
+      "to": "counter.u_x",
+      "port_pairs": [
+        [
+          "clk",
+          "clk"
+        ]
+      ],
+      "overlays": {}
+    }
+  ],
+  "overlays_present": []
+}
