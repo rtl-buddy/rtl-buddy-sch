@@ -170,8 +170,9 @@ rtl-buddy-view [OPTIONS]
   consuming rtl-buddy-cdc's schema-v1.0 domain map, deterministic
   output across all formats, JSON contract pinned for downstream
   `rb hier`. ([#2](https://github.com/rtl-buddy/rtl-buddy-view/issues/2))
-- **Phase 3** — Reset-domain overlay (blocked on rtl-buddy-cdc#107 /
-  #108 producer-side work).
+- **Phase 3** — Reset-domain overlay. Unblocked:
+  rtl-buddy-cdc#107 (analysis) and #108 (`--emit-reset-domain-map`)
+  shipped on rtl-buddy-cdc `main`.
   ([#3](https://github.com/rtl-buddy/rtl-buddy-view/issues/3))
 
 ## License

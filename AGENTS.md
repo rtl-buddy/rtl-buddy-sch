@@ -25,7 +25,7 @@ covers the gate-level case; we do not.
 - `README.md` — user-facing intro, CLI flags, examples for each format.
 - Phase 1 bootstrap issue: [rtl-buddy/rtl-buddy-view#1](https://github.com/rtl-buddy/rtl-buddy-view/issues/1) (closed; scope shipped).
 - Phase 2 (clock-domain overlay) issue: [rtl-buddy/rtl-buddy-view#2](https://github.com/rtl-buddy/rtl-buddy-view/issues/2) (closed; scope shipped).
-- Phase 3 (reset-domain overlay) tracker: [rtl-buddy/rtl-buddy-view#3](https://github.com/rtl-buddy/rtl-buddy-view/issues/3) (blocked on rtl-buddy-cdc#107 / #108).
+- Phase 3 (reset-domain overlay) tracker: [rtl-buddy/rtl-buddy-view#3](https://github.com/rtl-buddy/rtl-buddy-view/issues/3). Unblocked — rtl-buddy-cdc#107 (analysis) and #108 (`--emit-reset-domain-map`) have shipped on cdc `main`.
 - The integration meta-issue in rtl_buddy: [rtl-buddy/rtl_buddy#106](https://github.com/rtl-buddy/rtl_buddy/issues/106).
 - The clock-domain map contract this tool consumes:
   [rtl-buddy/rtl-buddy-cdc#106](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/106) — schema v1.0.
