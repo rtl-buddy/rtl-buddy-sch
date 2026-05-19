@@ -31,6 +31,7 @@ from rtl_buddy_view.annotations import (
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.frontend.verible import VeribleParseError, VeribleUnavailable
 from rtl_buddy_view.graph import HierarchyError, build_hierarchy
+from rtl_buddy_view._flop_resolver import resolve_for_hierarchy
 from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.render import json_render
 from rtl_buddy_view.render import mermaid as mermaid_render
@@ -135,6 +136,13 @@ def main(
     except HierarchyError as e:
         typer.echo(f"hierarchy: {e}", err=True)
         raise typer.Exit(code=1) from None
+
+    # rtl-buddy-cdc emits crossings against synth-internal flop names
+    # that never match source-instance paths. Resolve them against the
+    # elaborated hierarchy before rendering so ⚠CDC markers fire on
+    # real designs. See ``_flop_resolver``.
+    if domain_map is not None and not domain_map.is_empty:
+        domain_map = resolve_for_hierarchy(domain_map, root)
 
     sink: IO[str]
     if output_path is None:
