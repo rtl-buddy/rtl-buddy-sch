@@ -31,6 +31,7 @@ graph; goldens diff cleanly across runs.
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import IO
 
 from rtl_buddy_view.annotations import DomainMap
@@ -138,15 +139,124 @@ def _emit_top_frame(top: HierNode, out: IO[str], domain_map: DomainMap | None) -
     for child in top.children:
         _emit_edges(child, out, domain_map)
 
-    # Restore the directional CDC arrow: dashed-red edge from the
-    # corresponding input-port anchor to the child carrying the
-    # crossing. When the src_clock isn't an input port, we silently
-    # fall back to leaving the marker on the per-child node label —
-    # ``predominant_clock`` already labels it, and the renderer
-    # surfaces ``crossings_in`` through the JSON contract regardless.
+    # Port → child signal-flow edges: when a child's port connection
+    # has a bare-identifier net that matches a top input/output port
+    # name, draw a thin clock-keyed edge between the port anchor and
+    # the child. Clock and reset ports are skipped (they fan out to
+    # nearly every flop and bury the data flow).
+    _emit_port_signal_edges(top, out, domain_map)
+
+    # CDC arrow: dashed-red overlay edge from input port anchor to
+    # the child carrying an async crossing. Drawn AFTER the
+    # signal-flow edges so the red arrow paints on top of the gray
+    # one when both terminate at the same port + child pair.
     _emit_top_cdc_arrows(top, out, domain_map)
 
     out.write("  }\n")
+
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Clock/reset-like port names appearing as an underscore-delimited
+# token. Used as a fallback when the domain map is absent
+# (``clocks[].ports`` is the authoritative source when present).
+# Patterns catch: clk, clk_a, a_clk, aclk style is too risky to
+# strip (would false-positive on legit names containing "clk"); we
+# require the token form. Same shape for rst/reset.
+_CLOCK_NAME_RE = re.compile(r"(?i)(?:^|_)(clk|clock)(?:$|_)")
+_RESET_NAME_RE = re.compile(r"(?i)(?:^|_)(rst|reset)(?:$|_)")
+_NEUTRAL_EDGE_COLOR = "#cbd5e1"  # slate-300, falls back when no clock typing
+
+
+def _emit_port_signal_edges(
+    top: HierNode, out: IO[str], domain_map: DomainMap | None
+) -> None:
+    """Connect input/output port anchors to children by signal flow.
+
+    For each direct child of the top: for each ``port_connection``
+    whose ``net_expr_text`` is a bare identifier matching a top port
+    name, emit a thin edge in the direction the port faces
+    (input→child, child→output). Complex net expressions
+    (concatenations, slices, expressions) are silently skipped — net
+    tracing isn't in the renderer's scope.
+
+    **Skipped**: clock-source ports (named in ``domain_map.clocks[].
+    ports``) and reset-looking ports (``rst`` / ``reset`` token in the
+    name). Wiring every flop's clock and reset back to the top input
+    anchors produces a fan-out spiderweb that hides the actual data
+    flow.
+
+    **Color**: when a domain map is present, edges are colored by
+    the clock domain the signal lives in:
+      * port_domains[] lookup for ports typed via
+        ``set_input_delay -clock`` / ``set_output_delay -clock``
+      * fall back to the destination/source child's predominant
+        clock
+      * fall back to a neutral slate when no clock is determinable.
+    """
+    if top.module is None or not top.module.ports:
+        return
+    inputs = {p.name for p in top.module.ports if p.direction == "input"}
+    outputs = {p.name for p in top.module.ports if p.direction in ("output", "inout")}
+    clock_ports: set[str] = set()
+    port_clock: dict[str, str] = {}
+    if domain_map is not None:
+        for clk in domain_map.clocks:
+            clock_ports.update(clk.ports)
+        for pd in domain_map.port_domains:
+            port_clock[pd.port] = pd.clock
+
+    for child in top.children:
+        if child.instance is None:
+            continue
+        seen_in: set[str] = set()
+        seen_out: set[str] = set()
+        for conn in child.instance.port_connections:
+            net = conn.net_expr_text.strip() if conn.net_expr_text else ""
+            if not _IDENTIFIER_RE.match(net):
+                continue
+            if (
+                net in clock_ports
+                or _CLOCK_NAME_RE.search(net)
+                or _RESET_NAME_RE.search(net)
+            ):
+                continue
+            if net in inputs and net not in seen_in:
+                seen_in.add(net)
+                color = _signal_edge_color(net, child, domain_map, port_clock)
+                out.write(
+                    f'    "_in_{net}" -> "{child.instance_path}" '
+                    f'[color="{color}", penwidth=1.2, arrowsize=0.6];\n'
+                )
+            if net in outputs and net not in seen_out:
+                seen_out.add(net)
+                color = _signal_edge_color(net, child, domain_map, port_clock)
+                out.write(
+                    f'    "{child.instance_path}" -> "_out_{net}" '
+                    f'[color="{color}", penwidth=1.2, arrowsize=0.6];\n'
+                )
+
+
+def _signal_edge_color(
+    port_name: str,
+    child: HierNode,
+    domain_map: DomainMap | None,
+    port_clock: dict[str, str],
+) -> str:
+    """Pick the clock-keyed palette color for a signal-flow edge.
+
+    Resolution order: explicit ``port_domains[]`` typing first
+    (authoritative — set by ``set_input_delay -clock`` /
+    ``set_output_delay -clock``), then the child's predominant
+    clock as a structural fallback, then a neutral slate-300.
+    """
+    if domain_map is None:
+        return _NEUTRAL_EDGE_COLOR
+    clk = port_clock.get(port_name)
+    if clk is None:
+        clk = domain_map.predominant_clock(child.instance_path)
+    if clk is None:
+        return _NEUTRAL_EDGE_COLOR
+    return _palette_color(clk)
 
 
 def _emit_port_anchors(top: HierNode, out: IO[str]) -> None:
