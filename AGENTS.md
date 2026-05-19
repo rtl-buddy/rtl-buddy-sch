@@ -9,7 +9,9 @@ Graphviz `.dot` / Mermaid / JSON. Comments, parameter overrides, and
 source positions flow through every layer.
 
 It is consumed by `rtl_buddy` (sibling repo) as a subprocess via
-`rb hier` (see [rtl-buddy/rtl_buddy#106](https://github.com/rtl-buddy/rtl_buddy/issues/106)).
+`rb hier` — shipped in
+[`tools/hier_rtl_buddy_view.py`](https://github.com/rtl-buddy/rtl_buddy/blob/main/src/rtl_buddy/tools/hier_rtl_buddy_view.py)
+(meta-issue [rtl-buddy/rtl_buddy#106](https://github.com/rtl-buddy/rtl_buddy/issues/106)).
 Anything that breaks the JSON output schema or the CLI surface is a
 downstream-breaking change — see [§ Cross-repo coupling](#cross-repo-coupling).
 
@@ -185,7 +187,9 @@ shape:
 ## Cross-repo coupling
 
 The `rtl_buddy` repo at `../rtl_buddy/` consumes this analyzer via
-subprocess (`rb hier`, tracked at [rtl-buddy/rtl_buddy#106](https://github.com/rtl-buddy/rtl_buddy/issues/106)).
+subprocess as `rb hier` — the wrapper is
+[`tools/hier_rtl_buddy_view.py`](https://github.com/rtl-buddy/rtl_buddy/blob/main/src/rtl_buddy/tools/hier_rtl_buddy_view.py)
+(meta-issue [rtl-buddy/rtl_buddy#106](https://github.com/rtl-buddy/rtl_buddy/issues/106)).
 The contract:
 
 - **CLI flags consumed today**: `--top`, `--filelist`, `--format`,
