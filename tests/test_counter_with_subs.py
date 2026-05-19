@@ -99,10 +99,11 @@ def test_dot_edges_carry_port_connection_labels() -> None:
     buf = io.StringIO()
     dot_render.render(root, buf)
     output = buf.getvalue()
-    # The u_ff edge has two connections; both should appear verbatim.
-    assert '"counter" -> "counter.u_ff" [label=".clk(clk), .q(q)"];' in output
+    # The u_ff edge has two connections; both should appear verbatim,
+    # one per line (``\l`` = Graphviz left-aligned newline).
+    assert r'"counter" -> "counter.u_ff" [label=".clk(clk)\l.q(q)\l"];' in output
     # The u_x edge has only `.clk(clk)`.
-    assert '"counter" -> "counter.u_x" [label=".clk(clk)"];' in output
+    assert r'"counter" -> "counter.u_x" [label=".clk(clk)\l"];' in output
 
 
 def test_hierarchy_marks_undefined_as_blackbox() -> None:

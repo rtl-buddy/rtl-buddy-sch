@@ -136,7 +136,10 @@ def test_edge_label_lists_port_connections() -> None:
     out = io.StringIO()
     dot_render.render(root, out)
     text = out.getvalue()
-    assert '"top" -> "top.u_ff" [label=".clk(clk), .q(q[0])"];' in text
+    # Multiline label: ``\l`` is Graphviz's left-aligned newline.
+    # One port-connection per line, trailing ``\l`` anchors the last
+    # line to the left margin.
+    assert r'"top" -> "top.u_ff" [label=".clk(clk)\l.q(q[0])\l"];' in text
 
 
 def test_edge_label_truncates_long_port_lists() -> None:

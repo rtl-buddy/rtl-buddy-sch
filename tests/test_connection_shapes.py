@@ -87,12 +87,16 @@ def test_dot_renders_each_shape_distinctively() -> None:
     buf = io.StringIO()
     dot_render.render(root, buf)
     output = buf.getvalue()
-    # Named form preserves both halves.
-    assert '"top" -> "top.u_named" [label=".clk(clk), .rst_n(rst_n), .q(q)"];' in output
+    # Named form preserves both halves. ``\l`` is Graphviz's left-
+    # aligned newline — one port-connection per line.
+    assert (
+        r'"top" -> "top.u_named" [label=".clk(clk)\l.rst_n(rst_n)\l.q(q)\l"];'
+        in output
+    )
     # Positional form drops the leading `.port` — just net text.
-    assert '"top" -> "top.u_pos" [label="clk, rst_n, q"];' in output
+    assert r'"top" -> "top.u_pos" [label="clk\lrst_n\lq\l"];' in output
     # Shorthand form is bare `.port`.
-    assert '"top" -> "top.u_short" [label=".clk, .rst_n, .q"];' in output
+    assert r'"top" -> "top.u_short" [label=".clk\l.rst_n\l.q\l"];' in output
     # Param overrides on the named node show the full `.PARAM(value)`
     # form; the positional node should show bare values.
     assert "#(.WIDTH(16), .DEPTH(32))" in output
