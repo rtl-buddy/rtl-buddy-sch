@@ -78,20 +78,33 @@ watch(
   },
 )
 
-function onClick(e) {
+function nodeFromEvent(e) {
   const group = e.target.closest('g.node, [data-node-id]')
-  if (!group) return
+  if (!group) return null
   const id = group.getAttribute('data-node-id')
-  if (!id) return
-  store.select(id)
+  if (!id) return null
   const node = store.nodesById.get(id)
-  if (!node) return
-  hub.notifyClick(node)
-  if (node.link) {
-    // Phase 5 hub-stub: open the URI via window.open so the
-    // browser raises its standard "open this URL?" prompt. Phase
-    // 10d's hub intercepts this before the URI dispatch.
-    window.open(node.link, '_blank')
+  return node ? { id, node } : null
+}
+
+function onClick(e) {
+  // Left-click: select only. Source-editor dispatch is on right-click.
+  const hit = nodeFromEvent(e)
+  if (!hit) return
+  store.select(hit.id)
+  hub.notifyClick(hit.node)
+}
+
+function onContextMenu(e) {
+  // Right-click: select + dispatch ``node.link`` to the OS so the
+  // registered handler (rtlbuddy:// or vscode://) opens the source.
+  // Phase 10d's hub will intercept this before the URI dispatch.
+  const hit = nodeFromEvent(e)
+  if (!hit) return
+  e.preventDefault()
+  store.select(hit.id)
+  if (hit.node.link) {
+    window.open(hit.node.link, '_blank')
   }
 }
 
@@ -216,6 +229,7 @@ function fitToWindow() {
 onMounted(() => {
   if (svgHostEl.value) {
     svgHostEl.value.addEventListener('click', onClick)
+    svgHostEl.value.addEventListener('contextmenu', onContextMenu)
     svgHostEl.value.addEventListener('wheel', onWheel, { passive: false })
     svgHostEl.value.addEventListener('mousedown', onMouseDown)
   }
@@ -226,6 +240,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (svgHostEl.value) {
     svgHostEl.value.removeEventListener('click', onClick)
+    svgHostEl.value.removeEventListener('contextmenu', onContextMenu)
     svgHostEl.value.removeEventListener('wheel', onWheel)
     svgHostEl.value.removeEventListener('mousedown', onMouseDown)
   }
