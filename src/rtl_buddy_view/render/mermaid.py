@@ -30,9 +30,17 @@ from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.render.dot import (
     MAX_EDGE_LABEL_CONNECTIONS,
     _format_cdc_summary,
+    _format_rdc_summary,
     _palette_color,
 )
 from rtl_buddy_view.reset_annotations import ResetDomainMap
+
+#: RDC accent stroke colour. Mirrors the dot renderer's ``_RDC_COLOR``
+#: so mermaid + dot output read as the same warning under the same
+#: design + maps.
+_RDC_STROKE = "#ea580c"
+#: Reset-synchronizer outline. Mirrors ``dot._RSTSYNC_OUTLINE``.
+_RSTSYNC_STROKE = "#0d9488"
 
 
 def render(
@@ -44,30 +52,45 @@ def render(
 ) -> None:
     """Render ``node`` and its subtree as a mermaid flowchart.
 
-    ``reset_map`` is accepted on the signature for CLI plumbing
-    symmetry; the Phase 3 mermaid overlay (#3 subtask 6) lands in a
-    follow-up PR.
+    With a :class:`rtl_buddy_view.reset_annotations.ResetDomainMap`
+    (Phase 3), nodes pick up a ``[rst_n↓]`` line in their label, the
+    reset-synchroniser set gets a teal stroke, and RDC-crossing edges
+    render dashed-orange with the warning prepended to the label.
+    Dual-issue (CDC + RDC) edges stay CDC-red on the stroke; the RDC
+    marker rides on the label only — same precedence as the dot
+    renderer.
     """
-    _ = reset_map  # consumed in #3 follow-up
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
+    active_reset_map = reset_map if reset_map is not None else None
     out.write("```mermaid\n")
     out.write("flowchart TB\n")
-    _emit_node(node, out, active_map)
-    _emit_edges(node, out, active_map)
-    _emit_styles(node, out, active_map)
+    _emit_node(node, out, active_map, active_reset_map)
+    _emit_edges(node, out, active_map, active_reset_map)
+    _emit_styles(node, out, active_map, active_reset_map)
     out.write("```\n")
 
 
 # --- nodes -------------------------------------------------------------------
 
 
-def _emit_node(node: HierNode, out: IO[str], domain_map: DomainMap | None) -> None:
-    out.write(f'  {_slug(node.instance_path)}["{_label(node, domain_map)}"]\n')
+def _emit_node(
+    node: HierNode,
+    out: IO[str],
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+) -> None:
+    out.write(
+        f'  {_slug(node.instance_path)}["{_label(node, domain_map, reset_map)}"]\n'
+    )
     for child in node.children:
-        _emit_node(child, out, domain_map)
+        _emit_node(child, out, domain_map, reset_map)
 
 
-def _label(node: HierNode, domain_map: DomainMap | None) -> str:
+def _label(
+    node: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+) -> str:
     inst_name = node.instance.name if node.instance is not None else node.module_name
     parts = [_escape(inst_name), _escape(node.module_name)]
     if node.instance is not None and node.instance.param_overrides:
@@ -76,6 +99,13 @@ def _label(node: HierNode, domain_map: DomainMap | None) -> str:
         clock = domain_map.predominant_clock(node.instance_path)
         if clock is not None:
             parts.append(f"[{_escape(clock)}]")
+    if reset_map is not None:
+        flop = reset_map.flop_reset(node.instance_path)
+        if flop is not None:
+            arrow = "↓" if flop.polarity == "low" else "↑"
+            parts.append(f"[{_escape(flop.reset)}{arrow}]")
+        if node.instance_path in reset_map.synchronizer_paths():
+            parts.append("✓rstsync")
     if node.is_blackbox:
         parts.append("(blackbox)")
     return "<br/>".join(parts)
@@ -94,11 +124,20 @@ def _format_param_overrides(overrides) -> str:
 # --- edges -------------------------------------------------------------------
 
 
-def _emit_edges(node: HierNode, out: IO[str], domain_map: DomainMap | None) -> None:
+def _emit_edges(
+    node: HierNode,
+    out: IO[str],
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+) -> None:
     for child in node.children:
-        label = _edge_label(child, domain_map)
+        label = _edge_label(child, domain_map, reset_map)
         cdc = bool(_format_cdc_summary(child, domain_map))
-        arrow = "-.->" if cdc else "-->"
+        rdc = bool(_format_rdc_summary(child, reset_map))
+        # Dashed arrow for either warning class; the *colour* differs
+        # via per-edge linkStyle in :func:`_emit_styles` since mermaid
+        # doesn't accept inline edge colours.
+        arrow = "-.->" if (cdc or rdc) else "-->"
         if label:
             out.write(
                 f"  {_slug(node.instance_path)} "
@@ -109,17 +148,21 @@ def _emit_edges(node: HierNode, out: IO[str], domain_map: DomainMap | None) -> N
             out.write(
                 f"  {_slug(node.instance_path)} {arrow} {_slug(child.instance_path)}\n"
             )
-        _emit_edges(child, out, domain_map)
+        _emit_edges(child, out, domain_map, reset_map)
 
 
-def _edge_label(child: HierNode, domain_map: DomainMap | None) -> str:
+def _edge_label(
+    child: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+) -> str:
     port_label = ""
     if child.instance is not None and child.instance.port_connections:
         port_label = _format_port_connections(child.instance.port_connections)
     cdc = _format_cdc_summary(child, domain_map)
-    if cdc and port_label:
-        return f"{cdc}<br/>{port_label}"
-    return cdc or port_label
+    rdc = _format_rdc_summary(child, reset_map) if reset_map is not None else ""
+    parts = [p for p in (cdc, rdc, port_label) if p]
+    return "<br/>".join(parts)
 
 
 def _format_port_connections(conns) -> str:
@@ -145,12 +188,22 @@ def _format_port_connections(conns) -> str:
 # --- styles ------------------------------------------------------------------
 
 
-def _emit_styles(node: HierNode, out: IO[str], domain_map: DomainMap | None) -> None:
+def _emit_styles(
+    node: HierNode,
+    out: IO[str],
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+) -> None:
     """Emit per-node styles after the topology.
 
-    Mermaid evaluates styles in declaration order; emitting them
-    in a single pass keeps the diff stable when a node's clock
-    changes without affecting the topology.
+    Mermaid evaluates styles in declaration order; emitting them in a
+    single pass keeps the diff stable when a node's clock changes
+    without affecting the topology.
+
+    Stroke precedence on dual-issue nodes mirrors the dot renderer:
+    CDC red > RDC orange > sync teal. The fill comes from the clock
+    palette in all three cases so the warning rides on the stroke
+    without losing the clock-coloring cue.
     """
     for n in _walk(node):
         attrs: list[str] = []
@@ -164,9 +217,17 @@ def _emit_styles(node: HierNode, out: IO[str], domain_map: DomainMap | None) -> 
             attrs.append("fill:#fff8e0")
         if n.is_blackbox:
             attrs.append("stroke-dasharray: 3 3")
-        # Warning stroke takes precedence on crossing destinations.
+        # Warning stroke ladder: CDC > RDC > sync. CDC wins on a
+        # dual-issue node so reviewers see the silicon-failing hazard
+        # first; the RDC warning still appears on the edge / label.
         if domain_map is not None and domain_map.crossings_into(n.instance_path):
             attrs.append("stroke:#dc2626")
+        elif reset_map is not None and reset_map.crossings_into(n.instance_path):
+            attrs.append(f"stroke:{_RDC_STROKE}")
+        elif (
+            reset_map is not None and n.instance_path in reset_map.synchronizer_paths()
+        ):
+            attrs.append(f"stroke:{_RSTSYNC_STROKE}")
         if attrs:
             out.write(f"  style {_slug(n.instance_path)} {','.join(attrs)}\n")
 

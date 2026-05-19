@@ -27,6 +27,8 @@ from rtl_buddy_view.extractor import Instance
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.graph import HierNode, build_hierarchy
 from rtl_buddy_view.render import dot as dot_render
+from rtl_buddy_view.render import json_render
+from rtl_buddy_view.render import mermaid as mermaid_render
 from rtl_buddy_view.render import tree as tree_render
 from rtl_buddy_view.reset_annotations import (
     FlopReset,
@@ -518,6 +520,189 @@ def test_dot_no_reset_map_renders_unchanged() -> None:
     assert buf_none.getvalue() == buf_phase2.getvalue()
 
 
+# --- unit: mermaid renderer with synthetic graph ----------------------------
+
+
+def test_mermaid_renders_reset_bracket_in_node_label() -> None:
+    leaf = _node("top.u_a", "ff", inst_name="u_a")
+    root = _node("top", "top", children=(leaf,))
+    rm = _populated_reset_map(flops=[_flop_reset("top.u_a")])
+    buf = io.StringIO()
+    mermaid_render.render(root, buf, reset_map=rm)
+    text = buf.getvalue()
+    assert "[rst_n↓]" in text
+
+
+def test_mermaid_marks_rdc_destination_with_dashed_arrow_and_orange_stroke() -> None:
+    dst = _node("top.u_dst", "ff", inst_name="u_dst")
+    root = _node("top", "top", children=(dst,))
+    rm = _populated_reset_map(crossings=[_reset_crossing("top.u_dst")])
+    buf = io.StringIO()
+    mermaid_render.render(root, buf, reset_map=rm)
+    text = buf.getvalue()
+    # Edge label carries the RDC marker.
+    assert "⚠RDC: rst_n:async-deassert" in text
+    # Edge to u_dst is dashed (``-.->``).
+    assert "-.->" in text
+    # Destination node carries the orange stroke.
+    assert "stroke:#ea580c" in text
+
+
+def test_mermaid_synchronizer_gets_teal_stroke() -> None:
+    leaf = _node("top.u_sync", "ff", inst_name="u_sync")
+    root = _node("top", "top", children=(leaf,))
+    rm = _populated_reset_map(
+        syncs=[
+            ResetSynchronizer(
+                instance_path="top.u_sync",
+                dest_clock="clk_b",
+                async_in="rst_n",
+                async_in_kind="port",
+                location=None,
+            )
+        ]
+    )
+    buf = io.StringIO()
+    mermaid_render.render(root, buf, reset_map=rm)
+    text = buf.getvalue()
+    assert "✓rstsync" in text
+    assert "stroke:#0d9488" in text
+
+
+def test_mermaid_cdc_takes_precedence_over_rdc_stroke() -> None:
+    """Dual-issue node: CDC red wins on stroke; RDC label still appears."""
+    from rtl_buddy_view.annotations import Crossing
+
+    dst = _node("top.u_dst", "ff", inst_name="u_dst")
+    root = _node("top", "top", children=(dst,))
+    cm = DomainMap(
+        schema_version="1.0",
+        generator_name="test",
+        generator_version="0",
+        design_top="top",
+        design_frontend="yosys",
+        clocks=(Clock(name="clk_a", period=10.0, source="create_clock", ports=()),),
+        crossings=(
+            Crossing(
+                src_clock="clk_a",
+                dst_clock="clk_b",
+                dst_flop="top.u_dst",
+                min_hops=0,
+                width=1,
+                async_per_sdc=True,
+                src_flop="top.src",
+            ),
+        ),
+    )
+    rm = _populated_reset_map(crossings=[_reset_crossing("top.u_dst")])
+    buf = io.StringIO()
+    mermaid_render.render(root, buf, domain_map=cm, reset_map=rm)
+    text = buf.getvalue()
+    # CDC red stroke wins; no orange stroke on the same node.
+    assert "stroke:#dc2626" in text
+    # Both markers in the edge label.
+    assert "⚠CDC: clk_a→clk_b" in text
+    assert "⚠RDC: rst_n:async-deassert" in text
+
+
+def test_mermaid_no_reset_map_renders_unchanged() -> None:
+    leaf = _node("top.u_a", "child", inst_name="u_a")
+    root = _node("top", "top", children=(leaf,))
+    buf_none, buf_phase2 = io.StringIO(), io.StringIO()
+    mermaid_render.render(root, buf_none, reset_map=None)
+    mermaid_render.render(root, buf_phase2)
+    assert buf_none.getvalue() == buf_phase2.getvalue()
+
+
+# --- unit: JSON renderer with synthetic graph -------------------------------
+
+
+def test_json_renders_reset_fields_on_each_node() -> None:
+    import json
+
+    leaf = _node("top.u_a", "ff", inst_name="u_a")
+    root = _node("top", "top", children=(leaf,))
+    rm = _populated_reset_map(flops=[_flop_reset("top.u_a")])
+    buf = io.StringIO()
+    json_render.render(root, buf, reset_map=rm)
+    payload = json.loads(buf.getvalue())
+    nodes_by_path = {n["instance_path"]: n for n in payload["nodes"]}
+    flop = nodes_by_path["top.u_a"]
+    assert flop["reset"] == {
+        "name": "rst_n",
+        "polarity": "low",
+        "type": "async",
+        "kind": "port",
+    }
+    assert flop["reset_crossings_in"] == []
+    assert flop["is_reset_synchronizer"] is False
+    # Top has no reset binding → null + empty
+    assert nodes_by_path["top"]["reset"] is None
+
+
+def test_json_renders_reset_crossings_in() -> None:
+    import json
+
+    dst = _node("top.u_dst", "ff", inst_name="u_dst")
+    root = _node("top", "top", children=(dst,))
+    rm = _populated_reset_map(crossings=[_reset_crossing("top.u_dst")])
+    buf = io.StringIO()
+    json_render.render(root, buf, reset_map=rm)
+    payload = json.loads(buf.getvalue())
+    nodes_by_path = {n["instance_path"]: n for n in payload["nodes"]}
+    crossings = nodes_by_path["top.u_dst"]["reset_crossings_in"]
+    assert len(crossings) == 1
+    assert crossings[0] == {
+        "reset": "rst_n",
+        "kind": "async-deassert",
+        "flop_clock": None,
+        "polarity": "low",
+        "type": "async",
+        "reset_kind": "port",
+    }
+
+
+def test_json_marks_reset_synchronizer_flag() -> None:
+    import json
+
+    sync = _node("top.u_sync", "ff", inst_name="u_sync")
+    root = _node("top", "top", children=(sync,))
+    rm = _populated_reset_map(
+        syncs=[
+            ResetSynchronizer(
+                instance_path="top.u_sync",
+                dest_clock="clk_b",
+                async_in="rst_n",
+                async_in_kind="port",
+                location=None,
+            )
+        ]
+    )
+    buf = io.StringIO()
+    json_render.render(root, buf, reset_map=rm)
+    payload = json.loads(buf.getvalue())
+    nodes_by_path = {n["instance_path"]: n for n in payload["nodes"]}
+    assert nodes_by_path["top.u_sync"]["is_reset_synchronizer"] is True
+    assert nodes_by_path["top"]["is_reset_synchronizer"] is False
+
+
+def test_json_no_reset_map_emits_null_and_false_defaults() -> None:
+    """``reset_map=None`` still emits the reset-shaped fields with
+    graceful-degradation values, so downstream consumers can rely on
+    their presence."""
+    import json
+
+    leaf = _node("top.u_a", "ff", inst_name="u_a")
+    root = _node("top", "top", children=(leaf,))
+    buf = io.StringIO()
+    json_render.render(root, buf)
+    payload = json.loads(buf.getvalue())
+    for n in payload["nodes"]:
+        assert n["reset"] is None
+        assert n["reset_crossings_in"] == []
+        assert n["is_reset_synchronizer"] is False
+
+
 # --- integration: real Verible parse + reset map ----------------------------
 
 
@@ -604,6 +789,49 @@ def test_integration_dot_with_combined_clock_and_reset(
     )
     assert "✓rstsync" in sync_line
     assert "#0d9488" in sync_line
+
+
+@pytestmark_integration
+def test_integration_mermaid_with_combined_clock_and_reset(
+    integration_root: HierNode,
+) -> None:
+    cm = load_domain_map(FIXTURE_DIR / "clock_map.json")
+    rm = load_reset_domain_map(FIXTURE_DIR / "reset_map.json")
+    buf = io.StringIO()
+    mermaid_render.render(integration_root, buf, domain_map=cm, reset_map=rm)
+    text = buf.getvalue()
+    assert "[clk_a]" in text and "[clk_b]" in text
+    assert "[rst_n↓]" in text
+    assert "⚠RDC: rst_n:async-deassert" in text
+    # u_rd_ptr (RDC dst, no CDC on this fixture) takes orange stroke.
+    assert "stroke:#ea580c" in text
+    # u_sync gets teal.
+    assert "stroke:#0d9488" in text
+
+
+@pytestmark_integration
+def test_integration_json_with_combined_clock_and_reset(
+    integration_root: HierNode,
+) -> None:
+    import json
+
+    cm = load_domain_map(FIXTURE_DIR / "clock_map.json")
+    rm = load_reset_domain_map(FIXTURE_DIR / "reset_map.json")
+    buf = io.StringIO()
+    json_render.render(integration_root, buf, domain_map=cm, reset_map=rm)
+    payload = json.loads(buf.getvalue())
+    nodes_by_path = {n["instance_path"]: n for n in payload["nodes"]}
+
+    rd_ptr = nodes_by_path["top.u_fifo.u_rd_ptr"]
+    assert rd_ptr["clock"] == "clk_b"
+    assert rd_ptr["reset"]["name"] == "rst_n"
+    assert rd_ptr["reset"]["polarity"] == "low"
+    assert len(rd_ptr["reset_crossings_in"]) == 1
+    assert rd_ptr["reset_crossings_in"][0]["kind"] == "async-deassert"
+    assert rd_ptr["is_reset_synchronizer"] is False
+
+    sync = nodes_by_path["top.u_rstgen.u_sync"]
+    assert sync["is_reset_synchronizer"] is True
 
 
 @pytestmark_integration
