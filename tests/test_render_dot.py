@@ -81,7 +81,8 @@ def test_mid_to_leaf_edge_survives_frame_mode() -> None:
     dot_render.render(root, out)
     text = out.getvalue()
     assert '"top.u_mid" -> "top.u_mid.u_leaf"' in text
-    assert "u_leaf\\nleaf" in text
+    # Node label lines stack via ``\l`` (left-align) under monospace.
+    assert "u_leaf\\lleaf" in text
     # No top→mid edge — that's containment, not a drawn arrow.
     assert '"top" -> "top.u_mid"' not in text
 
@@ -102,7 +103,9 @@ def test_blackbox_uses_dashed_style() -> None:
 
 
 def test_param_overrides_in_label() -> None:
-    """Param overrides go on the child's node label, one per line."""
+    """Param overrides go on the child's node label, one per line,
+    with ``.NAME`` left-padded so the ``(`` parens form a column.
+    """
     inst = _instance(
         "u_core",
         "core",
@@ -116,9 +119,41 @@ def test_param_overrides_in_label() -> None:
     out = io.StringIO()
     dot_render.render(root, out)
     text = out.getvalue()
-    # Multi-line format — each override on its own ``\l``-aligned
-    # line, two-space indented inside the ``#( … )`` block.
+    # Both names are 5 chars — no padding needed; parens already
+    # align column-wise.
     assert r"#(\l  .WIDTH(16)\l  .DEPTH(32)\l)" in text
+
+
+def test_param_overrides_pad_to_align_parens() -> None:
+    """Mixed-width param names get right-padded with spaces so the
+    opening ``(`` column-aligns under the monospace font.
+    """
+    inst = _instance(
+        "u_x",
+        "core",
+        overrides=(
+            ParameterOverride(param_name="W", value_text="1", location=None),
+            ParameterOverride(param_name="MAX_DEPTH", value_text="32", location=None),
+        ),
+    )
+    child = _node("top.u_x", "core", instance=inst, is_blackbox=True)
+    root = _node("top", "top", children=(child,))
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    # ``W`` padded with 8 spaces to align with ``MAX_DEPTH`` (9 chars).
+    assert r"  .W        (1)\l  .MAX_DEPTH(32)\l" in text
+
+
+def test_graph_uses_monospace_fontname() -> None:
+    """Graph + node + edge scopes all set ``fontname=...,monospace`` so
+    space-padding actually visually aligns. The padding logic only
+    works under a fixed-width font."""
+    out = io.StringIO()
+    dot_render.render(_node("top", "top"), out)
+    text = out.getvalue()
+    assert "monospace" in text.split("subgraph")[0]  # graph-level
+    assert "node [" in text and "monospace" in text
 
 
 def test_label_escapes_quotes_and_backslashes() -> None:
@@ -162,7 +197,9 @@ def test_edge_label_lists_port_connections() -> None:
     out = io.StringIO()
     dot_render.render(root, out)
     text = out.getvalue()
-    assert r'"top.u_mid" -> "top.u_mid.u_ff" [label=".clk(clk)\l.q(q[0])\l"];' in text
+    # Port-name padded so ``(`` parens align under the monospace
+    # font: ``clk`` is the longest at 3 chars, ``q`` gets 2-char pad.
+    assert r'"top.u_mid" -> "top.u_mid.u_ff" [label=".clk(clk)\l.q  (q[0])\l"];' in text
 
 
 def test_edge_label_truncates_long_port_lists() -> None:
@@ -204,13 +241,13 @@ def test_no_edge_label_when_no_connections() -> None:
     assert '"top.u_mid" -> "top.u_mid.u" [' not in text
 
 
-# --- port → child signal-flow edges -----------------------------------------
+# --- shared helper for port-anchor tests ------------------------------------
 
 
 def _top_with_ports(
     *ports: tuple[str, str], children: tuple[HierNode, ...] = ()
 ) -> HierNode:
-    """Helper: build a top HierNode whose Module carries the given ports.
+    """Build a top HierNode whose Module carries the given ports.
 
     Each entry is ``(name, direction)``.
     """
@@ -233,6 +270,140 @@ def _top_with_ports(
         is_blackbox=False,
         children=children,
     )
+
+
+# --- multi-clock label + two-tone + HTML grid -------------------------------
+
+
+def test_clock_label_lists_all_clocks_in_subtree() -> None:
+    """Multi-clock subtrees label with every distinct clock, not just
+    the predominant one. ``predominant_clock`` would silently flatten a
+    multi-domain module to its majority — misleading for any CDC view.
+    """
+    from rtl_buddy_view.annotations import Clock, DomainMap, FlopDomain
+
+    sync_inst = _instance("u_sync", "ip_cdc_sync")
+    sync = _node("top.u_sync", "ip_cdc_sync", instance=sync_inst)
+    root = _top_with_ports(children=(sync,))
+    m = DomainMap(
+        schema_version="1.0",
+        generator_name="t",
+        generator_version="0",
+        design_top="top",
+        design_frontend="slang",
+        clocks=(
+            Clock(name="clk_a", period=10.0, source="create_clock", ports=()),
+            Clock(name="clk_b", period=8.0, source="create_clock", ports=()),
+        ),
+        flop_domains=(
+            FlopDomain(instance_path="top.u_sync.f1", clock="clk_a", location=None),
+            FlopDomain(instance_path="top.u_sync.f2", clock="clk_b", location=None),
+        ),
+    )
+    out = io.StringIO()
+    dot_render.render(root, out, domain_map=m)
+    text = out.getvalue()
+    assert "[clk_a, clk_b]" in text
+
+
+def test_two_tone_fill_for_single_direction_crossing() -> None:
+    """A node with one unambiguous (src, dst) async crossing gets a
+    ``style="rounded,striped"`` two-tone fill — left half src color,
+    right half dst color."""
+    from rtl_buddy_view.annotations import Clock, Crossing, DomainMap, FlopDomain
+
+    sync_inst = _instance("u_sync", "ip_cdc_sync")
+    sync = _node("top.u_sync", "ip_cdc_sync", instance=sync_inst)
+    root = _top_with_ports(("clk_a", "input"), children=(sync,))
+    m = DomainMap(
+        schema_version="1.0",
+        generator_name="t",
+        generator_version="0",
+        design_top="top",
+        design_frontend="slang",
+        clocks=(
+            Clock(name="clk_a", period=10.0, source="create_clock", ports=("clk_a",)),
+            Clock(name="clk_b", period=8.0, source="create_clock", ports=()),
+        ),
+        flop_domains=(
+            FlopDomain(instance_path="top.u_sync.f1", clock="clk_b", location=None),
+        ),
+        crossings=(
+            Crossing(
+                src_clock="clk_a",
+                dst_clock="clk_b",
+                dst_flop="top.u_sync.f1",
+                dst_source_instance_path="top.u_sync",
+                min_hops=0,
+                width=1,
+                async_per_sdc=True,
+            ),
+        ),
+    )
+    out = io.StringIO()
+    dot_render.render(root, out, domain_map=m)
+    text = out.getvalue()
+    line = [ln for ln in text.splitlines() if '"top.u_sync"' in ln][0]
+    assert 'style="rounded,striped"' in line
+    fill = line.split("fillcolor=")[1].split("]")[0]
+    assert ":" in fill
+
+
+def test_html_grid_for_bidirectional_crossings() -> None:
+    """Multiple distinct (src, dst) pairs → HTML-table label with one
+    row per direction (left=src color, right=dst color). Striped style
+    can't express the 2-row case."""
+    from rtl_buddy_view.annotations import Clock, Crossing, DomainMap, FlopDomain
+
+    fifo_inst = _instance("u_fifo", "ip_cdc_fifo")
+    fifo = _node("top.u_fifo", "ip_cdc_fifo", instance=fifo_inst)
+    root = _top_with_ports(children=(fifo,))
+    m = DomainMap(
+        schema_version="1.0",
+        generator_name="t",
+        generator_version="0",
+        design_top="top",
+        design_frontend="slang",
+        clocks=(
+            Clock(name="clk_a", period=10.0, source="create_clock", ports=()),
+            Clock(name="clk_b", period=8.0, source="create_clock", ports=()),
+        ),
+        flop_domains=(
+            FlopDomain(instance_path="top.u_fifo.f1", clock="clk_a", location=None),
+            FlopDomain(instance_path="top.u_fifo.f2", clock="clk_b", location=None),
+        ),
+        crossings=(
+            Crossing(
+                src_clock="clk_a",
+                dst_clock="clk_b",
+                dst_flop="top.u_fifo.f1",
+                dst_source_instance_path="top.u_fifo",
+                min_hops=0,
+                width=1,
+                async_per_sdc=True,
+            ),
+            Crossing(
+                src_clock="clk_b",
+                dst_clock="clk_a",
+                dst_flop="top.u_fifo.f2",
+                dst_source_instance_path="top.u_fifo",
+                min_hops=0,
+                width=1,
+                async_per_sdc=True,
+            ),
+        ),
+    )
+    out = io.StringIO()
+    dot_render.render(root, out, domain_map=m)
+    text = out.getvalue()
+    line = [ln for ln in text.splitlines() if '"top.u_fifo"' in ln][0]
+    assert "<TABLE" in line
+    assert "shape=plaintext" in line
+    # Two crossing rows × two BGCOLOR cells = 4.
+    assert line.count("BGCOLOR") == 4
+
+
+# --- port → child signal-flow edges -----------------------------------------
 
 
 def test_signal_edge_connects_bare_input_to_direct_child() -> None:
@@ -399,8 +570,6 @@ def test_signal_edge_colored_by_explicit_port_clock() -> None:
     # Edge exists AND uses a non-neutral palette color (the slate
     # fallback would be ``#cbd5e1``; any other ``#`` hex is a
     # palette swatch).
-    edge_line = [ln for ln in text.splitlines() if '"_in_data_in" -> "top.u_a"' in ln][
-        0
-    ]
+    edge_line = [ln for ln in text.splitlines() if '"_in_data_in" -> "top.u_a"' in ln][0]
     assert 'color="#cbd5e1"' not in edge_line
     assert 'color="#' in edge_line

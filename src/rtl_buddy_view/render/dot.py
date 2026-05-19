@@ -95,9 +95,14 @@ def render(
     # vertically; reducing nodesep/ranksep keeps the diagram compact.
     out.write("  nodesep=0.18;\n")
     out.write("  ranksep=0.45;\n")
+    # Fixed-width font on every label so space-padding visually aligns
+    # parentheses in parameter and port-connection lists.
+    out.write('  fontname="Menlo,Courier,monospace";\n')
     out.write(
-        f'  node [shape=box, style="rounded,filled", fillcolor="{_DEFAULT_FILL}"];\n'
+        f'  node [shape=box, style="rounded,filled", fillcolor="{_DEFAULT_FILL}",'
+        ' fontname="Menlo,Courier,monospace"];\n'
     )
+    out.write('  edge [fontname="Menlo,Courier,monospace"];\n')
     out.write("\n")
     _emit_top_frame(node, out, active_map)
     if with_legend and active_map is not None:
@@ -108,18 +113,21 @@ def render(
 def _emit_top_frame(top: HierNode, out: IO[str], domain_map: DomainMap | None) -> None:
     """Emit the top module as a titled cluster with port-rank anchors."""
     title = _escape(top.module_name)
-    clock = (
-        domain_map.predominant_clock(top.instance_path)
-        if domain_map is not None
-        else None
+    clocks_in_subtree = (
+        _clocks_under(top.instance_path, domain_map) if domain_map is not None else ()
     )
-    if clock is not None:
-        title = f"{title}  [{_escape(clock)}]"
+    if clocks_in_subtree:
+        title = f"{title}  [{', '.join(_escape(c) for c in clocks_in_subtree)}]"
 
     # Frame outline only — no fill — so the clock cue rides on the
     # border + per-child ``[clock]`` labels, not a wash of color that
-    # competes with child node fills.
-    outline = _palette_color(clock) if clock is not None else "#94a3b8"
+    # competes with child node fills. Single-clock subtrees get a
+    # clock-keyed outline; multi-clock or untyped subtrees get a
+    # neutral slate so the per-child fills carry the domain detail.
+    if len(clocks_in_subtree) == 1:
+        outline = _palette_color(clocks_in_subtree[0])
+    else:
+        outline = "#94a3b8"
 
     out.write("  subgraph cluster_top {\n")
     out.write(f'    label="{title}";\n')
@@ -277,21 +285,32 @@ def _emit_port_anchors(top: HierNode, out: IO[str]) -> None:
     outputs = [p for p in top.module.ports if p.direction in ("output", "inout")]
 
     if inputs:
+        # Right-edge alignment: pad each name on the LEFT to the max
+        # name width so all ``▶`` glyphs land in the same column under
+        # the monospace font. Padding has to be applied after
+        # ``_escape`` since the escape pass would otherwise collapse
+        # the padding spaces.
+        escaped = {p.name: _escape(p.name) for p in inputs}
+        max_w = max((len(s) for s in escaped.values()), default=0)
         out.write("    { rank=source;\n")
         for p in inputs:
-            label = _escape(p.name)
+            padded = escaped[p.name].rjust(max_w)
             out.write(
                 f'      "_in_{p.name}" '
-                f'[shape=plaintext, label="{label} ▶\\r", fontsize=9];\n'
+                f'[shape=plaintext, label="{padded} ▶", fontsize=9];\n'
             )
         out.write("    }\n")
     if outputs:
+        # Left-edge alignment: pad each name on the RIGHT instead, so
+        # the ``▶`` glyph leading each output label forms a column.
+        escaped = {p.name: _escape(p.name) for p in outputs}
+        max_w = max((len(s) for s in escaped.values()), default=0)
         out.write("    { rank=sink;\n")
         for p in outputs:
-            label = _escape(p.name)
+            padded = escaped[p.name].ljust(max_w)
             out.write(
                 f'      "_out_{p.name}" '
-                f'[shape=plaintext, label="▶ {label}\\l", fontsize=9];\n'
+                f'[shape=plaintext, label="▶ {padded}", fontsize=9];\n'
             )
         out.write("    }\n")
 
@@ -344,11 +363,34 @@ def _emit_node(
     so the marker collapses onto the node itself (label suffix +
     red border).
     """
+    # Multi-direction CDC: distinct (src, dst) crossing pairs > 1.
+    # These need a 2-column grid (one row per direction), which dot's
+    # ``striped`` style can't do — fall through to an HTML-label
+    # rendering path.
+    pairs = (
+        _crossing_pairs_into(node.instance_path, domain_map)
+        if domain_map is not None and not node.is_blackbox
+        else ()
+    )
+    if len(pairs) > 1:
+        _emit_html_grid_node(node, out, domain_map, pairs, cdc_on_node=cdc_on_node)
+        for child in node.children:
+            _emit_node(child, out, domain_map)
+        return
+
     label = _label_for(node, domain_map)
     attrs = [f'label="{label}"']
-    fill = _fill_for(node, domain_map)
+    fill, striped = _fill_for(node, domain_map)
     if node.is_blackbox:
+        # Blackbox dashed + filled; striped not combined with dashed
+        # (Graphviz can't render both). Falls back to solid fill.
         attrs.append('style="rounded,filled,dashed"')
+        attrs.append(f'fillcolor="{fill}"')
+    elif striped:
+        # Two-tone src→dst gradient: left half source-clock color,
+        # right half destination-clock color. ``box`` shape under
+        # ``striped`` style emits vertical bands left-to-right.
+        attrs.append('style="rounded,striped"')
         attrs.append(f'fillcolor="{fill}"')
     elif fill != _DEFAULT_FILL:
         attrs.append(f'fillcolor="{fill}"')
@@ -366,21 +408,176 @@ def _emit_node(
         _emit_node(child, out, domain_map)
 
 
-def _fill_for(node: HierNode, domain_map: DomainMap | None) -> str:
-    """Pick the node's fill color.
+def _emit_html_grid_node(
+    node: HierNode,
+    out: IO[str],
+    domain_map: DomainMap | None,
+    pairs: tuple[tuple[str, str], ...],
+    *,
+    cdc_on_node: bool,
+) -> None:
+    """Emit a node as an HTML-label table — header text + one row per crossing.
 
-    Annotations off → blackbox-yellow for blackboxes, default gray
-    otherwise. Annotations on → clock-keyed pastel from the palette
-    when the subtree has a predominant clock, else fall back to the
-    annotations-off behavior (so pure-comb and untraceable nodes
-    stay neutral).
+    Used for nodes that have multiple distinct ``(src, dst)`` crossing
+    pairs (typically gray-code CDC FIFOs that cross both ways). Dot's
+    ``striped`` style only emits vertical bands; HTML labels let us
+    emit a 2-column grid where each row shows one direction.
+
+    The header cell carries the same text content as a regular node
+    label (instance, module, parameter block, clock summary, blackbox
+    marker), using ``<BR ALIGN="LEFT"/>`` for left-aligned line
+    breaks so it visually matches the rest of the diagram.
+    """
+    text_lines = _label_text_lines(node, domain_map)
+    header = '<BR ALIGN="LEFT"/>'.join(_html_escape(ln) for ln in text_lines)
+    # Trailing <BR/> anchors the last line to the left, matching the
+    # ``\l`` behavior in plain labels.
+    header += '<BR ALIGN="LEFT"/>'
+
+    rows: list[str] = [
+        f'<TR><TD COLSPAN="2" BORDER="0" ALIGN="LEFT">'
+        f'<FONT FACE="Menlo,Courier,monospace">{header}</FONT></TD></TR>'
+    ]
+    for src, dst in pairs:
+        rows.append(
+            f"<TR>"
+            f'<TD BGCOLOR="{_palette_color(src)}" PORT="src_{src}" WIDTH="60">'
+            f'<FONT POINT-SIZE="10">{_html_escape(src)}</FONT></TD>'
+            f'<TD BGCOLOR="{_palette_color(dst)}" PORT="dst_{dst}" WIDTH="60">'
+            f'<FONT POINT-SIZE="10">{_html_escape(dst)}</FONT></TD>'
+            f"</TR>"
+        )
+    table = (
+        '<<TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4">'
+        + "".join(rows)
+        + "</TABLE>>"
+    )
+
+    attrs = [f"label={table}", "shape=plaintext"]
+    if cdc_on_node:
+        attrs.append('color="#dc2626"')
+        attrs.append("penwidth=2")
+    out.write(f'  "{node.instance_path}" [{", ".join(attrs)}];\n')
+
+
+def _label_text_lines(node: HierNode, domain_map: DomainMap | None) -> list[str]:
+    """Return the per-line text content that ``_label_for`` would render,
+    minus the ``\\l`` joining — useful for HTML-label emission.
+    """
+    inst_name = node.instance.name if node.instance is not None else node.module_name
+    lines = [inst_name, node.module_name]
+    if node.instance is not None and node.instance.param_overrides:
+        # Param block already carries ``\l`` separators; flatten to a
+        # list of bare lines for HTML conversion.
+        block = _format_param_overrides(node.instance.param_overrides)
+        # Re-split on the ``\l`` markers; each is a literal two-char
+        # ``\\l`` in the formatter output.
+        lines.extend(s for s in block.split(r"\l") if s)
+    if domain_map is not None:
+        clocks = _clocks_under(node.instance_path, domain_map)
+        if clocks:
+            lines.append(f"[{', '.join(clocks)}]")
+    if node.is_blackbox:
+        lines.append("(blackbox)")
+    return lines
+
+
+def _html_escape(s: str) -> str:
+    """Minimal HTML escape for dot HTML labels.
+
+    Dot HTML labels are XML-like; we need ``&``, ``<``, ``>``, and
+    quotes encoded. Whitespace is preserved (padding spaces in
+    parameter alignment depend on it under the monospace font).
+    """
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _fill_for(node: HierNode, domain_map: DomainMap | None) -> tuple[str, bool]:
+    """Pick the node's fill spec.
+
+    Returns ``(fillcolor_value, is_striped)``. When ``is_striped`` is
+    true, the caller emits ``style="rounded,striped"`` so the colon-
+    separated palette pair renders as a left/right two-tone fill.
+
+    Resolution:
+
+    * No domain map → blackbox-yellow / default gray, solid.
+    * Subtree in a single clock domain → that clock's palette swatch,
+      solid.
+    * Subtree spans exactly two clock domains AND every crossing
+      that terminates in this subtree uses one of those clocks as
+      ``src_clock`` and the other as ``dst_clock`` → two-tone:
+      ``<src palette>:<dst palette>`` (left half = source, right
+      half = destination). Makes CDC synchronizers / FIFOs read at a
+      glance as "data flows from this side to that side."
+    * Anything else (≥3 clocks, or 2 clocks with no clear direction)
+      → neutral default fill, solid.
     """
     if domain_map is None:
-        return _BLACKBOX_FILL if node.is_blackbox else _DEFAULT_FILL
-    clock = domain_map.predominant_clock(node.instance_path)
-    if clock is None:
-        return _BLACKBOX_FILL if node.is_blackbox else _DEFAULT_FILL
-    return _palette_color(clock)
+        return (
+            _BLACKBOX_FILL if node.is_blackbox else _DEFAULT_FILL,
+            False,
+        )
+    # Two-tone case takes priority over single-clock: a one-stage
+    # sync flop has its flops in the destination clock but receives
+    # data from a source clock — the crossing carries the directional
+    # info that the per-flop count doesn't.
+    direction = _crossing_direction(node.instance_path, domain_map)
+    if direction is not None:
+        src, dst = direction
+        return f"{_palette_color(src)}:{_palette_color(dst)}", True
+    clocks = _clocks_under(node.instance_path, domain_map)
+    if len(clocks) == 1:
+        return _palette_color(clocks[0]), False
+    return (
+        _BLACKBOX_FILL if node.is_blackbox else _DEFAULT_FILL,
+        False,
+    )
+
+
+def _crossing_pairs_into(
+    instance_path: str, domain_map: DomainMap
+) -> tuple[tuple[str, str], ...]:
+    """All distinct ``(src_clock, dst_clock)`` pairs from async crossings
+    terminating in the subtree rooted at ``instance_path``.
+
+    Sorted for deterministic output. Crossings with an ``<unconstrained>``
+    source are excluded — no real clock to anchor a direction on.
+    """
+    prefix = instance_path + "."
+    pairs: set[tuple[str, str]] = set()
+    for c in domain_map.crossings:
+        if not c.async_per_sdc:
+            continue
+        if c.src_clock.startswith("<") and c.src_clock.endswith(">"):
+            continue
+        dst_owner = c.dst_source_instance_path or c.dst_flop
+        if dst_owner != instance_path and not dst_owner.startswith(prefix):
+            continue
+        pairs.add((c.src_clock, c.dst_clock))
+    return tuple(sorted(pairs))
+
+
+def _crossing_direction(
+    instance_path: str,
+    domain_map: DomainMap,
+) -> tuple[str, str] | None:
+    """Return ``(src_clock, dst_clock)`` when crossings into ``instance_path``
+    define a single unambiguous direction.
+
+    Returns ``None`` for bidirectional / no-crossing / multiple-direction
+    cases. Multi-direction nodes get the HTML-label grid treatment in
+    :func:`_emit_html_grid_node` instead of a striped two-tone fill.
+    """
+    pairs = _crossing_pairs_into(instance_path, domain_map)
+    if len(pairs) != 1:
+        return None
+    return pairs[0]
 
 
 def _palette_color(clock_name: str) -> str:
@@ -392,6 +589,25 @@ def _palette_color(clock_name: str) -> str:
     """
     digest = hashlib.sha256(clock_name.encode("utf-8")).digest()
     return _CLOCK_PALETTE[digest[0] % len(_CLOCK_PALETTE)]
+
+
+def _clocks_under(instance_path: str, domain_map: DomainMap) -> tuple[str, ...]:
+    """All distinct clock domains present under ``instance_path``, sorted.
+
+    Used for the top frame's title — ``predominant_clock`` would
+    silently flatten a multi-clock module to its majority domain,
+    which is misleading for any design with crossings (which is most
+    of what you'd want a CDC-overlay rendering for).
+    """
+    prefix = instance_path + "."
+    found: set[str] = set()
+    for flop in domain_map.flop_domains:
+        if flop.clock is None:
+            continue
+        owner = flop.source_instance_path or flop.instance_path
+        if owner == instance_path or owner.startswith(prefix):
+            found.add(flop.clock)
+    return tuple(sorted(found))
 
 
 def _emit_legend(domain_map: DomainMap, out: IO[str]) -> None:
@@ -485,6 +701,16 @@ def _format_port_connections(conns: tuple[PortConnection, ...]) -> str:
         keep = MAX_EDGE_LABEL_CONNECTIONS - 1
         rendered = conns[:keep]
         overflow = len(conns) - keep
+
+    # Pad ``.port_name`` to the max width in this list so the ``(``
+    # parens form a single column under the fixed-width font. Padding
+    # has to land *after* ``_escape`` since the latter collapses
+    # whitespace runs.
+    escaped_names = {
+        c.port_name: _escape(c.port_name) for c in rendered if c.port_name is not None
+    }
+    pad = max((len(s) for s in escaped_names.values()), default=0)
+
     for c in rendered:
         if c.port_name is None:
             # Positional connection — bare net expression.
@@ -495,7 +721,8 @@ def _format_port_connections(conns: tuple[PortConnection, ...]) -> str:
             # verbatim to keep source style.
             parts.append(f".{_escape(c.port_name)}")
         else:
-            parts.append(f".{_escape(c.port_name)}({_escape(c.net_expr_text)})")
+            padded = escaped_names[c.port_name].ljust(pad)
+            parts.append(f".{padded}({_escape(c.net_expr_text)})")
     if overflow:
         parts.append(f"…(+{overflow} more)")
     # ``\l`` is Graphviz's left-aligned newline. One port-connection per
@@ -506,17 +733,31 @@ def _format_port_connections(conns: tuple[PortConnection, ...]) -> str:
 
 
 def _label_for(node: HierNode, domain_map: DomainMap | None) -> str:
+    """Build a left-aligned, fixed-width node label.
+
+    Lines stack via ``\\l`` (Graphviz left-aligned newline) so the
+    instance name, module name, parameter block, clock tag, and any
+    blackbox marker all flush against the left edge of the box —
+    matches the param-block alignment and reads naturally under the
+    monospace font.
+
+    The clock tag enumerates every clock present in the subtree
+    (e.g. ``[a_clk, s_clk, vu_clk]``), not just the predominant one
+    — a single-clock label on a multi-clock module hides the
+    crossings that the diagram is meant to surface.
+    """
     inst_name = node.instance.name if node.instance is not None else node.module_name
     lines = [_escape(inst_name), _escape(node.module_name)]
     if node.instance is not None and node.instance.param_overrides:
         lines.append(_format_param_overrides(node.instance.param_overrides))
     if domain_map is not None:
-        clock = domain_map.predominant_clock(node.instance_path)
-        if clock is not None:
-            lines.append(f"[{_escape(clock)}]")
+        clocks = _clocks_under(node.instance_path, domain_map)
+        if clocks:
+            lines.append(f"[{', '.join(_escape(c) for c in clocks)}]")
     if node.is_blackbox:
         lines.append("(blackbox)")
-    return r"\n".join(lines)
+    # Trailing ``\l`` anchors the final line to the left margin.
+    return r"\l".join(lines) + r"\l"
 
 
 def _format_param_overrides(overrides: tuple[ParameterOverride, ...]) -> str:
@@ -526,6 +767,16 @@ def _format_param_overrides(overrides: tuple[ParameterOverride, ...]) -> str:
     same line-break convention as edge port-connection labels. Wide
     parameter lists no longer stretch the node horizontally.
     """
+    # Pad ``.PARAM`` to the max name width so the ``(`` parens line
+    # up vertically under the fixed-width font. Padding has to land
+    # *after* ``_escape`` since the latter collapses whitespace runs.
+    escaped_names = {
+        ov.param_name: _escape(ov.param_name)
+        for ov in overrides
+        if ov.param_name is not None
+    }
+    pad = max((len(s) for s in escaped_names.values()), default=0)
+
     parts: list[str] = []
     for ov in overrides:
         if ov.param_name is None:
@@ -533,7 +784,8 @@ def _format_param_overrides(overrides: tuple[ParameterOverride, ...]) -> str:
             # implied by the order in the surrounding list.
             parts.append(_escape(ov.value_text))
         else:
-            parts.append(f".{_escape(ov.param_name)}({_escape(ov.value_text)})")
+            padded = escaped_names[ov.param_name].ljust(pad)
+            parts.append(f".{padded}({_escape(ov.value_text)})")
     if not parts:
         return "#()"
     body = r"\l  ".join(parts)
