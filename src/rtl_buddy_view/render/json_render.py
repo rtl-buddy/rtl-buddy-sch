@@ -26,6 +26,7 @@ from typing import IO
 
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.graph import HierNode
+from rtl_buddy_view.reset_annotations import ResetDomainMap
 
 SCHEMA_VERSION = "1.0"
 
@@ -49,8 +50,15 @@ def render(
     out: IO[str],
     *,
     domain_map: DomainMap | None = None,
+    reset_map: ResetDomainMap | None = None,
 ) -> None:
-    """Render ``node`` and its subtree as JSON to ``out``."""
+    """Render ``node`` and its subtree as JSON to ``out``.
+
+    ``reset_map`` is accepted on the signature for CLI plumbing
+    symmetry; the Phase 3 JSON overlay (per-node reset / RDC fields,
+    #3 subtask 6) lands in a follow-up PR.
+    """
+    _ = reset_map  # consumed in #3 follow-up
     payload = _build_payload(node, domain_map)
     json.dump(payload, out, indent=2, sort_keys=False)
     out.write("\n")

@@ -32,6 +32,7 @@ from rtl_buddy_view.render.dot import (
     _format_cdc_summary,
     _palette_color,
 )
+from rtl_buddy_view.reset_annotations import ResetDomainMap
 
 
 def render(
@@ -39,8 +40,15 @@ def render(
     out: IO[str],
     *,
     domain_map: DomainMap | None = None,
+    reset_map: ResetDomainMap | None = None,
 ) -> None:
-    """Render ``node`` and its subtree as a mermaid flowchart."""
+    """Render ``node`` and its subtree as a mermaid flowchart.
+
+    ``reset_map`` is accepted on the signature for CLI plumbing
+    symmetry; the Phase 3 mermaid overlay (#3 subtask 6) lands in a
+    follow-up PR.
+    """
+    _ = reset_map  # consumed in #3 follow-up
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
     out.write("```mermaid\n")
     out.write("flowchart TB\n")
