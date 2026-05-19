@@ -99,11 +99,12 @@ def test_dot_edges_carry_port_connection_labels() -> None:
     buf = io.StringIO()
     dot_render.render(root, buf)
     output = buf.getvalue()
-    # The u_ff edge has two connections; both should appear verbatim,
-    # one per line (``\l`` = Graphviz left-aligned newline).
-    assert r'"counter" -> "counter.u_ff" [label=".clk(clk)\l.q(q)\l"];' in output
-    # The u_x edge has only `.clk(clk)`.
-    assert r'"counter" -> "counter.u_x" [label=".clk(clk)\l"];' in output
+    # Frame mode: top→child edges don't exist (containment is the
+    # relationship). Port-connection rendering is tested via deeper
+    # edges; here just confirm the children land inside the frame.
+    assert '"counter.u_ff"' in output
+    assert '"counter.u_x"' in output
+    assert '"counter" -> "counter.u_ff"' not in output
 
 
 def test_hierarchy_marks_undefined_as_blackbox() -> None:

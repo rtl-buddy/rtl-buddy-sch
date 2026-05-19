@@ -87,17 +87,16 @@ def test_dot_renders_each_shape_distinctively() -> None:
     buf = io.StringIO()
     dot_render.render(root, buf)
     output = buf.getvalue()
-    # Named form preserves both halves. ``\l`` is Graphviz's left-
-    # aligned newline — one port-connection per line.
-    assert (
-        r'"top" -> "top.u_named" [label=".clk(clk)\l.rst_n(rst_n)\l.q(q)\l"];'
-        in output
-    )
-    # Positional form drops the leading `.port` — just net text.
-    assert r'"top" -> "top.u_pos" [label="clk\lrst_n\lq\l"];' in output
-    # Shorthand form is bare `.port`.
-    assert r'"top" -> "top.u_short" [label=".clk\l.rst_n\l.q\l"];' in output
+    # Frame mode: top→child edges don't exist (containment is the
+    # relationship); the per-edge port-connection formatting for
+    # named/positional/shorthand shapes is exercised on deeper edges
+    # via the unit tests in test_render_dot.py. Here just confirm
+    # all three children render as nodes inside the frame.
+    assert '"top.u_named"' in output
+    assert '"top.u_pos"' in output
+    assert '"top.u_short"' in output
     # Param overrides on the named node show the full `.PARAM(value)`
-    # form; the positional node should show bare values.
-    assert "#(.WIDTH(16), .DEPTH(32))" in output
-    assert "#(16, 32)" in output
+    # form, one per ``\l``-aligned line; the positional node shows bare
+    # values in the same multi-line shape.
+    assert r"#(\l  .WIDTH(16)\l  .DEPTH(32)\l)" in output
+    assert r"#(\l  16\l  32\l)" in output
