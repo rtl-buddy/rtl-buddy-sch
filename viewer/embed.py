@@ -84,15 +84,22 @@ def main() -> int:
             + ";</script>"
         )
         # Replace the placeholder declaration that the dev template
-        # carries. If the build process stripped the comment, fall
-        # back to inserting before </head>.
-        if "window.__RTL_BUDDY_VIEW_DATA__ = null;" in html:
-            html = html.replace(
-                "<script>window.__RTL_BUDDY_VIEW_DATA__ = null;</script>",
-                injection,
-                1,
-            )
-        else:
+        # carries. The placeholder went through one renaming when the
+        # Playwright suite landed (the ``|| null`` form lets a test
+        # harness pre-set the global); accept both shapes so embed.py
+        # stays usable against a freshly-built or freshly-cloned tree.
+        placeholders = [
+            "<script>window.__RTL_BUDDY_VIEW_DATA__ = "
+            "window.__RTL_BUDDY_VIEW_DATA__ || null;</script>",
+            "<script>window.__RTL_BUDDY_VIEW_DATA__ = null;</script>",
+        ]
+        replaced = False
+        for placeholder in placeholders:
+            if placeholder in html:
+                html = html.replace(placeholder, injection, 1)
+                replaced = True
+                break
+        if not replaced:
             html = html.replace("</head>", injection + "</head>", 1)
 
     out_path = Path(args.output).resolve()

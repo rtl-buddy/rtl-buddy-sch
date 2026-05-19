@@ -6,9 +6,11 @@
     <title>rtl-buddy-view</title>
     <!-- The placeholder script tag below is the injection point used by
          embed.py to inline a view.json payload for self-contained
-         HTML distribution. When unset, the viewer loads from a URL,
-         drag-and-drop, or file picker. -->
-    <script>window.__RTL_BUDDY_VIEW_DATA__ = null;</script>
+         HTML distribution. The ``|| null`` lets Playwright (and any
+         other test harness) populate the global via ``addInitScript``
+         *before* this tag runs without getting clobbered. When unset,
+         the viewer loads from a URL, drag-and-drop, or file picker. -->
+    <script>window.__RTL_BUDDY_VIEW_DATA__ = window.__RTL_BUDDY_VIEW_DATA__ || null;</script>
   </head>
   <body>
     <div id="app"></div>
