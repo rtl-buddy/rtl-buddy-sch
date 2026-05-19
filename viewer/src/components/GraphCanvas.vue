@@ -185,6 +185,13 @@ function fitToWindow() {
   _svgEl.removeAttribute('viewBox')
   _svgEl.removeAttribute('width')
   _svgEl.removeAttribute('height')
+  // Vue's scoped CSS (`.svg-host > svg[data-v-…]`) doesn't match
+  // because the SVG is injected via innerHTML and never gets the
+  // data-v attribute; we relied on viz.js's intrinsic width/height
+  // attrs for sizing. With those stripped we must pin the size
+  // ourselves or the SVG collapses to the 300×150 default.
+  _svgEl.style.width = '100%'
+  _svgEl.style.height = '100%'
   // Strip any prior transform so getBBox returns the content's
   // bbox in its own coord system; the new transform we apply below
   // is what positions it.
