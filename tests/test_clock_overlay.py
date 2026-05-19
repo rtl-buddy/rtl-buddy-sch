@@ -254,60 +254,67 @@ def test_tree_empty_map_acts_like_no_map() -> None:
 
 
 def test_dot_colors_node_when_clock_known() -> None:
+    """Frame mode: top renders as a cluster with a clock-keyed outline;
+    children carry the same clock-keyed fillcolor.
+    """
     child = _node("top.u_a", "child")
     root = _node("top", "top", children=(child,))
     m = _populated_map([_flop("top.u_a.f1", "clk_x")])
     buf = io.StringIO()
     dot_render.render(root, buf, domain_map=m)
     text = buf.getvalue()
-    assert "[clk_x]" in text  # appears in the node label
-    # Same clock at root and child → same fillcolor on both lines.
-    fill_for_top = _extract_fill(text, '"top" ')
+    assert "[clk_x]" in text  # per-child label still carries the clock tag
+    # Child has a clock-keyed fill.
     fill_for_child = _extract_fill(text, '"top.u_a" ')
-    assert fill_for_top == fill_for_child
-    assert fill_for_top.startswith("#")
+    assert fill_for_child.startswith("#")
 
 
-def test_dot_styles_crossing_edges_in_red_dashed() -> None:
+def test_dot_emits_cdc_arrow_from_input_port_anchor() -> None:
+    """When the crossing's src_clock matches a top input port, a dashed
+    red arrow runs from that port anchor to the crossing destination."""
+    from rtl_buddy_view.extractor import Module, Port
+
     dst = _node("top.u_dst", "ff", inst_name="u_dst")
-    root = _node("top", "top", children=(dst,))
+    top_mod = Module(
+        name="top",
+        ports=(
+            Port(name="clk_a", direction="input", type_text=None, location=None),
+            Port(name="clk_b", direction="input", type_text=None, location=None),
+        ),
+        parameters=(),
+        instances=(),
+        location=None,
+    )
+    root = HierNode(
+        instance_path="top",
+        module_name="top",
+        instance=None,
+        module=top_mod,
+        is_blackbox=False,
+        children=(dst,),
+    )
     m = _map_with_crossings(
         [_crossing(src_clock="clk_a", dst_clock="clk_b", dst_flop="top.u_dst")]
     )
     buf = io.StringIO()
     dot_render.render(root, buf, domain_map=m)
     output = buf.getvalue()
-    # The edge to the crossing destination carries the warning label,
-    # a red color, and dashed style — matches the conventions used
-    # for other dashed-warning edges across the renderer family.
     assert "⚠CDC: clk_a→clk_b" in output
     assert "#dc2626" in output
     assert 'style="dashed"' in output
-    # Non-destination edges aren't affected.
-    assert output.count("#dc2626") == 2  # color + fontcolor on one edge
+    # Arrow originates at the input-port anchor.
+    assert '"_in_clk_a" -> "top.u_dst"' in output
 
 
 def test_dot_edge_label_combines_cdc_and_port_connections() -> None:
-    """CDC marker prepends to the port-connection label, not replaces it."""
-    inst = Instance(
-        name="u_dst",
-        module_name="ff",
-        param_overrides=(),
-        port_connections=(),
-        location=None,
-    )
-    dst = HierNode(
-        instance_path="top.u_dst",
-        module_name="ff",
-        instance=inst,
-        module=None,
-        is_blackbox=False,
-        children=(),
-    )
-    # Build a port connection to test the combined label path.
+    """CDC marker prepends to port-connection text on a single edge.
+
+    Frame mode: top→child edges don't exist, so the combined-label
+    path is exercised on a mid→leaf edge instead.
+    """
     from rtl_buddy_view.extractor import PortConnection
 
-    inst_with_conns = Instance(
+    leaf_inst = Instance(
         name="u_dst",
         module_name="ff",
         param_overrides=(),
@@ -316,17 +323,18 @@ def test_dot_edge_label_combines_cdc_and_port_connections() -> None:
         ),
         location=None,
     )
-    dst = HierNode(
-        instance_path="top.u_dst",
+    leaf = HierNode(
+        instance_path="top.u_mid.u_dst",
         module_name="ff",
-        instance=inst_with_conns,
+        instance=leaf_inst,
         module=None,
         is_blackbox=False,
         children=(),
     )
-    root = _node("top", "top", children=(dst,))
+    mid = _node("top.u_mid", "mid", inst_name="u_mid", children=(leaf,))
+    root = _node("top", "top", children=(mid,))
     m = _map_with_crossings(
-        [_crossing(src_clock="clk_a", dst_clock="clk_b", dst_flop="top.u_dst")]
+        [_crossing(src_clock="clk_a", dst_clock="clk_b", dst_flop="top.u_mid.u_dst")]
     )
     buf = io.StringIO()
     dot_render.render(root, buf, domain_map=m)
