@@ -130,6 +130,7 @@ one whose `origin` matches the event's `origin` (see §6). `kind:
 | `cursor_time_changed`   | wave → all      | `{ "t_fs": "0" }` (femtoseconds, decimal string, may be very large)    | Surfer cursor moved. Requires the WCP `cursor_set` event in the surfer fork (§9).                                                |
 | `scope_changed`         | wave → all      | `{ "wave_scope": "tb.dut.u_fifo" }`                                    | Surfer scope navigation. Requires the WCP `scope_changed` event in the surfer fork (§9).                                         |
 | `source_focused`        | src → all       | `{ "file": "rtl/fifo.sv", "line": 42, "col": 5 }`                      | nvim's explicit `:RtlBuddyShow` broadcast — not on every cursor move (would spam the bus). Paths are absolute.                  |
+| `diagnostics_set`       | any → all       | `{ "source": "rtl-buddy-cdc", "items": [{file, line, severity, message, …}] }` | Full diagnostic set for the given `source`. Latest-writer-wins per source on the hub's cache. Empty `items` clears that source.   |
 
 ### Request/response (point-to-point)
 
