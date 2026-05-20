@@ -69,4 +69,110 @@ describe('built-in overlays', () => {
       'reset-synchroniser',
     ])
   })
+
+  it('clock overlay legend and apply agree on the colour for each clock', () => {
+    // Reproduces the rtl-buddy-view live demo bug (2026-05-20):
+    // ``apply`` painted by first-seen palette index, ``legend``
+    // painted by sorted-alphabetical, and they disagreed. Both must
+    // use the same sorted-alphabetical assignment so the user can
+    // read the legend off the schematic.
+    const overlay = getOverlay('clock')
+    const graph = {
+      // Deliberately *not* alphabetical traversal order — if apply
+      // walked first-seen this would assign clk_z=PALETTE[0],
+      // clk_a=PALETTE[1], legend would do the reverse.
+      nodes: [
+        { id: 'a', overlays: { clock: { clock: 'clk_z' } } },
+        { id: 'b', overlays: { clock: { clock: 'clk_a' } } },
+        { id: 'c', overlays: { clock: { clock: 'clk_m' } } },
+      ],
+      edges: [],
+    }
+    const legend = overlay.legend(graph)
+    const legendByLabel = Object.fromEntries(legend.map((e) => [e.label, e.swatch]))
+    expect(legend.map((e) => e.label)).toEqual(['clk_a', 'clk_m', 'clk_z'])
+
+    // Mock a minimal DOM: each node has a polygon child the overlay
+    // resolves via ``data-node-id``. Verify the fill applied matches
+    // the legend swatch for that clock.
+    const polys = {}
+    const svgRoot = {
+      querySelector(sel) {
+        const m = sel.match(/data-node-id="([^"]+)"/)
+        if (!m) return null
+        const id = m[1]
+        if (!polys[id]) {
+          let fillAttr = ''
+          const shape = {
+            style: { fill: '' },
+            setAttribute(name, val) { if (name === 'fill') fillAttr = val },
+            removeAttribute(name) { if (name === 'fill') fillAttr = '' },
+            getFill: () => fillAttr,
+          }
+          polys[id] = {
+            shape,
+            setAttribute() {},
+            removeAttribute() {},
+            querySelector() { return shape },
+          }
+        }
+        return polys[id]
+      },
+    }
+    overlay.apply(svgRoot, graph, true)
+    expect(polys.a.shape.style.fill).toBe(legendByLabel.clk_z)
+    expect(polys.b.shape.style.fill).toBe(legendByLabel.clk_a)
+    expect(polys.c.shape.style.fill).toBe(legendByLabel.clk_m)
+    expect(polys.a.shape.getFill()).toBe(legendByLabel.clk_z)
+  })
+
+  it('clock overlay apply(enabled=false) clears the polygon fill attribute, not just the inline style', () => {
+    // The embedded-layout DOT historically baked clock colors into
+    // each polygon's ``fill=`` attribute. Toggling the overlay off
+    // used to clear only ``style.fill``, so the attribute fill
+    // shone through and the user reported "unchecking clock still
+    // shows colors". This test pins the defensive behaviour: both
+    // surfaces get cleared.
+    const overlay = getOverlay('clock')
+    const graph = {
+      nodes: [{ id: 'a', overlays: { clock: { clock: 'clk_a' } } }],
+      edges: [],
+    }
+    let fillAttr = '#dcfce7' // simulate baked-in fillcolor from producer DOT
+    const shape = {
+      style: { fill: 'red' },
+      setAttribute(name, val) { if (name === 'fill') fillAttr = val },
+      removeAttribute(name) { if (name === 'fill') fillAttr = '' },
+      getFill: () => fillAttr,
+    }
+    const group = {
+      shape,
+      setAttribute() {},
+      removeAttribute() {},
+      querySelector() { return shape },
+    }
+    const svgRoot = { querySelector: () => group }
+    overlay.apply(svgRoot, graph, false)
+    expect(shape.style.fill).toBe('')
+    expect(shape.getFill()).toBe('')
+  })
+
+  it('clock overlay legend reads top-level overlay_meta.clock.clocks when present', () => {
+    // SDC-declared clocks that bind to no flop (e.g. used only on an
+    // output port) wouldn't otherwise appear in the legend because
+    // the node walk never sees them. The optional
+    // ``overlay_meta.clock.clocks`` manifest gives producers a way
+    // to surface them.
+    const overlay = getOverlay('clock')
+    const graph = {
+      nodes: [{ id: 'a', overlays: { clock: { clock: 'clk_a' } } }],
+      overlay_meta: {
+        clock: {
+          clocks: [{ name: 'clk_unbound' }, 'clk_other'],
+        },
+      },
+    }
+    const labels = overlay.legend(graph).map((e) => e.label)
+    expect(labels).toEqual(['clk_a', 'clk_other', 'clk_unbound'])
+  })
 })

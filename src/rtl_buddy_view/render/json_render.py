@@ -123,18 +123,23 @@ def _layout_block(
 ) -> dict:
     """Build the ``layout`` block by reusing the dot renderer.
 
+    ``domain_map`` / ``reset_map`` / ``with_legend`` are intentionally
+    NOT forwarded to the embedded DOT. Producer-baked clock/reset
+    fills survive the SPA's overlay toggle (the inline-style clear
+    can't reach the polygon's ``fill=`` attribute), and the
+    hash-keyed Python palette disagrees with the SPA's first-seen
+    assignment so the legend would lie. The SPA is the single source
+    of truth for overlay coloring — it reads per-node
+    ``overlays.clock`` / ``overlays.reset`` metadata and paints on
+    top of a *structurally* laid-out diagram.
+
     The dot renderer is deterministic given the same inputs, so the
     embedded string is golden-stable across runs — the existing
     determinism contract holds.
     """
+    del domain_map, reset_map, with_legend  # see docstring
     buf = io.StringIO()
-    dot_render.render(
-        node,
-        buf,
-        domain_map=domain_map,
-        reset_map=reset_map,
-        with_legend=with_legend,
-    )
+    dot_render.render(node, buf)
     return {"engine": "dot", "dot": buf.getvalue()}
 
 

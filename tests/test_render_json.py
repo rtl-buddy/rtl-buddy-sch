@@ -489,6 +489,46 @@ def test_layout_block_deterministic() -> None:
     assert a == b
 
 
+def test_layout_block_carries_no_per_node_fillcolor_when_overlays_supplied() -> None:
+    """The embedded DOT is structure-only; per-node clock/reset
+    fills come from ``nodes[].overlays`` so the SPA can toggle them
+    on and off. If we bake palette colors into the DOT, the
+    polygon's ``fill=`` attribute survives the SPA's overlay-clear
+    (which only touches inline ``style.fill``) and the user sees
+    colors persist after unchecking the overlay (rtl-buddy-view live
+    demo, 2026-05-20).
+    """
+    dst = _node("top.u_dst", "ff", inst_name="u_dst")
+    root = _node("top", "top", children=(dst,))
+    cm = DomainMap(
+        schema_version="1.0",
+        generator_name="test",
+        generator_version="0",
+        design_top="top",
+        design_frontend="yosys",
+        clocks=(Clock(name="clk_a", period=10.0, source="create_clock", ports=()),),
+        flop_domains=(
+            FlopDomain(instance_path="top.u_dst", clock="clk_a", location=None),
+        ),
+        crossings=(),
+    )
+    payload = _render(root, domain_map=cm)
+    dot = payload["layout"]["dot"]
+    # No per-node fillcolor — the global ``node []`` statement still
+    # sets the default neutral fill, but individual nodes must not
+    # override it with palette swatches.
+    lines = [
+        line
+        for line in dot.splitlines()
+        if "fillcolor=" in line and not line.lstrip().startswith("node [")
+    ]
+    assert lines == [], f"unexpected per-node fillcolor lines: {lines}"
+    # The per-node clock label tag (e.g. ``[clk_a]``) must also be
+    # absent — it duplicates what the overlay surfaces and bakes a
+    # clock name into the layout where it can't be cleared.
+    assert "[clk_a]" not in dot
+
+
 def test_combined_overlay_payload_validates_against_v1_schema(
     view_schema: dict,
 ) -> None:
