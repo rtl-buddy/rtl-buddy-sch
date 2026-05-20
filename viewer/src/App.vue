@@ -11,6 +11,7 @@
       <aside class="sidebar">
         <OverlayPanel />
         <NodeDetail />
+        <DiagnosticsPanel />
       </aside>
       <GraphCanvas />
     </div>
@@ -27,6 +28,7 @@
       <h2>Could not load this view</h2>
       <pre>{{ store.error }}</pre>
     </div>
+    <ToastHost />
   </div>
 </template>
 
@@ -44,6 +46,9 @@ import GraphCanvas from './components/GraphCanvas.vue'
 import OverlayPanel from './components/OverlayPanel.vue'
 import NodeDetail from './components/NodeDetail.vue'
 import HubStatus from './components/HubStatus.vue'
+import ToastHost from './components/ToastHost.vue'
+import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
+import { initHub } from './composables/useHub.js'
 
 const store = useViewerStore()
 
@@ -65,6 +70,9 @@ function onDrop(e) {
 onMounted(() => {
   document.addEventListener('dragover', onDragOver)
   document.addEventListener('drop', onDrop)
+  // Phase 10d: kick the hub composable. Same-origin /ws — the hub
+  // injects window.__RTL_BUDDY_HUB__ when it serves the bundle.
+  initHub({ store })
 })
 onBeforeUnmount(() => {
   document.removeEventListener('dragover', onDragOver)

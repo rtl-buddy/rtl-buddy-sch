@@ -7,7 +7,11 @@
 //   - selection: the currently-selected node id (or null)
 //   - enabledOverlays: Set<string> of overlay names the user has
 //     toggled on. Defaults to all overlays in `graph.overlays_present`.
-//   - hubState: 'disconnected' (Phase 5 stub — Phase 10d wires this).
+//   - hubCursorTimeFs: latest cursor_time_changed payload from the hub.
+//   - hubScope: latest scope_changed payload from the hub.
+//   - diagnosticsBySource: { [source]: items[] } keyed by producer.
+//     Latest-writer-wins per source; empty items clears the source.
+//   - hubError / hubErrorDismissedAt: surfaces hub `error` envelopes.
 //
 // Actions:
 //   - bootstrap(): kick off the initial load (URL query, inlined
@@ -17,6 +21,10 @@
 //     three explicit entry points for the same parse+validate path.
 //   - select(id) / clearSelection()
 //   - toggleOverlay(name)
+//   - applyHubCursorTime / applyHubSelection / applyHubScope /
+//     applyDiagnostics / applyHubError — invoked by useHub on inbound
+//     events; centralising them keeps the composable thin and the
+//     store the only writer.
 //
 import { defineStore } from 'pinia'
 import { parseViewJson } from './parse.js'
@@ -28,11 +36,16 @@ export const useViewerStore = defineStore('viewer', {
     error: null,
     selection: null,
     enabledOverlays: new Set(),
-    hubState: 'disconnected',
     // When set, the renderer shows only the subtree rooted at this
     // instance path. ``null`` means show the full hierarchy from
     // ``graph.top``. Descend / ascend actions mutate this.
     rootInstancePath: null,
+    // Hub-mirrored state. All written by applyHub*/applyDiagnostics
+    // actions; consumers read these directly.
+    hubCursorTimeFs: null,
+    hubScope: null,
+    diagnosticsBySource: {},
+    hubError: null,
   }),
   getters: {
     nodesById: (state) => {
@@ -75,6 +88,31 @@ export const useViewerStore = defineStore('viewer', {
     },
     overlaysPresent: (state) =>
       state.graph ? state.graph.overlays_present : [],
+    diagnosticsForNode: (state) => (nodeId) => {
+      // Flatten diagnostics across all sources that reference this
+      // node. The wire uses absolute paths (file:line); for the
+      // viewer we key on the rtl-buddy-cdc-style optional
+      // `instance_path` field embedded in the item if present. The
+      // hub doesn't enforce that yet, so this getter returns an
+      // empty list when the producer is path-only.
+      if (!nodeId) return []
+      const out = []
+      for (const [source, items] of Object.entries(state.diagnosticsBySource)) {
+        for (const item of items) {
+          if (item.instance_path === nodeId) {
+            out.push({ source, ...item })
+          }
+        }
+      }
+      return out
+    },
+    diagnosticsFlat: (state) => {
+      const out = []
+      for (const [source, items] of Object.entries(state.diagnosticsBySource)) {
+        for (const item of items) out.push({ source, ...item })
+      }
+      return out
+    },
   },
   actions: {
     async bootstrap() {
@@ -185,6 +223,57 @@ export const useViewerStore = defineStore('viewer', {
       // trigger reactivity reliably across all consumers; reassign
       // to force an update.
       this.enabledOverlays = new Set(this.enabledOverlays)
+    },
+
+    // --- hub-event reducers --------------------------------------------------
+    //
+    // Each apply* action is invoked by useHub's dispatcher on an
+    // inbound envelope. Keeping them on the store (and not in the
+    // composable) means tests, devtools, and SSR snapshotting all
+    // see the same state — and the composable stays a thin
+    // transport.
+
+    applyHubCursorTime(tFs) {
+      // Decimal string per protocol §3. Store as-is; UI formats.
+      this.hubCursorTimeFs = typeof tFs === 'string' ? tFs : null
+    },
+
+    applyHubSelection(id) {
+      // Cross-origin selection: update store.selection so existing
+      // selection-rendering (NodeDetail, future canvas highlight)
+      // reacts. We don't dispatch back to the hub — that would loop
+      // (the hub already suppresses by origin class, but echoing
+      // would still flood the wire).
+      if (typeof id !== 'string' || id.length === 0) return
+      this.selection = id
+    },
+
+    applyHubScope(payload) {
+      this.hubScope = payload && typeof payload === 'object' ? { ...payload } : null
+    },
+
+    applyDiagnostics(source, items) {
+      // Latest-writer-wins per source. Empty `items` clears the
+      // source so a producer can withdraw findings (e.g. a re-run
+      // of `rb cdc` returns clean).
+      if (typeof source !== 'string' || source.length === 0) return
+      const next = { ...this.diagnosticsBySource }
+      if (Array.isArray(items) && items.length > 0) {
+        next[source] = items.slice()
+      } else {
+        delete next[source]
+      }
+      this.diagnosticsBySource = next
+    },
+
+    applyHubError(err) {
+      this.hubError = err && typeof err === 'object'
+        ? { code: err.code, message: err.message, at: err.at || Date.now() }
+        : null
+    },
+
+    dismissHubError() {
+      this.hubError = null
     },
   },
 })
