@@ -142,7 +142,8 @@ def main(
 
     if list_overlays:
         for overlay in registry:
-            typer.echo(f"{overlay.name}\t{overlay.schema_version}")
+            source = registry.source_of(overlay.name)
+            typer.echo(f"{overlay.name}\t{overlay.schema_version}\t({source})")
         raise typer.Exit(code=0)
 
     # `--top` / `--filelist` are mandatory for actual rendering, but

@@ -51,9 +51,9 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 def test_list_overlays_prints_builtin_names() -> None:
     result = _run("--list-overlays")
     assert result.returncode == 0, result.stderr
-    # Both built-ins with their schema_version, tab-separated.
-    assert "clock\t1.0" in result.stdout
-    assert "reset\t1.0" in result.stdout
+    # Both built-ins with their schema_version + source tag, tab-separated.
+    assert "clock\t1.0\t(built-in)" in result.stdout
+    assert "reset\t1.0\t(built-in)" in result.stdout
 
 
 def test_list_overlays_works_without_top_or_filelist() -> None:
