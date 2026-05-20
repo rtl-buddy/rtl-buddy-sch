@@ -298,7 +298,13 @@ def _render(
     elif fmt is OutputFormat.mermaid:
         mermaid_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
     elif fmt is OutputFormat.json:
-        json_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
+        json_render.render(
+            root,
+            sink,
+            domain_map=domain_map,
+            reset_map=reset_map,
+            with_legend=clock_legend,
+        )
     else:  # pragma: no cover
         raise ValueError(f"Unknown format: {fmt}")
 

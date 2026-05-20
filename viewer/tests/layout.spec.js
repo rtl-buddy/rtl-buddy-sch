@@ -4,7 +4,7 @@
 // is pure string transformation.
 
 import { describe, expect, it } from 'vitest'
-import { graphToDot, dotEscape, dotId } from '../src/layout/viz.js'
+import { graphToDot, dotEscape, dotId, pickDot } from '../src/layout/viz.js'
 
 const graph = {
   nodes: [
@@ -71,5 +71,34 @@ describe('dotId', () => {
   it('always quotes the id', () => {
     expect(dotId('plain')).toBe('"plain"')
     expect(dotId('with.dots')).toBe('"with.dots"')
+  })
+})
+
+describe('pickDot', () => {
+  it('returns graph.layout.dot verbatim when present', () => {
+    // Producer-supplied DOT (e.g. from rtl-buddy-view --format json
+    // with embed_layout=True) takes precedence over the in-JS
+    // builder so the desktop and browser layouts stay in sync.
+    const baked = 'digraph hierarchy { rankdir="LR"; "top"; }'
+    const result = pickDot({ ...graph, layout: { engine: 'dot', dot: baked } })
+    expect(result).toBe(baked)
+  })
+
+  it('falls back to graphToDot when layout is missing', () => {
+    expect(pickDot(graph)).toBe(graphToDot(graph))
+  })
+
+  it('falls back when layout.dot is empty / whitespace', () => {
+    // An empty string would crash viz.js with "syntax error"; treat
+    // it as "producer opted out" and rebuild from nodes + edges.
+    expect(pickDot({ ...graph, layout: { engine: 'dot', dot: '' } })).toBe(graphToDot(graph))
+    expect(pickDot({ ...graph, layout: { engine: 'dot', dot: '   \n' } })).toBe(
+      graphToDot(graph),
+    )
+  })
+
+  it('falls back when layout.dot is not a string', () => {
+    expect(pickDot({ ...graph, layout: { engine: 'dot', dot: 42 } })).toBe(graphToDot(graph))
+    expect(pickDot({ ...graph, layout: {} })).toBe(graphToDot(graph))
   })
 })

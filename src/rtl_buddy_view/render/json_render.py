@@ -34,6 +34,7 @@ golden tests and rb-hier-side diffs noise-free.
 
 from __future__ import annotations
 
+import io
 import json
 from typing import IO
 from urllib.parse import quote
@@ -41,6 +42,7 @@ from urllib.parse import quote
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.extractor import Port, PortConnection, SourceLocation
 from rtl_buddy_view.graph import HierNode
+from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 
 SCHEMA_VERSION = "1.0"
@@ -52,9 +54,27 @@ def render(
     *,
     domain_map: DomainMap | None = None,
     reset_map: ResetDomainMap | None = None,
+    with_legend: bool = False,
+    embed_layout: bool = True,
 ) -> None:
-    """Render ``node`` and its subtree as ``view.json`` v1."""
-    payload = _build_payload(node, domain_map, reset_map)
+    """Render ``node`` and its subtree as ``view.json`` v1.
+
+    ``embed_layout`` (default True) bakes the same DOT string the
+    ``--format dot`` renderer would emit into a top-level ``layout``
+    block. The Phase 5 web viewer prefers this over rebuilding DOT
+    in JavaScript so the desktop terminal output and the browser
+    schematic share a single layout — clusters, port-rank anchors,
+    edge labels, and clock-domain palette all included. Producers
+    that don't want the cost (or don't ship Graphviz on the consumer
+    side) can pass ``embed_layout=False`` to drop the block.
+    """
+    payload = _build_payload(
+        node,
+        domain_map,
+        reset_map,
+        with_legend=with_legend,
+        embed_layout=embed_layout,
+    )
     json.dump(payload, out, indent=2, sort_keys=False)
     out.write("\n")
 
@@ -63,6 +83,9 @@ def _build_payload(
     node: HierNode,
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
+    *,
+    with_legend: bool = False,
+    embed_layout: bool = True,
 ) -> dict:
     nodes = sorted(
         (_node_dict(n, domain_map, reset_map) for n in _walk(node)),
@@ -73,7 +96,7 @@ def _build_payload(
         key=lambda d: (d["from"], d["to"]),
     )
     overlays_present = _overlays_present(domain_map, reset_map)
-    return {
+    payload: dict = {
         "schema_version": SCHEMA_VERSION,
         "top": node.module_name,
         "tool": {"name": "rtl-buddy-view", "version": _version()},
@@ -81,6 +104,38 @@ def _build_payload(
         "edges": edges,
         "overlays_present": overlays_present,
     }
+    if embed_layout:
+        payload["layout"] = _layout_block(
+            node,
+            domain_map=domain_map,
+            reset_map=reset_map,
+            with_legend=with_legend,
+        )
+    return payload
+
+
+def _layout_block(
+    node: HierNode,
+    *,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None,
+    with_legend: bool,
+) -> dict:
+    """Build the ``layout`` block by reusing the dot renderer.
+
+    The dot renderer is deterministic given the same inputs, so the
+    embedded string is golden-stable across runs — the existing
+    determinism contract holds.
+    """
+    buf = io.StringIO()
+    dot_render.render(
+        node,
+        buf,
+        domain_map=domain_map,
+        reset_map=reset_map,
+        with_legend=with_legend,
+    )
+    return {"engine": "dot", "dot": buf.getvalue()}
 
 
 def _overlays_present(
