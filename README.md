@@ -78,6 +78,34 @@ uv run python scripts/fetch_verible.py
 On macOS, `brew install verible` is also fine — the tool prefers a
 PATH binary over the vendored copy.
 
+### Building the wheel with the Vue SPA shipped
+
+The wheel includes a pre-built copy of the Vue 3 viewer SPA so
+`rtl_buddy`'s hub (`rb hub start --serve-viewer`) can discover it via
+`importlib.resources` without the user passing `--viewer-bundle`. To
+build a wheel locally:
+
+```bash
+uv run python scripts/prebuild_viewer.py    # npm ci + npm run build + stage
+uv build --wheel                            # produces dist/*.whl
+```
+
+The prebuild step copies `viewer/dist/*` to `src/rtl_buddy_view/_viewer_bundle/`
+(gitignored) and filters out source maps. The `Wheel` CI workflow
+runs the same two steps on every PR touching `src/`, `viewer/`, or
+`pyproject.toml`, and fails if the published wheel doesn't contain
+`_viewer_bundle/index.html` + a JS asset.
+
+Programmatic access from downstream code:
+
+```python
+from rtl_buddy_view import viewer_bundle
+path = viewer_bundle.path()  # Path | None
+```
+
+Returns `None` when iterating from a checkout without a staged
+bundle — callers fall back to their own placeholder.
+
 ## Use via `rb hier`
 
 If your project already uses [rtl-buddy](https://github.com/rtl-buddy/rtl_buddy),

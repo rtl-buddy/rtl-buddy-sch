@@ -13,3 +13,7 @@ htmlcov/
 .DS_Store
 # Vendored Verible binary fetched by the setup flow.
 vendor/verible/
+# Staged SPA bundle written by scripts/prebuild_viewer.py before
+# `uv build`. Lives under the package tree so uv_build's default
+# discovery picks it up, but never committed — it's a build artefact.
+src/rtl_buddy_view/_viewer_bundle/
