@@ -3,6 +3,7 @@
     <div class="graph-toolbar">
       <button type="button" @click="zoomIn">+</button>
       <button type="button" @click="zoomOut">−</button>
+      <button type="button" @click="fitToWindow">Fit</button>
       <button type="button" @click="resetView">Reset</button>
     </div>
     <div class="svg-host" ref="svgHostEl"></div>
@@ -32,7 +33,7 @@ const canvasEl = ref(null)
 const transform = ref({ x: 0, y: 0, scale: 1 })
 let _svgEl = null
 
-const graph = computed(() => store.graph)
+const graph = computed(() => store.displayGraph)
 
 async function renderSvg() {
   if (!graph.value || !svgHostEl.value) return
@@ -62,7 +63,9 @@ async function renderSvg() {
     if (to) group.setAttribute('data-edge-to', to.trim())
   }
   applyOverlays(_svgEl, graph.value, store.enabledOverlays)
-  applyTransform()
+  // Defer to next frame so flex layout has settled and the host
+  // rect is its final size before we compute the fit scale.
+  requestAnimationFrame(fitToWindow)
 }
 
 watch(graph, renderSvg)
@@ -75,20 +78,33 @@ watch(
   },
 )
 
-function onClick(e) {
+function nodeFromEvent(e) {
   const group = e.target.closest('g.node, [data-node-id]')
-  if (!group) return
+  if (!group) return null
   const id = group.getAttribute('data-node-id')
-  if (!id) return
-  store.select(id)
+  if (!id) return null
   const node = store.nodesById.get(id)
-  if (!node) return
-  hub.notifyClick(node)
-  if (node.link) {
-    // Phase 5 hub-stub: open the URI via window.open so the
-    // browser raises its standard "open this URL?" prompt. Phase
-    // 10d's hub intercepts this before the URI dispatch.
-    window.open(node.link, '_blank')
+  return node ? { id, node } : null
+}
+
+function onClick(e) {
+  // Left-click: select only. Source-editor dispatch is on right-click.
+  const hit = nodeFromEvent(e)
+  if (!hit) return
+  store.select(hit.id)
+  hub.notifyClick(hit.node)
+}
+
+function onContextMenu(e) {
+  // Right-click: select + dispatch ``node.link`` to the OS so the
+  // registered handler (rtlbuddy:// or vscode://) opens the source.
+  // Phase 10d's hub will intercept this before the URI dispatch.
+  const hit = nodeFromEvent(e)
+  if (!hit) return
+  e.preventDefault()
+  store.select(hit.id)
+  if (hit.node.link) {
+    window.open(hit.node.link, '_blank')
   }
 }
 
@@ -170,9 +186,50 @@ function resetView() {
   applyTransform()
 }
 
+// Fit the rendered graph tightly into the visible canvas. viz.js's
+// default viewBox already does an aspect-fit, but it leaves a lot of
+// dead space when the graph's aspect ratio differs from the canvas's
+// (common for tall hierarchies in wide windows, or vice versa).
+// This drops viewBox so user-space units map 1:1 to host pixels, then
+// uses the existing g-transform pipeline to scale and centre the
+// content bbox into the host rect.
+function fitToWindow() {
+  if (!_svgEl || !svgHostEl.value) return
+  const root = _svgEl.querySelector('g')
+  if (!root) return
+  _svgEl.removeAttribute('viewBox')
+  _svgEl.removeAttribute('width')
+  _svgEl.removeAttribute('height')
+  // Vue's scoped CSS (`.svg-host > svg[data-v-…]`) doesn't match
+  // because the SVG is injected via innerHTML and never gets the
+  // data-v attribute; we relied on viz.js's intrinsic width/height
+  // attrs for sizing. With those stripped we must pin the size
+  // ourselves or the SVG collapses to the 300×150 default.
+  _svgEl.style.width = '100%'
+  _svgEl.style.height = '100%'
+  // Strip any prior transform so getBBox returns the content's
+  // bbox in its own coord system; the new transform we apply below
+  // is what positions it.
+  root.removeAttribute('transform')
+  const bb = root.getBBox()
+  const rect = svgHostEl.value.getBoundingClientRect()
+  if (!bb.width || !bb.height || !rect.width || !rect.height) {
+    applyTransform()
+    return
+  }
+  const scale = Math.min(rect.width / bb.width, rect.height / bb.height)
+  transform.value = {
+    scale,
+    x: (rect.width - bb.width * scale) / 2 - bb.x * scale,
+    y: (rect.height - bb.height * scale) / 2 - bb.y * scale,
+  }
+  applyTransform()
+}
+
 onMounted(() => {
   if (svgHostEl.value) {
     svgHostEl.value.addEventListener('click', onClick)
+    svgHostEl.value.addEventListener('contextmenu', onContextMenu)
     svgHostEl.value.addEventListener('wheel', onWheel, { passive: false })
     svgHostEl.value.addEventListener('mousedown', onMouseDown)
   }
@@ -183,6 +240,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (svgHostEl.value) {
     svgHostEl.value.removeEventListener('click', onClick)
+    svgHostEl.value.removeEventListener('contextmenu', onContextMenu)
     svgHostEl.value.removeEventListener('wheel', onWheel)
     svgHostEl.value.removeEventListener('mousedown', onMouseDown)
   }

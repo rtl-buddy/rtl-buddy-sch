@@ -1,6 +1,26 @@
 <template>
   <section class="node-detail" v-if="node">
     <h3>{{ node.id }}</h3>
+    <div class="nav-actions">
+      <button
+        type="button"
+        @click="store.descend(node.id)"
+        :disabled="!store.selectedHasChildren"
+        :title="store.selectedHasChildren ? 'Show only this subtree' : 'Leaf node — nothing to descend into'"
+      >Descend</button>
+      <button
+        type="button"
+        @click="store.ascend()"
+        :disabled="!store.rootInstancePath"
+        title="Show parent scope"
+      >Up</button>
+      <button
+        type="button"
+        @click="store.goToTop()"
+        :disabled="!store.rootInstancePath"
+        title="Back to design top"
+      >Top</button>
+    </div>
     <dl>
       <dt>Module</dt><dd>{{ node.module }}</dd>
       <dt v-if="node.is_blackbox">Status</dt>
@@ -86,6 +106,20 @@ const hasParameters = computed(
   font-size: 0.75rem;
 }
 .empty { color: #64748b; font-size: 0.85rem; }
+.nav-actions { display: flex; gap: 0.25rem; margin-bottom: 0.5rem; }
+.nav-actions button {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+.nav-actions button:disabled {
+  color: #94a3b8;
+  background: #f1f5f9;
+  cursor: not-allowed;
+}
 .blackbox { color: #b45309; }
 .port-name { color: #1e293b; }
 .port-dir { color: #64748b; font-size: 0.75rem; margin-left: 0.25rem; }
