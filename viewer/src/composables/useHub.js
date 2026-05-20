@@ -175,10 +175,18 @@ function applyEnvelope(env) {
       break
     }
 
-    case 'bye':
-      // Peer leaving; protocol v1's payload doesn't tell us *which*
-      // peer, so wait for the next welcome refresh to repaint the list.
+    case 'bye': {
+      // The hub builds `bye` envelopes with `origin` set to the
+      // leaving peer (`_bye_envelope` in hub/server.py), so we use
+      // that to drop the peer from the visible list rather than
+      // waiting for the next welcome (which never fires for an
+      // already-established SPA session — peer lists would otherwise
+      // go stale every time nvim quits or `rb wave` exits).
+      if (typeof env.origin === 'string' && env.origin && env.origin !== 'cli') {
+        peers.value = peers.value.filter((p) => p !== env.origin)
+      }
       break
+    }
 
     default:
       // Unknown types are silently dropped (protocol §11).

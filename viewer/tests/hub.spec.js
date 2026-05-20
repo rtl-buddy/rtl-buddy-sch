@@ -138,6 +138,37 @@ describe('useHub envelope dispatch', () => {
     expect(store.hubError?.code).toBe('not_connected')
   })
 
+  it('bye removes the leaving peer from the peers list', () => {
+    const hub = useHub()
+    // Seed peers via a welcome — same pathway production uses.
+    _testing.applyEnvelope(
+      env('welcome', 'response', {
+        server_version: '1.0.0',
+        registered_clients: ['view', 'src', 'wave'],
+      }),
+    )
+    expect(hub.peers.value).toEqual(['view', 'src', 'wave'])
+
+    _testing.applyEnvelope(env('bye', 'event', {}, 'src'))
+    expect(hub.peers.value).toEqual(['view', 'wave'])
+
+    _testing.applyEnvelope(env('bye', 'event', {}, 'wave'))
+    expect(hub.peers.value).toEqual(['view'])
+  })
+
+  it('bye with cli origin or missing origin is a no-op', () => {
+    const hub = useHub()
+    _testing.applyEnvelope(
+      env('welcome', 'response', { server_version: '1.0', registered_clients: ['view', 'src'] }),
+    )
+    // `cli` is the hub itself, not an adapter peer.
+    _testing.applyEnvelope(env('bye', 'event', {}, 'cli'))
+    expect(hub.peers.value).toEqual(['view', 'src'])
+    // Defensive: an envelope with no origin shouldn't crash or wipe the list.
+    _testing.applyEnvelope({ v: 1, id: 'x', kind: 'event', type: 'bye' })
+    expect(hub.peers.value).toEqual(['view', 'src'])
+  })
+
   it('unknown types are silently ignored (protocol §11)', () => {
     expect(() =>
       _testing.applyEnvelope(env('future_type', 'event', { whatever: true })),
