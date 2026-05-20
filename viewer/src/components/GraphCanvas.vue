@@ -88,7 +88,9 @@ function nodeFromEvent(e) {
 }
 
 function onClick(e) {
-  // Left-click: select only. Source-editor dispatch is on right-click.
+  // Left-click: select + broadcast selection_changed via the hub
+  // (Phase 10d). When the hub is offline, notifyClick falls back to
+  // dispatching ``node.link`` directly, so a click is never a no-op.
   const hit = nodeFromEvent(e)
   if (!hit) return
   store.select(hit.id)
@@ -96,9 +98,11 @@ function onClick(e) {
 }
 
 function onContextMenu(e) {
-  // Right-click: select + dispatch ``node.link`` to the OS so the
-  // registered handler (rtlbuddy:// or vscode://) opens the source.
-  // Phase 10d's hub will intercept this before the URI dispatch.
+  // Right-click is an explicit escape hatch: dispatch ``node.link``
+  // straight to the OS (rtlbuddy:// or vscode://), bypassing the
+  // hub even when it's connected. Handy when the hub's resolver
+  // is misconfigured or the user wants the editor to open without
+  // also panning surfer.
   const hit = nodeFromEvent(e)
   if (!hit) return
   e.preventDefault()
