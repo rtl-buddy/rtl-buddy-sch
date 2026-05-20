@@ -39,6 +39,22 @@
       "type": "array",
       "items": {"type": "string"},
       "description": "Sorted list of overlay names whose annotation payloads contributed to this view. The viewer dispatches per-overlay JS modules off this list."
+    },
+    "layout": {
+      "type": "object",
+      "description": "Pre-baked layout payload. Optional: producers may omit it (consumers fall back to building their own layout from nodes + edges). When present, gives the consumer the exact graph the desktop --format dot renderer would emit — clusters, port-rank anchors, edge labels, and clock-domain palette included.",
+      "required": ["engine", "dot"],
+      "additionalProperties": true,
+      "properties": {
+        "engine": {
+          "type": "string",
+          "description": "Graphviz layout engine the dot string is intended for. Currently always 'dot'; reserved for future fdp/neato/sfdp variants."
+        },
+        "dot": {
+          "type": "string",
+          "description": "A full Graphviz DOT source string. Node IDs use the same instance-path scheme as nodes[].id so consumers can post-walk the SVG and round-trip identity via Graphviz's auto-emitted <title> elements."
+        }
+      }
     }
   },
   "$defs": {

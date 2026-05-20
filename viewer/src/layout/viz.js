@@ -30,16 +30,37 @@ async function getViz() {
  * Layout ``graph`` (a view.json v1 payload) and return an SVG
  * string. Throws on layout errors; the store catches and surfaces
  * via the toast pipeline.
+ *
+ * When ``graph.layout.dot`` is a non-empty string (set by Python
+ * --format json --embed-layout, default on), the renderer hands it
+ * directly to viz.js — the desktop terminal output and the browser
+ * schematic then share a single layout (clusters, port-rank
+ * anchors, edge labels, clock-domain palette). Producers that omit
+ * the field fall back to the in-JS ``graphToDot`` builder, which
+ * keeps drag-drop view.json files (no Python producer in the loop)
+ * working without a behaviour change.
  */
 export async function layoutGraph(graph) {
   const viz = await getViz()
-  const dot = graphToDot(graph)
+  const dot = pickDot(graph)
   // ``viz.renderSVGElement`` runs the full layout pipeline (dot
   // engine, default) and returns a DOM-ready ``<svg>`` element.
   // The string form is easier to test against snapshots so we
   // serialise here.
   const svg = viz.renderSVGElement(dot)
   return svg.outerHTML
+}
+
+// Pick the DOT source to feed viz.js: prefer the producer-supplied
+// ``layout.dot`` when it looks usable; fall back to the in-JS
+// builder otherwise. Exported for tests so the precedence rule is
+// pinnable without standing up the WASM engine.
+export function pickDot(graph) {
+  const embedded = graph?.layout?.dot
+  if (typeof embedded === 'string' && embedded.trim().length > 0) {
+    return embedded
+  }
+  return graphToDot(graph)
 }
 
 /**

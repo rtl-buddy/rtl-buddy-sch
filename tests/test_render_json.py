@@ -447,6 +447,48 @@ def test_simple_payload_validates_against_v1_schema(view_schema: dict) -> None:
     jsonschema.validate(instance=payload, schema=view_schema)
 
 
+# --- layout block -----------------------------------------------------------
+
+
+def test_layout_block_present_by_default() -> None:
+    """Default render embeds the dot string so the SPA can use the
+    same layout as the desktop ``--format dot`` output. Producers can
+    opt out via ``embed_layout=False`` (asserted below)."""
+    child = _node("top.u_a", "child", inst_name="u_a")
+    root = _node("top", "top", children=(child,))
+    payload = _render(root)
+    layout = payload["layout"]
+    assert layout["engine"] == "dot"
+    assert layout["dot"].startswith("digraph hierarchy {")
+    # Round-trip: every node id in nodes[] is referenced verbatim in
+    # the embedded dot so the SPA's <title>-keyed selector can find
+    # the SVG group for every node.
+    for node in payload["nodes"]:
+        assert f'"{node["id"]}"' in layout["dot"], node["id"]
+
+
+def test_layout_block_omitted_when_disabled() -> None:
+    """``embed_layout=False`` keeps the JSON renderer free of the
+    dot dependency for producers that can't afford the layout cost.
+    """
+    root = _node("top", "top")
+    buf = io.StringIO()
+    json_render.render(root, buf, embed_layout=False)
+    payload = json.loads(buf.getvalue())
+    assert "layout" not in payload
+
+
+def test_layout_block_deterministic() -> None:
+    """Two renders over the same graph produce identical layout
+    bytes — the dot renderer is already golden-stable, so the
+    embedded form inherits that property."""
+    child = _node("top.u_a", "child", inst_name="u_a")
+    root = _node("top", "top", children=(child,))
+    a = _render(root)["layout"]["dot"]
+    b = _render(root)["layout"]["dot"]
+    assert a == b
+
+
 def test_combined_overlay_payload_validates_against_v1_schema(
     view_schema: dict,
 ) -> None:
