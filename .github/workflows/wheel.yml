@@ -1,0 +1,81 @@
+name: Wheel
+
+# Build the Python wheel with the Vue SPA bundle staged inside. The
+# bundle lets downstream `rtl_buddy` discover the SPA via
+# `importlib.resources` without the user passing --viewer-bundle.
+#
+# Runs on any change that could affect what ends up in the wheel:
+# the SPA source, the Python package, the prebuild script, or the
+# packaging config itself. The check is "wheel contains
+# _viewer_bundle/index.html" — if that ever silently regresses,
+# `rb hub start --serve-viewer` would fall back to the placeholder
+# without surfacing the breakage.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/wheel.yml'
+      - 'pyproject.toml'
+      - 'src/**'
+      - 'viewer/**'
+      - 'scripts/prebuild_viewer.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/wheel.yml'
+      - 'pyproject.toml'
+      - 'src/**'
+      - 'viewer/**'
+      - 'scripts/prebuild_viewer.py'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: viewer/package-lock.json
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Build SPA bundle
+        # Single source of truth for the npm + stage steps; uv build
+        # will run with the staged bundle already in place.
+        run: uv run python scripts/prebuild_viewer.py
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - name: Verify bundle is in the wheel
+        run: |
+          wheel=$(ls dist/rtl_buddy_view-*.whl)
+          echo "Built: $wheel"
+          if ! unzip -l "$wheel" | grep -q 'rtl_buddy_view/_viewer_bundle/index.html'; then
+            echo "::error::wheel is missing _viewer_bundle/index.html"
+            unzip -l "$wheel"
+            exit 1
+          fi
+          # Also confirm a JS asset shipped — empty bundle would still
+          # have index.html but be useless.
+          if ! unzip -l "$wheel" | grep -q 'rtl_buddy_view/_viewer_bundle/assets/.*\.js$'; then
+            echo "::error::wheel ships index.html but no JS bundle"
+            unzip -l "$wheel"
+            exit 1
+          fi
+
+      - name: Upload wheel artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtl-buddy-view-wheel
+          path: dist/*.whl
+          retention-days: 14
