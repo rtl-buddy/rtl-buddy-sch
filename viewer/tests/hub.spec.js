@@ -138,6 +138,71 @@ describe('useHub envelope dispatch', () => {
     expect(store.hubError?.code).toBe('not_connected')
   })
 
+  it('bye removes the leaving peer from the peers list', () => {
+    const hub = useHub()
+    // Seed peers via a welcome — same pathway production uses.
+    _testing.applyEnvelope(
+      env('welcome', 'response', {
+        server_version: '1.0.0',
+        registered_clients: ['view', 'src', 'wave'],
+      }),
+    )
+    expect(hub.peers.value).toEqual(['view', 'src', 'wave'])
+
+    _testing.applyEnvelope(env('bye', 'event', {}, 'src'))
+    expect(hub.peers.value).toEqual(['view', 'wave'])
+
+    _testing.applyEnvelope(env('bye', 'event', {}, 'wave'))
+    expect(hub.peers.value).toEqual(['view'])
+  })
+
+  it('bye with cli origin or missing origin is a no-op', () => {
+    const hub = useHub()
+    _testing.applyEnvelope(
+      env('welcome', 'response', { server_version: '1.0', registered_clients: ['view', 'src'] }),
+    )
+    // `cli` is the hub itself, not an adapter peer.
+    _testing.applyEnvelope(env('bye', 'event', {}, 'cli'))
+    expect(hub.peers.value).toEqual(['view', 'src'])
+    // Defensive: an envelope with no origin shouldn't crash or wipe the list.
+    _testing.applyEnvelope({ v: 1, id: 'x', kind: 'event', type: 'bye' })
+    expect(hub.peers.value).toEqual(['view', 'src'])
+  })
+
+  it('peer_joined appends the new peer to the list', () => {
+    const hub = useHub()
+    // Start with just the SPA itself — mimics the case where the SPA
+    // connected first and another adapter joins later (the bug PR #54
+    // identified live: nvim started after the browser tab opened and
+    // the popover never went green for `src`).
+    _testing.applyEnvelope(
+      env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }),
+    )
+    expect(hub.peers.value).toEqual(['view'])
+
+    _testing.applyEnvelope(env('peer_joined', 'event', {}, 'src'))
+    expect(hub.peers.value).toEqual(['view', 'src'])
+
+    _testing.applyEnvelope(env('peer_joined', 'event', {}, 'wave'))
+    expect(hub.peers.value).toEqual(['view', 'src', 'wave'])
+  })
+
+  it('peer_joined is idempotent and rejects cli / missing origin', () => {
+    const hub = useHub()
+    _testing.applyEnvelope(
+      env('welcome', 'response', { server_version: '1.0', registered_clients: ['view', 'src'] }),
+    )
+    // Duplicate join for an already-listed peer must not double-add.
+    _testing.applyEnvelope(env('peer_joined', 'event', {}, 'src'))
+    expect(hub.peers.value).toEqual(['view', 'src'])
+    // cli is the hub itself.
+    _testing.applyEnvelope(env('peer_joined', 'event', {}, 'cli'))
+    expect(hub.peers.value).toEqual(['view', 'src'])
+    // Missing origin shouldn't crash or wipe the list.
+    _testing.applyEnvelope({ v: 1, id: 'x', kind: 'event', type: 'peer_joined' })
+    expect(hub.peers.value).toEqual(['view', 'src'])
+  })
+
   it('unknown types are silently ignored (protocol §11)', () => {
     expect(() =>
       _testing.applyEnvelope(env('future_type', 'event', { whatever: true })),

@@ -18,7 +18,21 @@
       <dl>
         <dt>state</dt><dd>{{ hub.state.value }}</dd>
         <dt>server</dt><dd>{{ hub.serverVersion.value || '—' }}</dd>
-        <dt>peers</dt><dd>{{ peerSummary }}</dd>
+        <dt>peers</dt>
+        <dd>
+          <ul class="peer-list">
+            <li
+              v-for="peer in peerRows"
+              :key="peer.origin"
+              :data-state="peer.connected ? 'connected' : 'disconnected'"
+              :title="peer.connected ? 'connected' : 'not connected'"
+            >
+              <span class="peer-dot" aria-hidden="true"></span>
+              <code>{{ peer.origin }}</code>
+              <span class="peer-label">{{ peer.label }}</span>
+            </li>
+          </ul>
+        </dd>
         <dt>last error</dt>
         <dd v-if="hub.lastError.value">
           <code>{{ hub.lastError.value.code }}</code> — {{ hub.lastError.value.message }}
@@ -46,6 +60,24 @@ const open = ref(false)
 const peerSummary = computed(() => {
   const list = hub.peers.value || []
   return list.length > 0 ? list.join(', ') : '—'
+})
+
+// Render every known peer role, including ones not currently
+// connected, so the user can tell at a glance which adapter is
+// missing instead of just seeing a shorter list. Roles match the
+// `Origin` enum in rtl_buddy/hub/protocol — `cli` is the hub itself
+// and isn't a peer in the adapter sense, so it's omitted.
+const PEER_ROLES = [
+  { origin: 'view', label: '(this SPA)' },
+  { origin: 'src', label: '(editor)' },
+  { origin: 'wave', label: '(surfer)' },
+]
+const peerRows = computed(() => {
+  const list = hub.peers.value || []
+  return PEER_ROLES.map((role) => ({
+    ...role,
+    connected: list.includes(role.origin),
+  }))
 })
 
 const hint = computed(() => {
@@ -152,5 +184,44 @@ function reconnect() {
   border: 1px solid #cbd5e1;
   background: #f8fafc;
   cursor: pointer;
+}
+.peer-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.peer-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.75rem;
+}
+.peer-list li[data-state='disconnected'] {
+  color: #94a3b8;
+}
+.peer-list code {
+  font-family: inherit;
+  background: transparent;
+  padding: 0;
+}
+.peer-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid #cbd5e1;
+  flex-shrink: 0;
+}
+.peer-list li[data-state='connected'] .peer-dot {
+  background: #16a34a;
+  border-color: #16a34a;
+}
+.peer-label {
+  color: #64748b;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 }
 </style>

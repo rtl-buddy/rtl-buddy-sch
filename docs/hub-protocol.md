@@ -156,6 +156,7 @@ automatically.
 | `hello`    | client → hub      | `{ "client": "viewer", "version": "0.1.0", "capabilities": ["selection_changed", ...] }` | Required first message. `client` is one of `view`, `wave`, `src`, `cli`. `capabilities` lists `type`s the client understands.       |
 | `welcome`  | hub → client      | `{ "server_version": "0.1.0", "registered_clients": ["wave", "src"] }`                  | Hub's reply. Failure to negotiate → `error{code: "protocol_mismatch"}` then disconnect.                                            |
 | `bye`      | either direction  | `{}`                                                                                   | Clean disconnect; no response expected. Hub broadcasts `bye` to remaining clients with the leaving client's `origin` in the envelope. |
+| `peer_joined` | hub → all peers (except joining) | `{}` | Broadcast after a new client completes its hello handshake. The joining client's origin is in the envelope's `origin` field, mirroring `bye`'s shape so consumers can update their peer lists symmetrically (otherwise the list a peer received in its own `welcome` would never grow as later clients connect). |
 
 ### Errors
 
