@@ -188,6 +188,21 @@ function applyEnvelope(env) {
       break
     }
 
+    case 'peer_joined': {
+      // Symmetric to `bye`: the joining peer's origin is in
+      // env.origin, payload is empty. Without this case the popover
+      // would never paint a green dot for any adapter that connects
+      // *after* the SPA's own welcome — the welcome's
+      // registered_clients snapshot is the only other source of the
+      // peers list, and it only fires once per session.
+      if (typeof env.origin === 'string' && env.origin && env.origin !== 'cli') {
+        if (!peers.value.includes(env.origin)) {
+          peers.value = [...peers.value, env.origin]
+        }
+      }
+      break
+    }
+
     default:
       // Unknown types are silently dropped (protocol §11).
       break
