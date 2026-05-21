@@ -1,6 +1,7 @@
 digraph hierarchy {
   rankdir="LR";
   compound=true;
+  splines="ortho";
   nodesep=0.18;
   ranksep=0.45;
   fontname="Menlo,Courier,monospace";

@@ -55,11 +55,41 @@ export const resetOverlay = {
       }
     }
   },
-  legend() {
-    return [
-      { label: 'reset-binding', swatch: '#ea580c' },
-      { label: 'reset-synchroniser', swatch: '#0d9488' },
-    ]
+  legend(graph) {
+    const entries = []
+    let hasBinding = false
+    let hasSync = false
+    for (const node of graph?.nodes || []) {
+      const ov = node.overlays && node.overlays.reset
+      if (!ov) continue
+      if (ov.is_synchronizer) hasSync = true
+      else hasBinding = true
+    }
+    if (hasBinding) {
+      entries.push({
+        label: 'reset-binding',
+        swatch: '#ea580c',
+        kind: 'stroke',
+      })
+    }
+    if (hasSync) {
+      entries.push({
+        label: 'reset-synchroniser',
+        swatch: '#0d9488',
+        kind: 'stroke',
+      })
+    }
+    const hasRdcCrossing = (graph?.edges || []).some(
+      (e) => e.overlays && e.overlays.reset && e.overlays.reset.crossing,
+    )
+    if (hasRdcCrossing) {
+      entries.push({
+        label: 'RDC crossing',
+        swatch: '#ea580c',
+        kind: 'dashed-line',
+      })
+    }
+    return entries
   },
 }
 

@@ -61,13 +61,64 @@ describe('built-in overlays', () => {
     for (const entry of legend) expect(entry.swatch).toMatch(/^#[0-9a-f]{6}$/i)
   })
 
-  it('reset overlay legend lists the two visual roles', () => {
+  it('reset overlay legend filters by what is present in the graph', () => {
     const overlay = getOverlay('reset')
-    const legend = overlay.legend()
-    expect(legend.map((e) => e.label)).toEqual([
+    // Empty graph yields an empty legend — keeps the panel from
+    // showing roles that aren't visible in the current view.
+    expect(overlay.legend({ nodes: [], edges: [] })).toEqual([])
+    // Only synchronisers → only the synchroniser swatch shows.
+    expect(
+      overlay
+        .legend({
+          nodes: [{ id: 'a', overlays: { reset: { is_synchronizer: true } } }],
+          edges: [],
+        })
+        .map((e) => e.label),
+    ).toEqual(['reset-synchroniser'])
+    // Full mix: binding + sync + RDC crossing → all three entries.
+    const full = overlay.legend({
+      nodes: [
+        { id: 'a', overlays: { reset: { is_synchronizer: true } } },
+        { id: 'b', overlays: { reset: { reset: 'rst_n', is_synchronizer: false } } },
+      ],
+      edges: [
+        { from: 'p', to: 'b', overlays: { reset: { crossing: true } } },
+      ],
+    })
+    expect(full.map((e) => e.label)).toEqual([
       'reset-binding',
       'reset-synchroniser',
+      'RDC crossing',
     ])
+    // CDC crossing edge ⇒ dashed-line kind.
+    expect(full.find((e) => e.label === 'RDC crossing').kind).toBe('dashed-line')
+    // Stroke entries flagged for the panel's outlined-swatch renderer.
+    expect(full.find((e) => e.label === 'reset-binding').kind).toBe('stroke')
+  })
+
+  it('clock overlay legend appends CDC entry only when the graph has crossings', () => {
+    const overlay = getOverlay('clock')
+    // No crossings — only clock-domain entries.
+    const noCdc = overlay.legend({
+      nodes: [{ id: 'a', overlays: { clock: { clock: 'clk_a' } } }],
+      edges: [{ from: 'x', to: 'a' }],
+    })
+    expect(noCdc.find((e) => e.label === 'CDC crossing')).toBeUndefined()
+    // With a crossing edge — CDC dashed-line entry appears.
+    const withCdc = overlay.legend({
+      nodes: [{ id: 'a', overlays: { clock: { clock: 'clk_a' } } }],
+      edges: [
+        {
+          from: 'x',
+          to: 'a',
+          overlays: { clock: { crossing: true } },
+        },
+      ],
+    })
+    const cdc = withCdc.find((e) => e.label === 'CDC crossing')
+    expect(cdc).toBeDefined()
+    expect(cdc.kind).toBe('dashed-line')
+    expect(cdc.swatch).toBe('#dc2626')
   })
 
   it('clock overlay legend and apply agree on the colour for each clock', () => {
