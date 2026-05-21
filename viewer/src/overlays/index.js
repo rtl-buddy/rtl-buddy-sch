@@ -9,10 +9,12 @@
 // viewer keeps working even when the producer ships a new overlay
 // the consumer doesn't know about yet.
 
+import { axiPerfOverlay } from './axi_perf.js'
 import { clockOverlay } from './clock.js'
 import { resetOverlay } from './reset.js'
 
 const BUILTINS = {
+  'axi-perf': axiPerfOverlay,
   clock: clockOverlay,
   reset: resetOverlay,
 }
