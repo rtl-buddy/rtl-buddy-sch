@@ -198,7 +198,10 @@ def _emit_top_frame(
         # Parent→child edges drop entirely; CDC / RDC markers migrate
         # to the destination cluster's border via the ``cdc_on_node``
         # path that existed for the top frame's direct children.
-        for child in top.children:
+        # Children are emitted largest-first (descendant count, then
+        # source line span) so big sub-blocks land top-left within
+        # the parent cluster — schematic skim convention.
+        for child in _children_sorted_by_complexity(top):
             _emit_cluster_subtree(
                 child, out, domain_map, reset_map=reset_map, top_level=True
             )
@@ -419,6 +422,78 @@ def _emit_top_cdc_arrows(
             )
 
 
+def _subtree_size(node: HierNode) -> int:
+    """Number of nodes in the subtree rooted at ``node`` (including itself).
+
+    Cluster-tree ordering uses this as the primary sort key so larger
+    sub-blocks float to the top of their parent's interior. The
+    schematic-reading habit is "skim the big blocks first," and
+    visually surfacing them top-left matches dot's LR layout.
+    """
+    return 1 + sum(_subtree_size(c) for c in node.children)
+
+
+def _line_span(node: HierNode) -> int:
+    """Source line span of the node's module declaration, or 0 if unknown.
+
+    Tiebreaker for :func:`_subtree_size` so two same-shaped subtrees
+    rank by amount-of-RTL inside them. Returns 0 for blackboxes /
+    nodes the extractor never saw, which keeps them at the bottom of
+    a tie cluster (a useful default — unresolved-module placeholders
+    are usually the least interesting thing to read first).
+    """
+    if node.module is None or node.module.location is None:
+        return 0
+    loc = node.module.location
+    if loc.start_line is None or loc.end_line is None:
+        return 0
+    return max(0, loc.end_line - loc.start_line)
+
+
+def _total_line_count(node: HierNode) -> int:
+    """Sum of ``_line_span`` for ``node`` and every descendant.
+
+    Direct measure of "how much RTL is in this subtree" — wrappers
+    with many submodules accumulate the same total as a single
+    monolithic module of equivalent size, and a small wrapper
+    around big children correctly ranks by its children. Source
+    info is the same as :func:`_line_span` so blackboxes /
+    location-less nodes contribute 0; the descendant-count
+    fallback in :func:`_children_sorted_by_complexity` covers
+    designs where the source-line info is unreliable.
+    """
+    return _line_span(node) + sum(_total_line_count(c) for c in node.children)
+
+
+def _children_sorted_by_complexity(node: HierNode) -> tuple[HierNode, ...]:
+    """Return ``node.children`` ordered for cluster-tree emission.
+
+    Sort key (descending): ``(_total_line_count, _subtree_size)``.
+    Final tiebreak by ``instance_path`` so the order is stable
+    across runs even when both size keys collide. Graphviz roughly
+    respects emission order for siblings under ``rankdir=LR``, so
+    the first child emitted lands top-left within the parent
+    cluster.
+
+    Total line count is a more direct "amount of RTL" signal than
+    raw descendant count: a 1000-line monolithic module and a
+    wrapper around 10 ~100-line submodules read as equally heavy,
+    which matches the schematic-skim intuition. Descendant count
+    stays as a secondary key so designs whose extractor never
+    populated source spans still get a sensible order.
+    """
+    return tuple(
+        sorted(
+            node.children,
+            key=lambda c: (
+                -_total_line_count(c),
+                -_subtree_size(c),
+                c.instance_path,
+            ),
+        )
+    )
+
+
 def _cluster_id_for(instance_path: str) -> str:
     """Sanitize an instance path into a Graphviz cluster name.
 
@@ -540,7 +615,7 @@ def _emit_cluster_subtree(
         f'    "{node.instance_path}" [shape=point, style=invis,'
         " width=0, height=0];\n"
     )
-    for child in node.children:
+    for child in _children_sorted_by_complexity(node):
         _emit_cluster_subtree(child, out, domain_map, reset_map=reset_map)
     out.write("  }\n")
 
