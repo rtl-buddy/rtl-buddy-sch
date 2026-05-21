@@ -29,6 +29,37 @@ async function djb2(str) {
   return hash
 }
 
+// Build the canonical clock→colour assignment for a graph. Both
+// ``apply`` and ``legend`` must use this so the swatch shown in the
+// panel matches the fill painted on each node. Sorted-alphabetical
+// gives a stable order independent of node traversal — a clock's
+// colour doesn't move when the user rolls back to an earlier
+// view.json.
+function buildClockPalette(graph) {
+  const seen = new Set()
+  for (const node of graph.nodes || []) {
+    const ov = node.overlays && node.overlays.clock
+    if (ov && ov.clock) seen.add(ov.clock)
+  }
+  // Producers may also publish a top-level clock manifest so
+  // single-source-of-truth clocks (declared in SDC but bound to no
+  // flop) still appear in the legend — see view-v1's optional
+  // ``overlay_meta.clock.clocks`` field.
+  const meta = graph.overlay_meta && graph.overlay_meta.clock
+  if (meta && Array.isArray(meta.clocks)) {
+    for (const entry of meta.clocks) {
+      const name = typeof entry === 'string' ? entry : entry && entry.name
+      if (typeof name === 'string' && name.length > 0) seen.add(name)
+    }
+  }
+  const sorted = Array.from(seen).sort()
+  const out = new Map()
+  sorted.forEach((name, idx) => {
+    out.set(name, PALETTE[idx % PALETTE.length])
+  })
+  return out
+}
+
 export const clockOverlay = {
   name: 'clock',
   /**
@@ -38,16 +69,7 @@ export const clockOverlay = {
    * overlay just call this with ``enabled = false`` to clear.
    */
   apply(svgRoot, graph, enabled) {
-    const clockFill = new Map() // clock name → palette colour
-    let nextIdx = 0
-    const colourFor = (clock) => {
-      let c = clockFill.get(clock)
-      if (!c) {
-        c = PALETTE[nextIdx++ % PALETTE.length]
-        clockFill.set(clock, c)
-      }
-      return c
-    }
+    const palette = buildClockPalette(graph)
     for (const node of graph.nodes) {
       const ov = node.overlays && node.overlays.clock
       const group = svgRoot.querySelector(
@@ -56,10 +78,18 @@ export const clockOverlay = {
       if (!group) continue
       const shape = group.querySelector('polygon, ellipse, rect, path')
       if (!shape) continue
-      if (enabled && ov && ov.clock) {
-        shape.style.fill = colourFor(ov.clock)
+      if (enabled && ov && ov.clock && palette.has(ov.clock)) {
+        // Override BOTH the inline style and the polygon's ``fill=``
+        // attribute. The embedded layout DOT now ships without
+        // baked-in fills, but defensive: a producer that emits its
+        // own clock-keyed fillcolor wouldn't otherwise be clearable
+        // by toggling the overlay off (the attribute would shine
+        // through ``style.fill = ''``).
+        shape.setAttribute('fill', palette.get(ov.clock))
+        shape.style.fill = palette.get(ov.clock)
         group.setAttribute('data-overlay-clock', ov.clock)
       } else {
+        shape.removeAttribute('fill')
         shape.style.fill = ''
         group.removeAttribute('data-overlay-clock')
       }
@@ -81,17 +111,11 @@ export const clockOverlay = {
   },
   /** Per-overlay legend payload for OverlayPanel.vue. */
   legend(graph) {
-    const clocks = new Set()
-    for (const node of graph.nodes) {
-      const ov = node.overlays && node.overlays.clock
-      if (ov && ov.clock) clocks.add(ov.clock)
-    }
-    return Array.from(clocks)
-      .sort()
-      .map((clock, idx) => ({
-        label: clock,
-        swatch: PALETTE[idx % PALETTE.length],
-      }))
+    const palette = buildClockPalette(graph)
+    return Array.from(palette.entries()).map(([label, swatch]) => ({
+      label,
+      swatch,
+    }))
   },
 }
 
