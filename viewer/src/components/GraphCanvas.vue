@@ -1,5 +1,31 @@
 <template>
   <main class="graph-canvas" ref="canvasEl">
+    <div class="canvas-tabs">
+      <button
+        type="button"
+        class="canvas-tab"
+        :class="{ active: store.viewMode === 'hier' }"
+        @click="store.setViewMode('hier')"
+        title="Nested-cluster hierarchy from the producer's embedded layout"
+      >Hierarchy</button>
+      <button
+        type="button"
+        class="canvas-tab"
+        :class="{ active: store.viewMode === 'flow' }"
+        @click="store.setViewMode('flow')"
+        :title="flowTabTitle"
+      >Block Flow</button>
+      <span v-if="store.viewMode === 'flow'" class="flow-scope">
+        scope: <code>{{ store.flowScopeId || '(none)' }}</code>
+        <button
+          v-if="canAscendScope"
+          type="button"
+          class="flow-up"
+          @click="ascendScope"
+          title="Pop one level up — make this scope's parent the new flow scope"
+        >↑</button>
+      </span>
+    </div>
     <div class="graph-toolbar">
       <button type="button" @click="zoomIn">+</button>
       <button type="button" @click="zoomOut">−</button>
@@ -22,7 +48,8 @@
 // layout step and so click handlers can recover the model node.
 import { computed, onMounted, ref, watch, onBeforeUnmount } from 'vue'
 import { useViewerStore } from '../store.js'
-import { layoutGraph } from '../layout/viz.js'
+import { layoutGraph, layoutDot } from '../layout/viz.js'
+import { buildBlockFlowDot } from '../layout/blockFlow.js'
 import { applyOverlays } from '../overlays/index.js'
 import { useHub } from '../composables/useHub.js'
 
@@ -34,12 +61,46 @@ const transform = ref({ x: 0, y: 0, scale: 1 })
 let _svgEl = null
 
 const graph = computed(() => store.displayGraph)
+const flowTabTitle = computed(() =>
+  store.flowScopeId
+    ? `One-level signal flow under ${store.flowScopeId}`
+    : 'One-level signal flow (select a node to scope)',
+)
+// "Up" is only meaningful when the current scope isn't already the
+// design top — popping past top would lose context.
+const canAscendScope = computed(() => {
+  if (!store.graph) return false
+  return store.flowScopeId && store.flowScopeId !== store.graph.top
+})
+function ascendScope() {
+  if (!canAscendScope.value) return
+  const cur = store.flowScopeId
+  // Strip the last dot-segment to get the parent path.
+  const lastDot = cur.lastIndexOf('.')
+  if (lastDot < 0) {
+    // Already a top-level identifier — clear selection so the
+    // scope falls back to graph.top via flowScopeId getter.
+    store.clearSelection()
+  } else {
+    store.select(cur.slice(0, lastDot))
+  }
+}
 
 async function renderSvg() {
   if (!graph.value || !svgHostEl.value) return
   let svgText
   try {
-    svgText = await layoutGraph(graph.value)
+    if (store.viewMode === 'flow') {
+      // Block-flow view builds its DOT in the SPA from the graph's
+      // own port-expression data — no producer round-trip. Hand the
+      // resulting DOT to viz.js via the shared layoutDot path so
+      // the engine is loaded once and the SVG-string convention
+      // matches the hier view.
+      const dot = buildBlockFlowDot(graph.value, store.flowScopeId)
+      svgText = await layoutDot(dot)
+    } else {
+      svgText = await layoutGraph(graph.value)
+    }
   } catch (e) {
     store.$patch({ status: 'error', error: `viz.js layout failed: ${e.message}` })
     return
@@ -84,6 +145,12 @@ async function renderSvg() {
 }
 
 watch(graph, renderSvg)
+// Tab switch + scope drill-down trigger a full re-layout. Both
+// produce a different DOT, so the SVG must be rebuilt.
+watch(() => store.viewMode, renderSvg)
+watch(() => store.flowScopeId, () => {
+  if (store.viewMode === 'flow') renderSvg()
+})
 watch(
   () => store.enabledOverlays,
   () => {
@@ -302,6 +369,48 @@ onBeforeUnmount(() => {
   position: relative;
   overflow: hidden;
   background: #f8fafc;
+}
+.canvas-tabs {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  z-index: 10;
+  font-size: 0.85rem;
+}
+.canvas-tab {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+  border-radius: 4px;
+  font-family: inherit;
+}
+.canvas-tab.active {
+  background: #1e293b;
+  color: #ffffff;
+  border-color: #1e293b;
+}
+.flow-scope {
+  font-size: 0.75rem;
+  color: #64748b;
+  margin-left: 0.5rem;
+}
+.flow-scope code {
+  background: #f1f5f9;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+}
+.flow-up {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  padding: 0 0.4rem;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  margin-left: 0.25rem;
 }
 .graph-toolbar {
   position: absolute;

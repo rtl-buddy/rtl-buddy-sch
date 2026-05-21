@@ -1,0 +1,114 @@
+// blockFlow.js — derives a one-level signal-flow DOT from
+// view.json's per-node port expressions. Tests pin the derivation
+// rules (output→input net matching, scope-port boundary edges,
+// clock/reset filtering) without standing up viz.js.
+
+import { describe, expect, it } from 'vitest'
+import { buildBlockFlowDot } from '../src/layout/blockFlow.js'
+
+function makeGraph(overrides = {}) {
+  return {
+    schema_version: '1.0',
+    top: 'top',
+    overlays_present: [],
+    nodes: [
+      {
+        id: 'top',
+        module: 'top',
+        instance_name: null,
+        is_blackbox: false,
+        parameters: {},
+        ports: [
+          { name: 'din', dir: 'input', expr: null, anchor: null },
+          { name: 'dout', dir: 'output', expr: null, anchor: null },
+          { name: 'clk', dir: 'input', expr: null, anchor: null },
+        ],
+        overlays: {},
+      },
+      {
+        id: 'top.u_a',
+        module: 'a_mod',
+        instance_name: 'u_a',
+        is_blackbox: false,
+        parameters: {},
+        ports: [
+          { name: 'd_in', dir: 'input', expr: 'din', anchor: null },
+          { name: 'q', dir: 'output', expr: 'inter_net', anchor: null },
+          { name: 'clk', dir: 'input', expr: 'clk', anchor: null },
+        ],
+        overlays: {},
+      },
+      {
+        id: 'top.u_b',
+        module: 'b_mod',
+        instance_name: 'u_b',
+        is_blackbox: false,
+        parameters: {},
+        ports: [
+          { name: 'd_in', dir: 'input', expr: 'inter_net', anchor: null },
+          { name: 'q', dir: 'output', expr: 'dout', anchor: null },
+          { name: 'clk', dir: 'input', expr: 'clk', anchor: null },
+        ],
+        overlays: {},
+      },
+    ],
+    edges: [
+      { from: 'top', to: 'top.u_a', port_pairs: [], overlays: {} },
+      { from: 'top', to: 'top.u_b', port_pairs: [], overlays: {} },
+    ],
+    ...overrides,
+  }
+}
+
+describe('buildBlockFlowDot', () => {
+  it('connects driver and sink children via a matching internal net', () => {
+    const dot = buildBlockFlowDot(makeGraph(), 'top')
+    // u_a drives ``inter_net``; u_b consumes it → internal edge.
+    expect(dot).toMatch(
+      /"top\.u_a"\s*->\s*"top\.u_b"\s*\[label="inter_net"/,
+    )
+  })
+
+  it('wires scope input port to consuming child', () => {
+    const dot = buildBlockFlowDot(makeGraph(), 'top')
+    expect(dot).toContain('"_in_din" -> "top.u_a"')
+  })
+
+  it('wires producing child to scope output port', () => {
+    const dot = buildBlockFlowDot(makeGraph(), 'top')
+    expect(dot).toContain('"top.u_b" -> "_out_dout"')
+  })
+
+  it('emits the port anchors with the ▶ glyph for visual symmetry with hier', () => {
+    const dot = buildBlockFlowDot(makeGraph(), 'top')
+    expect(dot).toMatch(/"_in_din"\s*\[shape=plaintext, label="din ▶"/)
+    expect(dot).toMatch(/"_out_dout"\s*\[shape=plaintext, label="▶ dout"/)
+  })
+
+  it('skips clock-named nets so the data path stays legible', () => {
+    const dot = buildBlockFlowDot(makeGraph(), 'top')
+    // Even though both u_a and u_b have ``clk`` as input expr, no
+    // ``clk``-keyed edges should appear — clocks fan out to every
+    // child and would bury the data flow.
+    expect(dot).not.toMatch(/label="clk"/)
+    expect(dot).not.toContain('"_in_clk"')
+  })
+
+  it('falls back to a placeholder digraph when scope has no children', () => {
+    const dot = buildBlockFlowDot(makeGraph(), 'top.u_a')
+    // u_a is a leaf in this fixture — render a placeholder so
+    // viz.js doesn't choke on an empty digraph body.
+    expect(dot).toMatch(/digraph block_flow_empty/)
+    expect(dot).toMatch(/has no children/)
+  })
+
+  it('falls back to a placeholder when scope id is unknown', () => {
+    const dot = buildBlockFlowDot(makeGraph(), 'top.no_such_node')
+    expect(dot).toMatch(/not in graph/)
+  })
+
+  it('falls back to a placeholder when scope id is missing', () => {
+    const dot = buildBlockFlowDot(makeGraph(), null)
+    expect(dot).toMatch(/no scope selected/)
+  })
+})
