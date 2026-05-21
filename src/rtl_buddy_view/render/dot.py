@@ -462,9 +462,7 @@ def _emit_top_cdc_arrows(
         # default — the SDC-confirmed true-CDC subset that the tree /
         # mermaid renderers also surface.
         seen: set[tuple[str, str]] = set()
-        child_cluster = (
-            _cluster_id_for(child.instance_path) if child.children else None
-        )
+        child_cluster = _cluster_id_for(child.instance_path) if child.children else None
         lhead = f', lhead="{child_cluster}"' if child_cluster else ""
         for c in domain_map.crossings_into(child.instance_path):
             if c.src_clock not in input_names:
@@ -1125,9 +1123,7 @@ def _emit_top_rdc_arrows(
     input_names = {p.name for p in top.module.ports if p.direction == "input"}
     for child in top.children:
         seen: set[tuple[str, str]] = set()
-        child_cluster = (
-            _cluster_id_for(child.instance_path) if child.children else None
-        )
+        child_cluster = _cluster_id_for(child.instance_path) if child.children else None
         lhead = f', lhead="{child_cluster}"' if child_cluster else ""
         for c in reset_map.crossings_into(child.instance_path):
             if c.reset not in input_names:
