@@ -57,6 +57,14 @@ export const useViewerStore = defineStore('viewer', {
     // without changing scope — matching hier-view's click =
     // focus, button = navigate contract.
     flowScope: null,
+    // Top-level tab. ``hierarchy`` = the hier/flow canvas with
+    // overlays. ``axi-perf`` = the dedicated AxiPerfView tab. Default
+    // ``hierarchy`` so the app renders on first load even when no
+    // axi-perf overlay is present.
+    activeTab: 'hierarchy',
+    // Bundle currently selected in the AxiPerfView detail pane, or
+    // ``null`` when none is selected.
+    selectedAxiBundle: null,
     // Hub-mirrored state. All written by applyHub*/applyDiagnostics
     // actions; consumers read these directly.
     hubCursorTimeFs: null,
@@ -395,6 +403,14 @@ export const useViewerStore = defineStore('viewer', {
       if (mode === 'hier' || mode === 'flow') {
         this.viewMode = mode
       }
+    },
+    setActiveTab(name) {
+      // 'hierarchy' or 'axi-perf'. Unknown names are ignored.
+      if (name !== 'hierarchy' && name !== 'axi-perf') return
+      this.activeTab = name
+    },
+    selectAxiBundle(name) {
+      this.selectedAxiBundle = name || null
     },
     toggleOverlay(name) {
       if (this.enabledOverlays.has(name)) {

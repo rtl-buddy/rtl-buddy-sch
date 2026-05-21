@@ -1,21 +1,14 @@
-// 'axi-perf' overlay renderer.
+// 'axi-perf' overlay renderer (Phase 11).
 //
-// Mirror of the Python-side AxiPerfOverlay
-// (src/rtl_buddy_view/overlays/axi_perf.py). Consumes the per-edge
-// `overlays.axi-perf` block emitted by view.json v1's renderer + the
-// per-node `overlays.axi-perf.interconnect` roll-up on interconnect
-// nodes.
+// Per the design discussion: the AXI view lives in its own tab and
+// does NOT co-exist with the hierarchy view's CDC / reset / phys
+// overlays. So `apply()` is a deliberate no-op — the AXI rendering
+// happens in `components/AxiPerfView.vue` (a full-tab component),
+// not as a per-edge paint on the hierarchy SVG.
 //
-// Visual contribution (prototype scope, Phase 11 follow-up to #60):
-// - Edges with axi-perf data get a colored stroke based on max-
-//   channel backpressure %: green (≤5%) → yellow (≤15%) → red (>15%).
-// - Errors (slverr+decerr > 0) make the stroke dashed.
-// - Stroke width scales with total throughput (log10).
-//
-// Detailed per-edge inspection (channel bars, latency histograms)
-// lives in the `AxiPerfPane.vue` sidebar component — see
-// components/AxiPerfPane.vue. This module only paints the edge
-// strokes.
+// The `selectedEdgeAxiPerf` / `nodeAxiPerfInterconnect` helpers
+// stay because the AxiPerfView reads them to find the matching
+// bundle / interconnect data.
 
 function cssEscape(s) {
   return CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&')
@@ -58,39 +51,19 @@ export const axiPerfOverlay = {
   name: 'axi-perf',
 
   /**
-   * Style every edge whose overlay payload contains the axi-perf
-   * block. Idempotent — applying twice produces the same DOM state;
-   * applying with `enabled = false` clears the styling.
+   * No-op on the hierarchy view: per the design, AXI rendering is
+   * a separate tab (AxiPerfView.vue), not a per-edge overlay on
+   * the existing canvas. The function exists so the overlay
+   * registry's iteration still has a uniform call signature.
    */
-  apply(svgRoot, graph, enabled) {
-    if (!graph || !Array.isArray(graph.edges)) return
-
-    for (const edge of graph.edges) {
-      const ov = edge.overlays && edge.overlays['axi-perf']
-      const fromEsc = cssEscape(edge.from)
-      const toEsc = cssEscape(edge.to)
-      const edgeEl = svgRoot.querySelector(
-        `[data-edge-from="${fromEsc}"][data-edge-to="${toEsc}"]`,
-      )
-      if (!edgeEl) continue
-      const path = edgeEl.querySelector('path')
-      if (!path) continue
-
-      if (!ov || !enabled) {
-        path.style.stroke = ''
-        path.style.strokeWidth = ''
-        path.style.strokeDasharray = ''
-        continue
-      }
-
-      const bp = edgeMaxBackpressure(ov)
-      const bps = totalBps(ov)
-      path.style.stroke = strokeForBackpressure(bp)
-      path.style.strokeWidth = strokeWidthForBps(bps)
-      path.style.strokeDasharray = hasErrors(ov) ? '4 3' : ''
-    }
+  apply(_svgRoot, _graph, _enabled) {
+    // Intentionally empty. See module docstring.
   },
 }
+
+// Retained for potential future use (or tests) — currently unused
+// by the per-tab AxiPerfView, which walks graph.edges directly.
+export { cssEscape, strokeForBackpressure, strokeWidthForBps, edgeMaxBackpressure, totalBps, hasErrors }
 
 /**
  * Find the axi-perf block for the currently-selected edge (used by
