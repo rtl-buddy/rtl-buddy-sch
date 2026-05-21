@@ -267,12 +267,14 @@ def default_registry(*, warn_stream: IO[str] | None = None) -> OverlayRegistry:
     """
     stream: IO[str] = sys.stderr if warn_stream is None else warn_stream
 
+    from rtl_buddy_view.overlays.axi_perf import AxiPerfOverlay
     from rtl_buddy_view.overlays.clock import ClockOverlay
     from rtl_buddy_view.overlays.reset import ResetOverlay
 
     registry = OverlayRegistry()
     registry.register(ClockOverlay())
     registry.register(ResetOverlay())
+    registry.register(AxiPerfOverlay())
 
     for instance, source in _discover_external_overlays(stream):
         if instance.name in registry.names():
