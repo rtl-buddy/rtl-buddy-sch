@@ -63,20 +63,21 @@ function makeGraph(overrides = {}) {
 describe('buildBlockFlowDot', () => {
   it('connects driver and sink children via a matching internal net', () => {
     const dot = buildBlockFlowDot(makeGraph(), 'top')
-    // u_a drives ``inter_net``; u_b consumes it → internal edge.
+    // u_a drives ``inter_net`` on port ``q``; u_b consumes it on
+    // ``d_in`` → internal edge between the named record ports.
     expect(dot).toMatch(
-      /"top\.u_a"\s*->\s*"top\.u_b"\s*\[label="inter_net"/,
+      /"top\.u_a":q:e\s*->\s*"top\.u_b":d_in:w\s*\[label="inter_net"/,
     )
   })
 
   it('wires scope input port to consuming child', () => {
     const dot = buildBlockFlowDot(makeGraph(), 'top')
-    expect(dot).toContain('"_in_din" -> "top.u_a"')
+    expect(dot).toContain('"_in_din" -> "top.u_a":d_in:w')
   })
 
   it('wires producing child to scope output port', () => {
     const dot = buildBlockFlowDot(makeGraph(), 'top')
-    expect(dot).toContain('"top.u_b" -> "_out_dout"')
+    expect(dot).toContain('"top.u_b":q:e -> "_out_dout"')
   })
 
   it('emits the port anchors with the ▶ glyph for visual symmetry with hier', () => {

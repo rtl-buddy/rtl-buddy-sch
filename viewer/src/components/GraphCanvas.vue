@@ -138,6 +138,20 @@ async function renderSvg() {
     if (from) group.setAttribute('data-edge-from', from.trim())
     if (to) group.setAttribute('data-edge-to', to.trim())
   }
+  // Block-flow cells: viz.js wraps each HTML table cell that has
+  // an ``HREF`` in an ``<a xlink:href="...">`` element. Stamp the
+  // href on the anchor as ``data-bf-id`` (no namespace gymnastics
+  // for selectors) so click handlers can match cells via
+  // ``[data-bf-id]`` and lookups via ``[data-bf-id="bf-out:…"]``.
+  for (const anchor of _svgEl.querySelectorAll('a')) {
+    const href =
+      anchor.getAttribute('xlink:href') ||
+      anchor.getAttribute('href') ||
+      anchor.getAttributeNS('http://www.w3.org/1999/xlink', 'href')
+    if (href && href.startsWith('bf-')) {
+      anchor.setAttribute('data-bf-id', href)
+    }
+  }
   applyOverlays(_svgEl, graph.value, store.enabledOverlays)
   // Defer to next frame so flex layout has settled and the host
   // rect is its final size before we compute the fit scale.
@@ -188,13 +202,145 @@ function edgeFromEvent(e) {
   return match ? { from, to, edge: match } : null
 }
 
+// Block-flow HTML-table cells carry ``HREF`` attributes that
+// viz.js turns into ``<a xlink:href="...">`` wrappers. We stamp
+// the href on the anchor as ``data-bf-id`` in renderSvg, so a
+// ``closest('[data-bf-id]')`` walk finds the clicked cell.
+//   - ``bf-in:<nodeId>:<portName>`` — input-port cell
+//   - ``bf-out:<nodeId>:<portName>`` — output-port cell
+//   - ``bf-ctr:<nodeId>`` — instance / module centre cell
+function blockFlowHitFromEvent(e) {
+  if (store.viewMode !== 'flow') return null
+  const anchor = e.target.closest('[data-bf-id]')
+  if (!anchor) return null
+  const id = anchor.getAttribute('data-bf-id')
+  return parseBlockFlowId(id)
+}
+
+function parseBlockFlowId(id) {
+  if (id.startsWith('bf-in:')) {
+    const rest = id.slice('bf-in:'.length)
+    const idx = rest.lastIndexOf(':')
+    if (idx < 0) return null
+    return { kind: 'port_in', nodeId: rest.slice(0, idx), portName: rest.slice(idx + 1) }
+  }
+  if (id.startsWith('bf-out:')) {
+    const rest = id.slice('bf-out:'.length)
+    const idx = rest.lastIndexOf(':')
+    if (idx < 0) return null
+    return { kind: 'port_out', nodeId: rest.slice(0, idx), portName: rest.slice(idx + 1) }
+  }
+  if (id.startsWith('bf-ctr:')) {
+    return { kind: 'block_center', nodeId: id.slice('bf-ctr:'.length) }
+  }
+  return null
+}
+
+// Children of the current flow scope (excluding ``selfId``). Used
+// to find the sibling whose port is wired to the same net.
+function flowSiblings(selfId) {
+  if (!store.graph || !store.flowScopeId) return []
+  const prefix = store.flowScopeId + '.'
+  return store.graph.nodes.filter((n) => {
+    if (n.id === selfId) return false
+    if (!n.id.startsWith(prefix)) return false
+    const rest = n.id.slice(prefix.length)
+    return rest.length > 0 && !rest.includes('.')
+  })
+}
+
+// Given a click on an input/output port cell, locate the SVG
+// element of the *peer* of that port:
+//   - input port click → driver (sibling output OR scope input
+//     anchor ``_in_<net>``)
+//   - output port click → sink (sibling input OR scope output
+//     anchor ``_out_<net>``)
+function findFlowPeerSvgEl(hit) {
+  if (!_svgEl || !store.graph) return null
+  const node = store.nodesById.get(hit.nodeId)
+  if (!node) return null
+  const port = (node.ports || []).find((p) => p.name === hit.portName)
+  if (!port || typeof port.expr !== 'string') return null
+  const net = port.expr.trim()
+  if (!net) return null
+  const wantOutput = hit.kind === 'port_in'
+  const siblings = flowSiblings(hit.nodeId)
+  for (const sib of siblings) {
+    for (const sp of sib.ports || []) {
+      if (typeof sp.expr !== 'string' || sp.expr.trim() !== net) continue
+      const matchesDir = wantOutput
+        ? sp.dir === 'output' || sp.dir === 'inout'
+        : sp.dir === 'input'
+      if (!matchesDir) continue
+      const peerId = wantOutput
+        ? `bf-out:${sib.id}:${sp.name}`
+        : `bf-in:${sib.id}:${sp.name}`
+      const el = _svgEl.querySelector(`[data-bf-id="${peerId}"]`)
+      if (el) return el
+    }
+  }
+  // Fall back to the scope-boundary anchor.
+  const scopeNode = store.nodesById.get(store.flowScopeId)
+  if (scopeNode) {
+    const anchorDir = wantOutput ? 'input' : 'output'
+    const matchInout = !wantOutput // outputs/inout both drive scope_out
+    if (
+      (scopeNode.ports || []).some(
+        (p) =>
+          p.name === net &&
+          (p.dir === anchorDir || (matchInout && p.dir === 'inout')),
+      )
+    ) {
+      const anchorId = wantOutput ? `_in_${net}` : `_out_${net}`
+      return _svgEl.querySelector(`[data-node-id="${anchorId}"]`)
+    }
+  }
+  return null
+}
+
+// Smooth-ish pan that centres ``el``'s bbox in the host. Reuses
+// the existing transform pipeline (no extra animation lib) and
+// keeps the current zoom level — only translates.
+function panToElement(el) {
+  if (!el || !_svgEl || !svgHostEl.value) return
+  let bb
+  try {
+    bb = el.getBBox()
+  } catch {
+    return
+  }
+  if (!bb || !bb.width || !bb.height) return
+  const rect = svgHostEl.value.getBoundingClientRect()
+  const scale = transform.value.scale
+  transform.value = {
+    scale,
+    x: rect.width / 2 - (bb.x + bb.width / 2) * scale,
+    y: rect.height / 2 - (bb.y + bb.height / 2) * scale,
+  }
+  applyTransform()
+}
+
 function onClick(e) {
-  // Left-click: nodes take precedence over edges (target.closest
-  // walks up; a node's polygon and an edge's path are siblings,
-  // not nested, so this is mostly belt-and-suspenders). Edge clicks
-  // populate ``selectedEdge`` so EdgeDetail renders; the hub stays
-  // out of the loop for edges since the v1 protocol has no
-  // edge-selection envelope.
+  // Block-flow mode owns its own click contract:
+  //   - port cell  → pan view to the peer (driver / sink)
+  //   - centre     → descend into that block (set as new scope)
+  // ``HREF`` on the HTML-table cell makes viz.js wrap the cell in
+  // an ``<a>`` with a relative href — without preventDefault the
+  // browser would try to navigate to ``bf-in:...``.
+  const bfHit = blockFlowHitFromEvent(e)
+  if (bfHit) {
+    e.preventDefault()
+    if (bfHit.kind === 'block_center') {
+      store.select(bfHit.nodeId)
+      const node = store.nodesById.get(bfHit.nodeId)
+      if (node) hub.notifyClick(node)
+      return
+    }
+    const peerEl = findFlowPeerSvgEl(bfHit)
+    if (peerEl) panToElement(peerEl)
+    return
+  }
+  // Hier-view contract: node selects, edge selects.
   const nodeHit = nodeFromEvent(e)
   if (nodeHit) {
     store.select(nodeHit.id)
@@ -215,6 +361,34 @@ function onContextMenu(e) {
   // place, no OS round-trip. With the hub offline,
   // ``requestOpenSource`` falls back to dispatching ``node.link``
   // (rtlbuddy://) through the OS so the action is never a no-op.
+  const bfHit = blockFlowHitFromEvent(e)
+  if (bfHit) {
+    e.preventDefault()
+    const node = store.nodesById.get(bfHit.nodeId)
+    if (!node) return
+    if (bfHit.kind === 'block_center') {
+      store.select(bfHit.nodeId)
+      hub.requestOpenSource(node)
+      return
+    }
+    // port_in / port_out: prefer the port's own anchor (line/col)
+    // over the module's source location so the editor jumps to
+    // the port declaration, not the module header.
+    const port = (node.ports || []).find((p) => p.name === bfHit.portName)
+    if (port && port.anchor && node.source) {
+      hub.requestOpenSource({
+        source: {
+          file: node.source.file,
+          start_line: typeof port.anchor.line === 'number' ? port.anchor.line : 1,
+          start_column: typeof port.anchor.col === 'number' ? port.anchor.col : 1,
+        },
+        link: node.link,
+      })
+    } else {
+      hub.requestOpenSource(node)
+    }
+    return
+  }
   const hit = nodeFromEvent(e)
   if (!hit) return
   e.preventDefault()
@@ -444,7 +618,8 @@ onBeforeUnmount(() => {
    the injected SVG which isn't scoped to this component. */
 .svg-host :deep(g.node),
 .svg-host :deep(g.edge),
-.svg-host :deep(g.cluster) {
+.svg-host :deep(g.cluster),
+.svg-host :deep([data-bf-id]) {
   cursor: pointer;
 }
 </style>
