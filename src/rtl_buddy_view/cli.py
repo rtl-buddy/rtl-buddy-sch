@@ -319,6 +319,7 @@ def _render(
             sink,
             domain_map=domain_map,
             reset_map=reset_map,
+            axi_perf_map=axi_perf_map,
             with_legend=clock_legend,
         )
     elif fmt is OutputFormat.mermaid:
