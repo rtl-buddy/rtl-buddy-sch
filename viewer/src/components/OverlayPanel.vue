@@ -15,13 +15,30 @@
         </label>
         <ul v-if="entry.known && legendFor(entry.name).length" class="legend">
           <li v-for="item in legendFor(entry.name)" :key="item.label">
-            <span class="swatch" :style="{ background: item.swatch }"></span>
+            <span
+              class="swatch"
+              :class="`swatch-${item.kind || 'fill'}`"
+              :style="swatchStyle(item)"
+            ></span>
             {{ item.label }}
           </li>
         </ul>
       </li>
     </ul>
     <p v-else class="empty">No overlays in this view.</p>
+  </section>
+  <section v-if="layoutLegend.length" class="overlay-panel">
+    <h3>Layout</h3>
+    <ul class="legend layout-legend">
+      <li v-for="item in layoutLegend" :key="item.label">
+        <span
+          class="swatch"
+          :class="`swatch-${item.kind || 'fill'}`"
+          :style="swatchStyle(item)"
+        ></span>
+        {{ item.label }}
+      </li>
+    </ul>
   </section>
 </template>
 
@@ -45,6 +62,45 @@ function legendFor(name) {
   const overlay = getOverlay(name)
   if (!overlay || typeof overlay.legend !== 'function') return []
   return overlay.legend(store.graph) || []
+}
+
+// Structural-style legend — entries that aren't overlay-toggleable
+// but are drawn into the embedded layout DOT by the producer.
+// Detected by scanning the dot source for the producer's signature
+// markers. Auto-filters per current graph and refreshes via Vue
+// reactivity when ``store.graph`` rebinds.
+const layoutLegend = computed(() => {
+  const dot = store.graph && store.graph.layout && store.graph.layout.dot
+  if (typeof dot !== 'string' || dot.length === 0) return []
+  const entries = []
+  // Port→child signal flow edges. ``_emit_port_signal_edges`` emits
+  // ``"_in_<port>" -> "<child>"`` / ``"<child>" -> "_out_<port>"``
+  // pairs with ``color="#cbd5e1"`` when no clock typing is known.
+  if (dot.includes('"_in_') || dot.includes('"_out_')) {
+    entries.push({
+      label: 'port → instance signal',
+      swatch: '#cbd5e1',
+      kind: 'solid-line',
+    })
+  }
+  return entries
+})
+
+// Per-kind swatch styling. ``fill`` is a solid filled box (clock
+// palette pastels, default for entries without a ``kind`` field).
+// ``stroke`` is an outlined-only box (reset border markers).
+// ``dashed-line`` is a horizontal dashed segment (CDC / RDC edge
+// styles). The kind is a hint from each overlay's legend() — see
+// overlays/clock.js + overlays/reset.js.
+function swatchStyle(item) {
+  const kind = item.kind || 'fill'
+  if (kind === 'stroke') {
+    return { borderColor: item.swatch, borderWidth: '2px', background: 'transparent' }
+  }
+  if (kind === 'dashed-line' || kind === 'solid-line') {
+    return { borderColor: item.swatch }
+  }
+  return { background: item.swatch }
 }
 </script>
 
@@ -80,12 +136,44 @@ function legendFor(name) {
 }
 .legend li { display: flex; align-items: center; gap: 0.5rem; padding: 0.1rem 0; }
 .swatch {
-  width: 12px;
+  width: 16px;
   height: 12px;
   border-radius: 2px;
   border: 1px solid #cbd5e1;
   display: inline-block;
+  box-sizing: border-box;
 }
+/* Outlined-only swatch — reset border markers. The border colour
+   is injected inline; the fill stays transparent so the kind reads
+   as "stroke" rather than "fill". */
+.swatch-stroke { border-radius: 2px; }
+/* Horizontal dashed line — CDC / RDC edge styles. Render via a
+   thick top border on a short, otherwise-borderless box so the
+   dashes are visible at 16x12. */
+.swatch-dashed-line {
+  border: none;
+  border-top-style: dashed;
+  border-top-width: 3px;
+  height: 0;
+  width: 18px;
+  align-self: center;
+  margin-top: 4px;
+  border-radius: 0;
+}
+/* Horizontal solid line — non-toggleable structural styles (e.g.
+   port → instance signal flow). Same shape as the dashed
+   variant; only the stroke style differs. */
+.swatch-solid-line {
+  border: none;
+  border-top-style: solid;
+  border-top-width: 3px;
+  height: 0;
+  width: 18px;
+  align-self: center;
+  margin-top: 4px;
+  border-radius: 0;
+}
+.layout-legend { margin-left: 0; }
 .empty {
   font-size: 0.85rem;
   color: #64748b;

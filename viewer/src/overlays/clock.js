@@ -111,10 +111,26 @@ export const clockOverlay = {
   /** Per-overlay legend payload for OverlayPanel.vue. */
   legend(graph) {
     const palette = buildClockPalette(graph)
-    return Array.from(palette.entries()).map(([label, swatch]) => ({
+    const entries = Array.from(palette.entries()).map(([label, swatch]) => ({
       label,
       swatch,
+      kind: 'fill',
     }))
+    // Conditionally surface the CDC edge style — only when at
+    // least one edge in the current graph is flagged as a
+    // crossing. Filters automatically when a new view.json
+    // without crossings is loaded.
+    const hasCdcCrossing = (graph?.edges || []).some(
+      (e) => e.overlays && e.overlays.clock && e.overlays.clock.crossing,
+    )
+    if (hasCdcCrossing) {
+      entries.push({
+        label: 'CDC crossing',
+        swatch: '#dc2626',
+        kind: 'dashed-line',
+      })
+    }
+    return entries
   },
 }
 

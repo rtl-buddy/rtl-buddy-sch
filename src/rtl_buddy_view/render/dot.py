@@ -117,6 +117,13 @@ def render(
     # the right rank.
     out.write('  rankdir="LR";\n')
     out.write("  compound=true;\n")
+    # Orthogonal routing — right-angle edges read as a schematic
+    # rather than a flow diagram. The trade-off is that dot's ortho
+    # router can't share start/end points among multiple edges
+    # touching the same node, so dense fan-in/fan-out can look more
+    # crowded than with curved splines. The schematic aesthetic
+    # wins for RTL hierarchy.
+    out.write('  splines="ortho";\n')
     # Tighter spacing — the frame + rank=same children pattern packs
     # vertically; reducing nodesep/ranksep keeps the diagram compact.
     out.write("  nodesep=0.18;\n")
