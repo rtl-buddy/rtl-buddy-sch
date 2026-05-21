@@ -45,6 +45,11 @@ export const useViewerStore = defineStore('viewer', {
     // instance path. ``null`` means show the full hierarchy from
     // ``graph.top``. Descend / ascend actions mutate this.
     rootInstancePath: null,
+    // Canvas view mode. ``hier`` = nested-cluster tree from the
+    // producer's embedded layout. ``flow`` = SPA-derived one-level
+    // block-diagram view with sibling-to-sibling connectivity
+    // inferred from per-node port expressions.
+    viewMode: 'hier',
     // Hub-mirrored state. All written by applyHub*/applyDiagnostics
     // actions; consumers read these directly.
     hubCursorTimeFs: null,
@@ -86,6 +91,14 @@ export const useViewerStore = defineStore('viewer', {
       return (
         state.graph.edges.find((e) => e.from === from && e.to === to) || null
       )
+    },
+    // Scope shown in the block-flow view: the currently-selected
+    // instance when there is one, otherwise the design top. The
+    // flow renderer reads this to decide *which* instance to expand
+    // (showing its direct children + their interconnections).
+    flowScopeId(state) {
+      if (state.selection) return state.selection
+      return state.graph ? state.graph.top : null
     },
     // True when the selected node has at least one child in the
     // current full graph — i.e. descending into it would show
@@ -241,6 +254,11 @@ export const useViewerStore = defineStore('viewer', {
     },
     goToTop() {
       this.rootInstancePath = null
+    },
+    setViewMode(mode) {
+      if (mode === 'hier' || mode === 'flow') {
+        this.viewMode = mode
+      }
     },
     toggleOverlay(name) {
       if (this.enabledOverlays.has(name)) {

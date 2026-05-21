@@ -321,11 +321,15 @@ export function useHub() {
      * editor. Sends an ``open_source`` REQUEST envelope which the
      * hub routes to any registered editor adapter (rtl-buddy-nvim
      * implements it via ``RtlBuddyOpen``). Falls back to dispatching
-     * the rtlbuddy:// URI through the OS when the hub is offline so
-     * the action is never a no-op.
+     * the ``rtlbuddy://`` URI through the OS when the hub send
+     * fails — covers ``state === 'disconnected'``, transient
+     * reconnect windows where ``_socket.readyState !== 1``, AND
+     * the case where the envelope just doesn't get sent — so the
+     * action is never silently a no-op.
      *
-     * Returns true when the request was sent (or the URI was
-     * dispatched), false if there's no source info to act on.
+     * Returns true when the request was sent or the URI was
+     * dispatched, false if there's no source info to act on at
+     * all.
      */
     requestOpenSource(node) {
       if (!node) return false
@@ -333,8 +337,8 @@ export function useHub() {
       // ``node.link`` URI carries the same info but stringly-typed,
       // and the hub schema wants integers for line / col.
       const src = node.source || null
-      if (state.value === 'ready' && src && typeof src.file === 'string') {
-        sendEnvelope({
+      if (src && typeof src.file === 'string') {
+        const sent = sendEnvelope({
           v: PROTOCOL_VERSION,
           id: makeId(),
           origin: 'view',
@@ -346,9 +350,11 @@ export function useHub() {
             col: typeof src.start_column === 'number' ? src.start_column : 1,
           },
         })
-        return true
+        if (sent) return true
       }
-      // Offline fallback: dispatch ``node.link`` (rtlbuddy://...).
+      // Fallback (hub down, reconnecting, or no structured source
+      // block): dispatch the ``rtlbuddy://`` URI through the OS so
+      // the click still has an effect.
       if (node.link && typeof window !== 'undefined') {
         try { window.open(node.link, '_blank') } catch { /* ignore */ }
         return true

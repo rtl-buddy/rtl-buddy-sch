@@ -51,6 +51,17 @@ export async function layoutGraph(graph) {
   return svg.outerHTML
 }
 
+/**
+ * Lay out an arbitrary DOT string and return the SVG. Lets
+ * alternate renderers (block-flow, future formats) share the same
+ * viz.js bootstrap path without going through view.json.
+ */
+export async function layoutDot(dot) {
+  const viz = await getViz()
+  const svg = viz.renderSVGElement(dot)
+  return svg.outerHTML
+}
+
 // Pick the DOT source to feed viz.js: prefer the producer-supplied
 // ``layout.dot`` when it looks usable; fall back to the in-JS
 // builder otherwise. Exported for tests so the precedence rule is
