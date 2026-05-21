@@ -87,6 +87,7 @@ def render(
     domain_map: DomainMap | None = None,
     reset_map: ResetDomainMap | None = None,
     with_legend: bool = False,
+    as_cluster_tree: bool = False,
 ) -> None:
     """Render ``node`` and its subtree as a Graphviz ``.dot`` digraph.
 
@@ -97,8 +98,17 @@ def render(
     matches the schematic-block mental model: the top *is* the
     external interface, not an instance of itself.
 
-    Deeper nesting (children's children, etc.) still renders as the
-    usual box-and-arrow tree.
+    ``as_cluster_tree`` extends the cluster treatment to *every*
+    non-leaf instance: each sub-block becomes its own bounding box
+    containing its sub-cells, so containment reads as containment.
+    Parent → child edges drop in this mode (the wrapper *is* the
+    relationship); CDC / RDC adornments migrate to the destination
+    cluster's border. Default is ``False`` so the standalone
+    ``--format dot`` output keeps the established box-and-arrow
+    shape; the JSON-embedded layout (consumed by the SPA) opts in.
+
+    With ``as_cluster_tree=False``, deeper nesting (children's
+    children, etc.) renders as the usual box-and-arrow tree.
 
     When ``reset_map`` is supplied (Phase 3), the renderer also emits:
 
@@ -137,7 +147,9 @@ def render(
     )
     out.write('  edge [fontname="Courier,monospace"];\n')
     out.write("\n")
-    _emit_top_frame(node, out, active_map, active_reset_map)
+    _emit_top_frame(
+        node, out, active_map, active_reset_map, as_cluster_tree=as_cluster_tree
+    )
     if with_legend and active_map is not None:
         _emit_legend(active_map, out)
     out.write("}\n")
@@ -148,6 +160,8 @@ def _emit_top_frame(
     out: IO[str],
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None = None,
+    *,
+    as_cluster_tree: bool = False,
 ) -> None:
     """Emit the top module as a titled cluster with port-rank anchors."""
     title = _escape(top.module_name)
@@ -176,14 +190,26 @@ def _emit_top_frame(
 
     _emit_port_anchors(top, out)
 
-    # Direct children: let dot pick the rank for each — pinning them
-    # all to ``rank=same`` lined them up neatly but made the diagram
-    # impossible to read once children have grandchildren that fight
-    # the constraint. Subtree depth dictates layout.
-    for child in top.children:
-        _emit_node(child, out, domain_map, reset_map=reset_map)
-    for child in top.children:
-        _emit_edges(child, out, domain_map, reset_map=reset_map)
+    if as_cluster_tree:
+        # Cluster-tree emission: every instance with children becomes
+        # a ``subgraph cluster_…`` so containment reads as
+        # containment — u_dma's sub-cells live *inside* u_dma's box
+        # rather than dangling below it with a parent→child arrow.
+        # Parent→child edges drop entirely; CDC / RDC markers migrate
+        # to the destination cluster's border via the ``cdc_on_node``
+        # path that existed for the top frame's direct children.
+        for child in top.children:
+            _emit_cluster_subtree(
+                child, out, domain_map, reset_map=reset_map, top_level=True
+            )
+    else:
+        # Original box-and-arrow tree: each child is a flat node and
+        # parent→child edges carry the port-pair / CDC / RDC labels.
+        # Tests + the standalone ``--format dot`` rely on this shape.
+        for child in top.children:
+            _emit_node(child, out, domain_map, reset_map=reset_map)
+        for child in top.children:
+            _emit_edges(child, out, domain_map, reset_map=reset_map)
 
     # Port → child signal-flow edges: when a child's port connection
     # has a bare-identifier net that matches a top input/output port
@@ -391,6 +417,132 @@ def _emit_top_cdc_arrows(
                 f'[label="{label}", color="#dc2626", '
                 f'style="dashed", fontcolor="#dc2626"];\n'
             )
+
+
+def _cluster_id_for(instance_path: str) -> str:
+    """Sanitize an instance path into a Graphviz cluster name.
+
+    ``subgraph cluster_…`` names must be alphanumeric + underscore;
+    instance paths are dot-separated. Replace every non-alphanumeric
+    char with ``_`` — collisions are impossible because instance
+    paths are unique by construction (extractor guarantees) and the
+    replacement is bijective for dotted ids.
+    """
+    return "cluster_" + re.sub(r"[^A-Za-z0-9_]", "_", instance_path)
+
+
+def _emit_cluster_subtree(
+    node: HierNode,
+    out: IO[str],
+    domain_map: DomainMap | None,
+    *,
+    reset_map: ResetDomainMap | None = None,
+    top_level: bool = False,
+) -> None:
+    """Recursively emit ``node`` and its descendants.
+
+    Leaves render as a regular DOT node box (delegated to
+    :func:`_emit_node`).
+
+    Non-leaves render as a Graphviz cluster subgraph: the instance
+    label becomes the cluster's title, the cluster's outline picks
+    up the same clock-keyed / CDC / RDC styling that the box form
+    would have carried, and the children render recursively
+    *inside* the cluster — so the schematic reads "u_dma contains
+    u_dma.u_wb which contains u_dma.u_wb.i_sync_rd2wr" by
+    containment rather than as a chain of arrows.
+
+    ``top_level=True`` carries the same semantics ``cdc_on_node``
+    has for boxes: the destination of a CDC / RDC arrow from the
+    top-frame's port anchors lands on this cluster, so the cluster
+    border picks up the warning color.
+    """
+    if not node.children:
+        _emit_node(
+            node,
+            out,
+            domain_map,
+            cdc_on_node=top_level,
+            reset_map=reset_map,
+        )
+        return
+
+    cluster_id = _cluster_id_for(node.instance_path)
+    label_lines = _label_text_lines(node, domain_map, reset_map)
+    # ``\l`` line-terminators left-justify each label line within the
+    # cluster title (Graphviz default is centered via ``\n``). Trailing
+    # ``\l`` so the last line aligns too. Matches the schematic
+    # convention where block titles read flush-left.
+    title = "\\l".join(_escape(line) for line in label_lines) + "\\l"
+
+    # Border colour resolution mirrors the box form's precedence:
+    # CDC red > RDC orange > reset-synchroniser teal > clock-keyed
+    # outline > neutral slate. The cluster carries the cue that a
+    # box would have carried for the same instance.
+    fill, _ = _fill_for(node, domain_map)
+    is_sync = (
+        reset_map is not None and node.instance_path in reset_map.synchronizer_paths()
+    )
+    cdc_summary = _format_cdc_summary(node, domain_map) if top_level else ""
+    rdc_summary = (
+        _format_rdc_summary(node, reset_map)
+        if top_level and reset_map is not None
+        else ""
+    )
+    outline = "#94a3b8"
+    pen = 1
+    fontcolor = None
+    if cdc_summary:
+        outline = "#dc2626"
+        pen = 2
+        fontcolor = "#dc2626"
+    elif rdc_summary:
+        outline = _RDC_COLOR
+        pen = 2
+        fontcolor = _RDC_COLOR
+    elif is_sync:
+        outline = _RSTSYNC_OUTLINE
+        pen = 2
+    elif fill != _DEFAULT_FILL and fill != _BLACKBOX_FILL and ":" not in fill:
+        # Single-clock-typed subtree: pick up the clock palette for
+        # the cluster outline so the domain reads at a glance.
+        outline = fill
+
+    label_suffix_parts: list[str] = []
+    if cdc_summary:
+        label_suffix_parts.append(cdc_summary)
+    if rdc_summary:
+        label_suffix_parts.append(rdc_summary)
+    if label_suffix_parts:
+        title = title + "\\l".join(label_suffix_parts) + "\\l"
+
+    out.write(f"  subgraph {cluster_id} {{\n")
+    out.write(f'    label="{title}";\n')
+    out.write('    labelloc="t";\n')
+    # ``labeljust="l"`` pins the label block to the left edge of the
+    # cluster so the title text aligns flush-left under the top
+    # border, matching the schematic convention. Without it the
+    # block centers within the cluster width and stops reading as a
+    # block title.
+    out.write('    labeljust="l";\n')
+    out.write('    style="rounded";\n')
+    out.write(f'    color="{outline}";\n')
+    out.write(f"    penwidth={pen};\n")
+    if fontcolor:
+        out.write(f'    fontcolor="{fontcolor}";\n')
+    # Invisible anchor node, named with the instance path so any edge
+    # elsewhere in the diagram that targets ``"<instance_path>"`` (port
+    # signal-flow arrows, top-frame CDC/RDC overlays) resolves to a
+    # real point *inside* this cluster instead of triggering Graphviz's
+    # auto-create-undefined-node fallback — which would draw a second
+    # box next to the cluster for the same instance.
+    out.write(
+        f'    "{node.instance_path}" [shape=point, style=invis,'
+        " width=0, height=0];\n"
+    )
+    for child in node.children:
+        _emit_cluster_subtree(child, out, domain_map, reset_map=reset_map)
+    out.write("  }\n")
 
 
 def _emit_node(
