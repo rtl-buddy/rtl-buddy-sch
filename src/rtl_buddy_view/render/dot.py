@@ -130,12 +130,12 @@ def render(
     out.write("  ranksep=0.45;\n")
     # Fixed-width font on every label so space-padding visually aligns
     # parentheses in parameter and port-connection lists.
-    out.write('  fontname="Menlo,Courier,monospace";\n')
+    out.write('  fontname="Courier,monospace";\n')
     out.write(
         f'  node [shape=box, style="rounded,filled", fillcolor="{_DEFAULT_FILL}",'
-        ' fontname="Menlo,Courier,monospace"];\n'
+        ' fontname="Courier,monospace"];\n'
     )
-    out.write('  edge [fontname="Menlo,Courier,monospace"];\n')
+    out.write('  edge [fontname="Courier,monospace"];\n')
     out.write("\n")
     _emit_top_frame(node, out, active_map, active_reset_map)
     if with_legend and active_map is not None:
@@ -511,7 +511,7 @@ def _emit_html_grid_node(
 
     rows: list[str] = [
         f'<TR><TD COLSPAN="2" BORDER="0" ALIGN="LEFT">'
-        f'<FONT FACE="Menlo,Courier,monospace">{header}</FONT></TD></TR>'
+        f'<FONT FACE="Courier,monospace">{header}</FONT></TD></TR>'
     ]
     for src, dst in pairs:
         rows.append(
