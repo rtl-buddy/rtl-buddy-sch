@@ -79,17 +79,16 @@ export const clockOverlay = {
       const shape = group.querySelector('polygon, ellipse, rect, path')
       if (!shape) continue
       if (enabled && ov && ov.clock && palette.has(ov.clock)) {
-        // Override BOTH the inline style and the polygon's ``fill=``
-        // attribute. The embedded layout DOT now ships without
-        // baked-in fills, but defensive: a producer that emits its
-        // own clock-keyed fillcolor wouldn't otherwise be clearable
-        // by toggling the overlay off (the attribute would shine
-        // through ``style.fill = ''``).
-        shape.setAttribute('fill', palette.get(ov.clock))
+        // Only override the inline style — leave the polygon's
+        // ``fill=`` attribute alone. Graphviz sets the attribute
+        // from the DOT's global ``node [fillcolor=...]`` default
+        // (neutral grey), and on toggle-off we restore that floor
+        // by clearing inline only. Stripping the attribute itself
+        // bottoms out at SVG's default of *black*, which made
+        // unchecking the overlay turn modules black (#57 follow-up).
         shape.style.fill = palette.get(ov.clock)
         group.setAttribute('data-overlay-clock', ov.clock)
       } else {
-        shape.removeAttribute('fill')
         shape.style.fill = ''
         group.removeAttribute('data-overlay-clock')
       }
