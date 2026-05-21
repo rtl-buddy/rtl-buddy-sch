@@ -139,8 +139,29 @@ def _layout_block(
     """
     del domain_map, reset_map, with_legend  # see docstring
     buf = io.StringIO()
-    dot_render.render(node, buf)
-    return {"engine": "dot", "dot": buf.getvalue()}
+    # ``as_cluster_tree`` wraps every non-leaf instance in its own
+    # cluster subgraph so the SPA's hierarchy view reads as a
+    # schematic "block-within-block" diagram instead of a
+    # parent-arrow-child tree. The standalone ``--format dot``
+    # output keeps the original shape — see ``dot.render``'s
+    # docstring for the rationale.
+    dot_render.render(node, buf, as_cluster_tree=True)
+    # Reverse-map: Graphviz emits the cluster's ``<title>`` as the
+    # sanitized DOT identifier (``cluster_<sanitized-instance-path>``),
+    # not the instance path itself. The SPA needs the original
+    # instance path to wire clicks back to ``nodes[]``; ship the
+    # mapping so it doesn't have to re-implement the sanitization.
+    cluster_lookup: dict[str, str] = {}
+    for n in _walk(node):
+        if n.children:
+            cluster_lookup[dot_render._cluster_id_for(n.instance_path)] = (
+                n.instance_path
+            )
+    return {
+        "engine": "dot",
+        "dot": buf.getvalue(),
+        "cluster_lookup": cluster_lookup,
+    }
 
 
 def _overlays_present(

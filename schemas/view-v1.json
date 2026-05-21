@@ -53,6 +53,11 @@
         "dot": {
           "type": "string",
           "description": "A full Graphviz DOT source string. Node IDs use the same instance-path scheme as nodes[].id so consumers can post-walk the SVG and round-trip identity via Graphviz's auto-emitted <title> elements."
+        },
+        "cluster_lookup": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "description": "Reverse map from Graphviz-sanitized cluster identifier (the <title> Graphviz emits on each <g class=\"cluster\">) to the original instance path. Producers using cluster-tree layout emit this so consumers can wire click handlers on cluster groups back to nodes[]. Producers that emit a flat box-and-arrow layout omit the field."
         }
       }
     }

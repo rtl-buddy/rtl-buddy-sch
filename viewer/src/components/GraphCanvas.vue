@@ -54,6 +54,21 @@ async function renderSvg() {
     const titleEl = group.querySelector('title')
     if (titleEl) group.setAttribute('data-node-id', titleEl.textContent)
   }
+  // Cluster groups carry Graphviz's sanitized cluster identifier as
+  // their <title>; recover the original instance path from the
+  // producer-supplied lookup map so clicks on the cluster border or
+  // label select the wrapper node (rtl-buddy-view#... follow-up to
+  // the cluster-tree layout switch).
+  const clusterLookup =
+    (graph.value && graph.value.layout && graph.value.layout.cluster_lookup) || null
+  for (const group of _svgEl.querySelectorAll('g.cluster')) {
+    const titleEl = group.querySelector('title')
+    if (!titleEl) continue
+    const clusterId = titleEl.textContent
+    if (clusterLookup && clusterLookup[clusterId]) {
+      group.setAttribute('data-node-id', clusterLookup[clusterId])
+    }
+  }
   for (const group of _svgEl.querySelectorAll('g.edge')) {
     const titleEl = group.querySelector('title')
     if (!titleEl) continue
@@ -79,7 +94,11 @@ watch(
 )
 
 function nodeFromEvent(e) {
-  const group = e.target.closest('g.node, [data-node-id]')
+  // ``g.cluster`` is the cluster-tree wrapper; ``g.node`` the leaf
+  // box. Both get ``data-node-id`` stamped in renderSvg, so the
+  // closest()-walk picks up whichever the user actually clicked —
+  // including the cluster's border / label / blank interior.
+  const group = e.target.closest('g.node, g.cluster, [data-node-id]')
   if (!group) return null
   const id = group.getAttribute('data-node-id')
   if (!id) return null
@@ -123,18 +142,17 @@ function onClick(e) {
 }
 
 function onContextMenu(e) {
-  // Right-click is an explicit escape hatch: dispatch ``node.link``
-  // straight to the OS (rtlbuddy:// or vscode://), bypassing the
-  // hub even when it's connected. Handy when the hub's resolver
-  // is misconfigured or the user wants the editor to open without
-  // also panning surfer.
+  // Right-click asks the editor to open the source location. When
+  // the hub is up, we send an ``open_source`` request through the
+  // wire — nvim's RtlBuddyOpen handler picks it up and jumps in
+  // place, no OS round-trip. With the hub offline,
+  // ``requestOpenSource`` falls back to dispatching ``node.link``
+  // (rtlbuddy://) through the OS so the action is never a no-op.
   const hit = nodeFromEvent(e)
   if (!hit) return
   e.preventDefault()
   store.select(hit.id)
-  if (hit.node.link) {
-    window.open(hit.node.link, '_blank')
-  }
+  hub.requestOpenSource(hit.node)
 }
 
 // --- pan / zoom -----------------------------------------------------------
@@ -316,7 +334,8 @@ onBeforeUnmount(() => {
    "grab" (pan) to "pointer" (clickable). :deep() reaches inside
    the injected SVG which isn't scoped to this component. */
 .svg-host :deep(g.node),
-.svg-host :deep(g.edge) {
+.svg-host :deep(g.edge),
+.svg-host :deep(g.cluster) {
   cursor: pointer;
 }
 </style>

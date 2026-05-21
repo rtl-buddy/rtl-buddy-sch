@@ -316,6 +316,45 @@ export function useHub() {
         try { window.open(node.link, '_blank') } catch { /* ignore */ }
       }
     },
+    /**
+     * Ask the hub to open a node's source location in the user's
+     * editor. Sends an ``open_source`` REQUEST envelope which the
+     * hub routes to any registered editor adapter (rtl-buddy-nvim
+     * implements it via ``RtlBuddyOpen``). Falls back to dispatching
+     * the rtlbuddy:// URI through the OS when the hub is offline so
+     * the action is never a no-op.
+     *
+     * Returns true when the request was sent (or the URI was
+     * dispatched), false if there's no source info to act on.
+     */
+    requestOpenSource(node) {
+      if (!node) return false
+      // Prefer the structured source block when available — the
+      // ``node.link`` URI carries the same info but stringly-typed,
+      // and the hub schema wants integers for line / col.
+      const src = node.source || null
+      if (state.value === 'ready' && src && typeof src.file === 'string') {
+        sendEnvelope({
+          v: PROTOCOL_VERSION,
+          id: makeId(),
+          origin: 'view',
+          kind: 'request',
+          type: 'open_source',
+          payload: {
+            file: src.file,
+            line: typeof src.start_line === 'number' ? src.start_line : 1,
+            col: typeof src.start_column === 'number' ? src.start_column : 1,
+          },
+        })
+        return true
+      }
+      // Offline fallback: dispatch ``node.link`` (rtlbuddy://...).
+      if (node.link && typeof window !== 'undefined') {
+        try { window.open(node.link, '_blank') } catch { /* ignore */ }
+        return true
+      }
+      return false
+    },
     disconnect,
     reconnect() {
       _autoReconnect = true

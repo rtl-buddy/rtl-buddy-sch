@@ -53,9 +53,17 @@
         <dt>overlay: {{ name }}</dt>
         <dd><pre>{{ JSON.stringify(payload, null, 2) }}</pre></dd>
       </template>
-      <template v-if="node.link">
+      <template v-if="hasOpenable">
         <dt>Open</dt>
-        <dd><a :href="node.link" target="_blank" rel="noopener">{{ node.link }}</a></dd>
+        <dd>
+          <button
+            type="button"
+            class="open-source"
+            @click="openInEditor"
+            :title="openTitle"
+          >Open in editor</button>
+          <code class="open-target">{{ openTargetText }}</code>
+        </dd>
       </template>
     </dl>
   </section>
@@ -74,12 +82,36 @@
 // viewer doesn't have a dedicated renderer for.
 import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
+import { useHub } from '../composables/useHub.js'
 
 const store = useViewerStore()
+const hub = useHub()
 const node = computed(() => store.selectedNode)
 const hasParameters = computed(
   () => node.value && node.value.parameters && Object.keys(node.value.parameters).length > 0,
 )
+// Openable when the node has either a structured ``source`` block
+// (preferred — hub path uses (file, line, col)) or just a raw
+// ``link`` URI (offline fallback through the OS).
+const hasOpenable = computed(
+  () => node.value && (node.value.source || node.value.link),
+)
+const openTargetText = computed(() => {
+  const src = node.value && node.value.source
+  if (src && typeof src.file === 'string') {
+    const line = typeof src.start_line === 'number' ? src.start_line : 1
+    return `${src.file}:${line}`
+  }
+  return (node.value && node.value.link) || ''
+})
+const openTitle = computed(() =>
+  hub.state.value === 'ready'
+    ? 'Request hub to open this in your editor'
+    : 'Hub offline — falls back to the rtlbuddy:// URI via the OS',
+)
+function openInEditor() {
+  if (node.value) hub.requestOpenSource(node.value)
+}
 </script>
 
 <style scoped>
@@ -123,4 +155,14 @@ const hasParameters = computed(
 .blackbox { color: #b45309; }
 .port-name { color: #1e293b; }
 .port-dir { color: #64748b; font-size: 0.75rem; margin-left: 0.25rem; }
+.open-source {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  margin-right: 0.4rem;
+}
+.open-target { font-size: 0.75rem; color: #64748b; word-break: break-all; }
 </style>
