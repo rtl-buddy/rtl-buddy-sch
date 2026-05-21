@@ -10,7 +10,8 @@
     <div class="app-body" v-if="store.status === 'ready'">
       <aside class="sidebar">
         <OverlayPanel />
-        <NodeDetail />
+        <NodeDetail v-if="!store.selectedEdgeObj" />
+        <EdgeDetail v-if="store.selectedEdgeObj" />
         <DiagnosticsPanel />
       </aside>
       <GraphCanvas />
@@ -45,6 +46,7 @@ import { useViewerStore } from './store.js'
 import GraphCanvas from './components/GraphCanvas.vue'
 import OverlayPanel from './components/OverlayPanel.vue'
 import NodeDetail from './components/NodeDetail.vue'
+import EdgeDetail from './components/EdgeDetail.vue'
 import HubStatus from './components/HubStatus.vue'
 import ToastHost from './components/ToastHost.vue'
 import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
