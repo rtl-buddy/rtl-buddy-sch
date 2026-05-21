@@ -143,12 +143,23 @@ export const useViewerStore = defineStore('viewer', {
     async bootstrap() {
       // Priority order:
       //   1. ``?view=`` URL query — explicit caller intent.
-      //   2. ``window.__RTL_BUDDY_VIEW_DATA__`` — embed.py inject.
-      //   3. Stay idle and wait for drag-drop / file picker.
+      //   2. ``window.__RTL_BUDDY_VIEW_URL__`` — hub injection. Set
+      //      by rtl-buddy-hub's index.html renderer when it has a
+      //      view.json configured (see rtl_buddy hub/viewer_http.py).
+      //      Visiting ``http://hub:port/`` with no query string then
+      //      auto-loads the design instead of dropping the user on
+      //      the empty drag-drop screen.
+      //   3. ``window.__RTL_BUDDY_VIEW_DATA__`` — embed.py inject
+      //      (single-file standalone HTML build).
+      //   4. Stay idle and wait for drag-drop / file picker.
       const params = new URLSearchParams(window.location.search)
       const viewUrl = params.get('view')
       if (viewUrl) {
         await this.loadFromUrl(viewUrl)
+        return
+      }
+      if (typeof window !== 'undefined' && window.__RTL_BUDDY_VIEW_URL__) {
+        await this.loadFromUrl(window.__RTL_BUDDY_VIEW_URL__)
         return
       }
       if (window.__RTL_BUDDY_VIEW_DATA__) {
