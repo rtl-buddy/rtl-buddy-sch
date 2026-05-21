@@ -30,6 +30,10 @@ from typing import IO
 import typer
 
 from rtl_buddy_view._filelist import FilelistError, parse_filelist
+from rtl_buddy_view.axi_perf_annotations import (
+    AxiPerfAnnotationsError,
+    AxiPerfMap,
+)
 from rtl_buddy_view.annotations import (
     AnnotationsError,
     DomainMap,
@@ -165,7 +169,11 @@ def main(
             raise typer.Exit(code=1) from None
         try:
             annotations[name] = overlay.load(path)
-        except (AnnotationsError, ResetAnnotationsError) as e:
+        except (
+            AnnotationsError,
+            ResetAnnotationsError,
+            AxiPerfAnnotationsError,
+        ) as e:
             # Loader exceptions carry the overlay's own prefix in
             # their message; we just qualify with the overlay name
             # here so the user sees which artefact failed when
@@ -196,14 +204,31 @@ def main(
 
     domain_map: DomainMap | None = annotations.get("clock")  # type: ignore[assignment]
     reset_map: ResetDomainMap | None = annotations.get("reset")  # type: ignore[assignment]
+    axi_perf_map: AxiPerfMap | None = annotations.get("axi-perf")  # type: ignore[assignment]
 
     sink: IO[str]
     if output_path is None:
         sink = sys.stdout
-        _render(root, output_format, sink, domain_map, reset_map, clock_legend)
+        _render(
+            root,
+            output_format,
+            sink,
+            domain_map,
+            reset_map,
+            axi_perf_map,
+            clock_legend,
+        )
     else:
         with output_path.open("w") as sink:
-            _render(root, output_format, sink, domain_map, reset_map, clock_legend)
+            _render(
+                root,
+                output_format,
+                sink,
+                domain_map,
+                reset_map,
+                axi_perf_map,
+                clock_legend,
+            )
 
 
 def _collect_overlays(
@@ -283,6 +308,7 @@ def _render(
     sink: IO[str],
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
+    axi_perf_map: AxiPerfMap | None,
     clock_legend: bool,
 ) -> None:
     if fmt is OutputFormat.tree:
@@ -303,6 +329,7 @@ def _render(
             sink,
             domain_map=domain_map,
             reset_map=reset_map,
+            axi_perf_map=axi_perf_map,
             with_legend=clock_legend,
         )
     else:  # pragma: no cover
