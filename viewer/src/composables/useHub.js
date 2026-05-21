@@ -35,6 +35,11 @@ const peers = ref([])
 const serverVersion = ref(null)
 const lastError = ref(null)
 const lastClick = ref(null)
+// When the hub kicks us with code=superseded, we know another
+// browser tab took over the view slot — fighting to reconnect
+// would just kick the new tab back. Stays true until the user
+// explicitly calls reconnect() (e.g. clicks a "take back" button).
+const superseded = ref(false)
 
 let _socket = null
 let _reconnectTimer = null
@@ -43,6 +48,10 @@ let _autoReconnect = true
 let _wsFactory = (url) => new WebSocket(url)
 let _store = null
 let _initialised = false
+// Track whether the *next* hello should ask the hub to evict any
+// existing view registration. Set when a prior hello got an
+// "already registered" error so the retry takes over.
+let _pendingTakeover = false
 
 function makeId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -92,22 +101,29 @@ function sendEnvelope(env) {
 }
 
 function sendHello() {
+  const payload = {
+    client: 'view',
+    version: CLIENT_VERSION,
+    capabilities: [
+      'selection_changed',
+      'cursor_time_changed',
+      'scope_changed',
+      'diagnostics_set',
+    ],
+  }
+  // ``takeover`` is opt-in per-hello: the hub kicks any pre-
+  // existing view registration and welcomes us instead. Set only
+  // after a prior hello failed with "already registered" so the
+  // first hello stays polite for the common case (no other tab
+  // open) but a stale tab can't permanently block us.
+  if (_pendingTakeover) payload.takeover = true
   sendEnvelope({
     v: PROTOCOL_VERSION,
     id: makeId(),
     origin: 'view',
     kind: 'request',
     type: 'hello',
-    payload: {
-      client: 'view',
-      version: CLIENT_VERSION,
-      capabilities: [
-        'selection_changed',
-        'cursor_time_changed',
-        'scope_changed',
-        'diagnostics_set',
-      ],
-    },
+    payload,
   })
 }
 
@@ -128,6 +144,9 @@ function applyEnvelope(env) {
         ? p.registered_clients.slice()
         : []
       state.value = 'ready'
+      // Hello accepted — clear the takeover-retry flag so the next
+      // reconnect starts polite again.
+      _pendingTakeover = false
       break
     }
 
@@ -172,6 +191,32 @@ function applyEnvelope(env) {
       }
       lastError.value = err
       _store?.applyHubError(err)
+      // Hub kicked us out because a newer view tab took the slot.
+      // Stop auto-reconnect (we'd just keep losing the race) and
+      // flip the ``superseded`` flag so the UI can surface a
+      // banner. ``reconnect()`` clears it if the user asks to
+      // come back.
+      if (err.code === 'superseded') {
+        superseded.value = true
+        _autoReconnect = false
+        clearReconnectTimer()
+        if (_socket) {
+          try { _socket.close() } catch { /* ignore */ }
+        }
+        break
+      }
+      // First hello refused because the slot is in use. Retry
+      // once with ``takeover=true`` so the new tab wins. We don't
+      // loop on this — if takeover ALSO fails (e.g. due to a
+      // different cause), we let it surface as an ordinary error
+      // and stop.
+      if (err.code === 'not_connected' && !_pendingTakeover) {
+        const msg = err.message || ''
+        if (/already registered/i.test(msg)) {
+          _pendingTakeover = true
+          sendHello()
+        }
+      }
       break
     }
 
@@ -362,9 +407,20 @@ export function useHub() {
       return false
     },
     disconnect,
-    reconnect() {
+    superseded,
+    /**
+     * Reconnect to the hub, optionally asking it to evict any
+     * existing registration in the view slot. ``takeover=true`` is
+     * what the "Take back" button passes when a previous tab
+     * superseded us — without it the hub would refuse the
+     * connection and we'd just disconnect again.
+     */
+    reconnect(opts = {}) {
+      const takeover = opts.takeover === true || superseded.value
       _autoReconnect = true
       _reconnectDelay = RECONNECT_INITIAL_MS
+      superseded.value = false
+      _pendingTakeover = takeover
       connect()
     },
   }
@@ -386,10 +442,12 @@ export const _testing = {
     serverVersion.value = null
     lastError.value = null
     lastClick.value = null
+    superseded.value = false
     _autoReconnect = true
     _reconnectDelay = RECONNECT_INITIAL_MS
     _initialised = false
     _store = null
+    _pendingTakeover = false
     _wsFactory = (url) => new WebSocket(url)
   },
   setStore(store) { _store = store },
