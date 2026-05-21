@@ -87,14 +87,39 @@ function nodeFromEvent(e) {
   return node ? { id, node } : null
 }
 
+function edgeFromEvent(e) {
+  const group = e.target.closest('g.edge, [data-edge-from]')
+  if (!group) return null
+  const from = group.getAttribute('data-edge-from')
+  const to = group.getAttribute('data-edge-to')
+  if (!from || !to) return null
+  // Synthetic port-anchor edges (``_in_<port>`` / ``_out_<port>``)
+  // don't appear in graph.edges; treat them as non-clickable
+  // structural decoration so a click falls through.
+  const match = store.graph
+    ? store.graph.edges.find((edge) => edge.from === from && edge.to === to)
+    : null
+  return match ? { from, to, edge: match } : null
+}
+
 function onClick(e) {
-  // Left-click: select + broadcast selection_changed via the hub
-  // (Phase 10d). When the hub is offline, notifyClick falls back to
-  // dispatching ``node.link`` directly, so a click is never a no-op.
-  const hit = nodeFromEvent(e)
-  if (!hit) return
-  store.select(hit.id)
-  hub.notifyClick(hit.node)
+  // Left-click: nodes take precedence over edges (target.closest
+  // walks up; a node's polygon and an edge's path are siblings,
+  // not nested, so this is mostly belt-and-suspenders). Edge clicks
+  // populate ``selectedEdge`` so EdgeDetail renders; the hub stays
+  // out of the loop for edges since the v1 protocol has no
+  // edge-selection envelope.
+  const nodeHit = nodeFromEvent(e)
+  if (nodeHit) {
+    store.select(nodeHit.id)
+    hub.notifyClick(nodeHit.node)
+    return
+  }
+  const edgeHit = edgeFromEvent(e)
+  if (edgeHit) {
+    store.selectEdge(edgeHit.from, edgeHit.to)
+    return
+  }
 }
 
 function onContextMenu(e) {
@@ -284,5 +309,14 @@ onBeforeUnmount(() => {
 .svg-host > svg {
   width: 100%;
   height: 100%;
+}
+/* Clickability cue. ``g.node`` / ``g.edge`` are the Graphviz-
+   emitted groups we stamp ``data-node-id`` / ``data-edge-from``
+   onto in renderSvg — hover them and the cursor goes from
+   "grab" (pan) to "pointer" (clickable). :deep() reaches inside
+   the injected SVG which isn't scoped to this component. */
+.svg-host :deep(g.node),
+.svg-host :deep(g.edge) {
+  cursor: pointer;
 }
 </style>

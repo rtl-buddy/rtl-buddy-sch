@@ -35,6 +35,11 @@ export const useViewerStore = defineStore('viewer', {
     status: 'idle',
     error: null,
     selection: null,
+    // Currently-selected edge as ``{from, to}`` or null. Mutually
+    // exclusive with ``selection`` so the sidebar shows one detail
+    // panel at a time — selecting an edge clears the node, and
+    // vice versa.
+    selectedEdge: null,
     enabledOverlays: new Set(),
     // When set, the renderer shows only the subtree rooted at this
     // instance path. ``null`` means show the full hierarchy from
@@ -74,6 +79,13 @@ export const useViewerStore = defineStore('viewer', {
     selectedNode(state) {
       if (!state.selection) return null
       return this.nodesById.get(state.selection) || null
+    },
+    selectedEdgeObj(state) {
+      if (!state.selectedEdge || !state.graph) return null
+      const { from, to } = state.selectedEdge
+      return (
+        state.graph.edges.find((e) => e.from === from && e.to === to) || null
+      )
     },
     // True when the selected node has at least one child in the
     // current full graph — i.e. descending into it would show
@@ -174,6 +186,7 @@ export const useViewerStore = defineStore('viewer', {
       this.status = 'ready'
       this.error = null
       this.selection = null
+      this.selectedEdge = null
       // Default: every overlay the producer emitted is enabled, so
       // the user sees the full overlay decoration on first open.
       this.enabledOverlays = new Set(graph.overlays_present)
@@ -185,8 +198,24 @@ export const useViewerStore = defineStore('viewer', {
     },
     select(id) {
       this.selection = id
+      this.selectedEdge = null
     },
     clearSelection() {
+      this.selection = null
+      this.selectedEdge = null
+    },
+    selectEdge(from, to) {
+      // Only accept an edge that exists in the current graph;
+      // refuses the synthetic port-anchor edges ``"_in_<port>" ->
+      // "<child>"`` the producer DOT injects for top-port signal
+      // flow (those have no corresponding ``edges[]`` entry).
+      if (typeof from !== 'string' || typeof to !== 'string') return
+      if (!this.graph) return
+      const match = this.graph.edges.find(
+        (e) => e.from === from && e.to === to,
+      )
+      if (!match) return
+      this.selectedEdge = { from, to }
       this.selection = null
     },
     descend(id) {
@@ -246,6 +275,7 @@ export const useViewerStore = defineStore('viewer', {
       // would still flood the wire).
       if (typeof id !== 'string' || id.length === 0) return
       this.selection = id
+      this.selectedEdge = null
     },
 
     applyHubScope(payload) {

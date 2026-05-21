@@ -78,6 +78,38 @@ describe('viewer store', () => {
     expect(store.selectedNode).toBeNull()
   })
 
+  it('selectEdge accepts only edges present in the current graph', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(minimalPayload()))
+    // Real edge → resolves to selectedEdgeObj and clears node selection.
+    store.select('top')
+    store.selectEdge('top', 'top.u_a')
+    expect(store.selectedEdgeObj).not.toBeNull()
+    expect(store.selectedEdgeObj.from).toBe('top')
+    expect(store.selection).toBeNull()
+    // Synthetic port-anchor edge (no matching edges[] entry) is
+    // rejected — the canvas falls through to no-op rather than
+    // populating a stale selection.
+    store.selectEdge('_in_clk_a', 'top.u_a')
+    expect(store.selectedEdgeObj.from).toBe('top') // unchanged
+    // Selecting a node clears the edge again.
+    store.select('top.u_a')
+    expect(store.selectedEdge).toBeNull()
+    expect(store.selectedNode.id).toBe('top.u_a')
+  })
+
+  it('_installGraph resets both node and edge selection', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(minimalPayload()))
+    store.selectEdge('top', 'top.u_a')
+    expect(store.selectedEdgeObj).not.toBeNull()
+    // Loading a new graph wipes the prior selection — otherwise the
+    // sidebar would render stale data while the canvas redraws.
+    store.loadFromText(JSON.stringify(minimalPayload()))
+    expect(store.selectedEdge).toBeNull()
+    expect(store.selection).toBeNull()
+  })
+
   it('surfaces invalid JSON as a status=error toast', () => {
     const store = useViewerStore()
     store.loadFromText('not valid json {')
