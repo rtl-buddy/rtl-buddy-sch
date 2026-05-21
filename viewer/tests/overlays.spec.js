@@ -123,22 +123,23 @@ describe('built-in overlays', () => {
     expect(polys.a.shape.style.fill).toBe(legendByLabel.clk_z)
     expect(polys.b.shape.style.fill).toBe(legendByLabel.clk_a)
     expect(polys.c.shape.style.fill).toBe(legendByLabel.clk_m)
-    expect(polys.a.shape.getFill()).toBe(legendByLabel.clk_z)
   })
 
-  it('clock overlay apply(enabled=false) clears the polygon fill attribute, not just the inline style', () => {
-    // The embedded-layout DOT historically baked clock colors into
-    // each polygon's ``fill=`` attribute. Toggling the overlay off
-    // used to clear only ``style.fill``, so the attribute fill
-    // shone through and the user reported "unchecking clock still
-    // shows colors". This test pins the defensive behaviour: both
-    // surfaces get cleared.
+  it('clock overlay apply(enabled=false) clears inline style but preserves the producer-default fill attribute', () => {
+    // SVG defaults ``fill`` to *black* when the attribute is
+    // absent. Graphviz sets each polygon's ``fill=`` attribute
+    // from the DOT global ``node [fillcolor=...]`` default
+    // (neutral grey ``#f5f5f5``), and clearing inline style on
+    // toggle-off restores that neutral floor. An earlier
+    // defensive ``removeAttribute('fill')`` made modules turn
+    // black on toggle-off (rtl-buddy-view live demo,
+    // 2026-05-21) — this test pins the corrected behaviour.
     const overlay = getOverlay('clock')
     const graph = {
       nodes: [{ id: 'a', overlays: { clock: { clock: 'clk_a' } } }],
       edges: [],
     }
-    let fillAttr = '#dcfce7' // simulate baked-in fillcolor from producer DOT
+    let fillAttr = '#f5f5f5' // producer's default neutral fill
     const shape = {
       style: { fill: 'red' },
       setAttribute(name, val) { if (name === 'fill') fillAttr = val },
@@ -154,7 +155,7 @@ describe('built-in overlays', () => {
     const svgRoot = { querySelector: () => group }
     overlay.apply(svgRoot, graph, false)
     expect(shape.style.fill).toBe('')
-    expect(shape.getFill()).toBe('')
+    expect(shape.getFill()).toBe('#f5f5f5')
   })
 
   it('clock overlay legend reads top-level overlay_meta.clock.clocks when present', () => {
