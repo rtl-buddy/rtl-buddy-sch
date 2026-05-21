@@ -43,6 +43,14 @@
         <button type="button" @click="reconnect">Reconnect</button>
       </footer>
     </div>
+    <div
+      v-if="hub.superseded.value"
+      class="superseded-banner"
+      role="status"
+    >
+      <strong>Superseded</strong> — another tab took over this hub.
+      <button type="button" @click="takeBack">Take back</button>
+    </div>
   </div>
 </template>
 
@@ -95,6 +103,12 @@ const hint = computed(() => {
 
 function reconnect() {
   hub.reconnect()
+}
+// "Take back": this tab was kicked because another tab opened
+// and registered as ``view``. Reconnect with ``takeover=true`` so
+// the hub evicts the newer tab and accepts us instead.
+function takeBack() {
+  hub.reconnect({ takeover: true })
 }
 </script>
 
@@ -223,5 +237,27 @@ function reconnect() {
 .peer-label {
   color: #64748b;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.superseded-banner {
+  margin-top: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.superseded-banner button {
+  margin-left: auto;
+  border: 1px solid #b91c1c;
+  background: #ffffff;
+  color: #991b1b;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 0.75rem;
 }
 </style>

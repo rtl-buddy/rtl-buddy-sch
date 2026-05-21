@@ -265,6 +265,91 @@ describe('useHub.notifyClick', () => {
   })
 })
 
+describe('hub takeover handshake', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    _testing.reset()
+  })
+  afterEach(() => { _testing.reset() })
+
+  it('retries hello with takeover=true on "already registered" error', () => {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({})
+    sock.open()
+    // First hello — plain, no takeover.
+    expect(sock.sent.length).toBe(1)
+    const firstHello = JSON.parse(sock.sent[0])
+    expect(firstHello.type).toBe('hello')
+    expect(firstHello.payload.takeover).toBeUndefined()
+
+    // Hub refuses because another view is registered.
+    sock.receive({
+      v: 1,
+      id: '00000000-0000-4000-8000-000000000001',
+      origin: 'cli',
+      kind: 'error',
+      type: 'error',
+      payload: { code: 'not_connected', message: 'view client already registered' },
+    })
+
+    // Composable retries with takeover=true.
+    expect(sock.sent.length).toBe(2)
+    const retryHello = JSON.parse(sock.sent[1])
+    expect(retryHello.type).toBe('hello')
+    expect(retryHello.payload.takeover).toBe(true)
+  })
+
+  it('sets superseded and stops auto-reconnect on superseded error', () => {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({})
+    sock.open()
+    sock.receive(env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }))
+    const hub = useHub()
+    expect(hub.state.value).toBe('ready')
+    expect(hub.superseded.value).toBe(false)
+
+    sock.receive({
+      v: 1,
+      id: '00000000-0000-4000-8000-000000000002',
+      origin: 'cli',
+      kind: 'error',
+      type: 'error',
+      payload: { code: 'superseded', message: 'view client replaced by a newer registration' },
+    })
+    expect(hub.superseded.value).toBe(true)
+  })
+
+  it('reconnect({takeover}) clears superseded and primes the next hello', () => {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({})
+    sock.open()
+    sock.receive(env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }))
+    const hub = useHub()
+    sock.receive({
+      v: 1,
+      id: '00000000-0000-4000-8000-000000000003',
+      origin: 'cli',
+      kind: 'error',
+      type: 'error',
+      payload: { code: 'superseded', message: 'kicked' },
+    })
+    expect(hub.superseded.value).toBe(true)
+
+    // Take-back: open a fresh socket and verify the hello carries
+    // takeover=true.
+    const sock2 = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock2)
+    hub.reconnect({ takeover: true })
+    sock2.open()
+    expect(hub.superseded.value).toBe(false)
+    const hello = JSON.parse(sock2.sent[0])
+    expect(hello.payload.takeover).toBe(true)
+  })
+})
+
 describe('viewer store hub reducers', () => {
   let store
   beforeEach(() => {
