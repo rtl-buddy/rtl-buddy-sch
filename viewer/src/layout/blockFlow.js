@@ -10,14 +10,20 @@
 // ``ports[].expr`` field (the net expression the parent wired to
 // that port). For each unique non-clock/reset net:
 //   - ``out``-direction ports on child A drive ``in``-direction
-//     ports on child B → emit ``A -> B`` with the net as label.
+//     ports on child B → emit ``A:p_out -> B:p_in`` with the net
+//     as label.
 //   - Nets matching a top-level scope input port → emit
-//     ``_in_<port> -> child`` (signal enters the scope).
+//     ``_in_<port> -> child:p_in`` (signal enters the scope).
 //   - Nets matching a top-level scope output port → emit
-//     ``child -> _out_<port>`` (signal leaves the scope).
+//     ``child:p_out -> _out_<port>`` (signal leaves the scope).
 //
 // Clock and reset nets are skipped because they fan out to nearly
 // every child and would bury the data flow.
+//
+// Children render as ``shape=Mrecord`` with named record ports so
+// every input/output gets its own attachment point along the west
+// / east edge — polyline no longer piles every edge onto the
+// geometric center of the side.
 
 const CLOCK_RESET_RE = /(?:^|_)(?:clk|clock|rst|reset)(?:$|_)/i
 // Bare-identifier net expressions only — drops slices / concats /
@@ -33,6 +39,17 @@ function isClockOrResetName(name) {
 
 function dotEscape(s) {
   return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+// Escape for embedding inside an HTML-like Graphviz label
+// (``label=<...>`` syntax). The string lives inside table cells,
+// so the standard HTML entity set applies.
+function htmlEscape(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 function dotId(id) {
@@ -69,11 +86,13 @@ function isOutputDir(d) {
  *
  * Layout choices mirror the hier-view's standalone settings so the
  * two tabs share the same look-and-feel:
- *   - ``rankdir=LR``, ``splines=ortho`` for schematic-style edges
- *   - ``Courier`` monospace font with the wide node margins viz.js
- *     needs to keep labels inside polygons
+ *   - ``rankdir=LR``, ``splines=polyline`` for schematic-style edges
+ *   - ``Courier`` monospace font
  *   - Top-level cluster framing the scope with port anchors at
  *     ``rank=source`` (inputs) / ``rank=sink`` (outputs)
+ *   - Children render as ``shape=Mrecord`` with named record ports
+ *     so each connection attaches at a distinct slot along the
+ *     west / east edge of the box.
  */
 export function buildBlockFlowDot(graph, scopeId) {
   if (!graph || !scopeId) return _emptyDigraph('no scope selected')
@@ -87,7 +106,7 @@ export function buildBlockFlowDot(graph, scopeId) {
   // Index ports by net name across all children, partitioned by
   // direction. Skip clock/reset and non-identifier nets.
   const driversByNet = new Map() // net -> [{ child, port }]
-  const sinksByNet = new Map() // net -> [{ child, port }]
+  const sinksByNet = new Map() //   net -> [{ child, port }]
   for (const child of children) {
     for (const port of child.ports || []) {
       const expr = typeof port.expr === 'string' ? port.expr.trim() : ''
@@ -103,6 +122,38 @@ export function buildBlockFlowDot(graph, scopeId) {
     }
   }
 
+  // Per-child port lists for the Mrecord label. Only ports that
+  // actually participate in a derived connection get a record
+  // slot — emitting every port would clutter the diagram with
+  // unconnected stubs.
+  const childInputPorts = new Map() // child.id -> [port name, ...]
+  const childOutputPorts = new Map()
+  for (const child of children) {
+    childInputPorts.set(child.id, [])
+    childOutputPorts.set(child.id, [])
+  }
+  const seenInPort = new Set() // `${child.id}:${port.name}`
+  const seenOutPort = new Set()
+  for (const drivers of driversByNet.values()) {
+    for (const { child, port } of drivers) {
+      const key = `${child.id}:${port.name}`
+      if (seenOutPort.has(key)) continue
+      seenOutPort.add(key)
+      childOutputPorts.get(child.id).push(port.name)
+    }
+  }
+  for (const sinks of sinksByNet.values()) {
+    for (const { child, port } of sinks) {
+      const key = `${child.id}:${port.name}`
+      if (seenInPort.has(key)) continue
+      seenInPort.add(key)
+      childInputPorts.get(child.id).push(port.name)
+    }
+  }
+  // Stable visual ordering: alphabetical within each side.
+  for (const list of childInputPorts.values()) list.sort()
+  for (const list of childOutputPorts.values()) list.sort()
+
   // Scope ports become the external interface. Their *names* are
   // also the net names that cross the scope boundary.
   const scopeInputs = new Set()
@@ -117,14 +168,20 @@ export function buildBlockFlowDot(graph, scopeId) {
   lines.push('digraph block_flow {')
   lines.push('  rankdir="LR";')
   lines.push('  compound=true;')
-  lines.push('  splines="ortho";')
-  lines.push('  nodesep=0.18;')
-  lines.push('  ranksep=1.2;')
+  // ``splines=true`` = bezier routing. Drops the schematic
+  // right-angle look in favour of smooth curves that respect
+  // node boundaries reliably (viz.js's ortho router cuts through
+  // nodes when an edge spans multiple ranks, and polyline
+  // ditto for some layouts).
+  lines.push('  splines=true;')
+  lines.push('  nodesep=0.5;')
+  lines.push('  ranksep=1.44;')
   lines.push('  fontname="Courier,monospace";')
-  lines.push(
-    `  node [shape=box, style="rounded,filled", fillcolor="#f5f5f5",` +
-      ` fontname="Courier,monospace", margin="0.4,0.06"];`,
-  )
+  // ``shape=plaintext`` so the HTML-table label is drawn as-is —
+  // the table itself supplies the border, background and per-cell
+  // ports. (Mrecord would give rounded corners but doesn't support
+  // per-cell fontsize, which we want for compact port labels.)
+  lines.push(`  node [shape=plaintext, fontname="Courier,monospace"];`)
   lines.push('  edge [fontname="Courier,monospace"];')
   lines.push('')
   lines.push('  subgraph cluster_flow_scope {')
@@ -158,13 +215,70 @@ export function buildBlockFlowDot(graph, scopeId) {
     lines.push('    }')
   }
 
-  // Child boxes. Two-line label: instance name, module type.
+  // HTML-table child labels. One row per port slot, with the
+  // middle cell spanning all rows via ROWSPAN:
+  //
+  //   ┌──────────┬─────────┬───────────┐
+  //   │ d_in     │  u_a    │      q    │
+  //   │ aux_in   │  a_mod  │           │
+  //   └──────────┴─────────┴───────────┘
+  //
+  // Input cells are ALIGN=LEFT, output cells ALIGN=RIGHT so the
+  // text hugs the edge of the box on the side where the wire
+  // attaches. Port labels use POINT-SIZE=9 to keep the box
+  // compact even when a module has many ports.
+  const PORT_FONT_SIZE = 9
+  const BG = '#f5f5f5'
   for (const child of children) {
+    const inPorts = childInputPorts.get(child.id) || []
+    const outPorts = childOutputPorts.get(child.id) || []
     const inst = child.instance_name || child.module
-    const label = `${dotEscape(inst)}\\l${dotEscape(child.module)}\\l`
-    const attrs = [`label="${label}"`, `group="cluster_flow_scope"`]
+    const rowCount = Math.max(inPorts.length, outPorts.length, 1)
+    const rows = []
+    for (let i = 0; i < rowCount; i++) {
+      const tds = []
+      // Left column: input port or filler. ``HREF`` is the only
+      // per-cell attribute viz.js actually propagates to the SVG
+      // (becomes ``<a xlink:href>``) — ``ID`` is silently dropped
+      // on TDs. Click handlers walk up to the nearest ``<a>``
+      // and route based on the href prefix.
+      if (i < inPorts.length) {
+        const p = inPorts[i]
+        const cellId = `bf-in:${htmlEscape(child.id)}:${htmlEscape(p)}`
+        tds.push(
+          `<TD HREF="${cellId}" TITLE="${cellId}" PORT="${htmlEscape(p)}" ALIGN="LEFT">` +
+            `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)}</FONT></TD>`,
+        )
+      } else {
+        tds.push('<TD></TD>')
+      }
+      // Middle column: instance + module, only on first row.
+      if (i === 0) {
+        const cellId = `bf-ctr:${htmlEscape(child.id)}`
+        tds.push(
+          `<TD HREF="${cellId}" TITLE="${cellId}" ROWSPAN="${rowCount}" ALIGN="CENTER">` +
+            `<B>${htmlEscape(inst)}</B><BR/>${htmlEscape(child.module)}</TD>`,
+        )
+      }
+      // Right column: output port or filler.
+      if (i < outPorts.length) {
+        const p = outPorts[i]
+        const cellId = `bf-out:${htmlEscape(child.id)}:${htmlEscape(p)}`
+        tds.push(
+          `<TD HREF="${cellId}" TITLE="${cellId}" PORT="${htmlEscape(p)}" ALIGN="RIGHT">` +
+            `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)}</FONT></TD>`,
+        )
+      } else {
+        tds.push('<TD></TD>')
+      }
+      rows.push(`<TR>${tds.join('')}</TR>`)
+    }
+    const label =
+      `<<TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0"` +
+      ` CELLPADDING="4" BGCOLOR="${BG}">${rows.join('')}</TABLE>>`
+    const attrs = [`label=${label}`, `group="cluster_flow_scope"`]
     if (child.is_blackbox) {
-      attrs.push('style="rounded,filled,dashed"')
+      attrs.push('style="dashed"')
     }
     lines.push(`    ${dotId(child.id)} [${attrs.join(', ')}];`)
   }
@@ -174,26 +288,25 @@ export function buildBlockFlowDot(graph, scopeId) {
   const seenOut = new Set()
   for (const [net, sinks] of sinksByNet) {
     if (!scopeInputs.has(net)) continue
-    for (const { child } of sinks) {
-      const key = `${net}->${child.id}`
+    for (const { child, port } of sinks) {
+      const key = `${net}->${child.id}:${port.name}`
       if (seenIn.has(key)) continue
       seenIn.add(key)
       lines.push(
-        `    "_in_${net}" -> ${dotId(child.id)} ` +
+        `    "_in_${net}" -> ${dotId(child.id)}:${port.name}:w ` +
           `[color="#cbd5e1", penwidth=1.2, arrowsize=0.6, tailport=e];`,
       )
     }
   }
   for (const [net, drivers] of driversByNet) {
     if (!scopeOutputs.has(net)) continue
-    for (const { child } of drivers) {
-      const key = `${child.id}->${net}`
+    for (const { child, port } of drivers) {
+      const key = `${child.id}:${port.name}->${net}`
       if (seenOut.has(key)) continue
       seenOut.add(key)
       lines.push(
-        `    ${dotId(child.id)} -> "_out_${net}" ` +
-          `[color="#cbd5e1", penwidth=1.2, arrowsize=0.6,` +
-          ` tailport=e, headport=w];`,
+        `    ${dotId(child.id)}:${port.name}:e -> "_out_${net}" ` +
+          `[color="#cbd5e1", penwidth=1.2, arrowsize=0.6, headport=w];`,
       )
     }
   }
@@ -208,13 +321,13 @@ export function buildBlockFlowDot(graph, scopeId) {
     for (const drv of drivers) {
       for (const snk of sinks) {
         if (drv.child.id === snk.child.id) continue
-        const key = `${drv.child.id}->${snk.child.id}|${net}`
+        const key = `${drv.child.id}:${drv.port.name}->${snk.child.id}:${snk.port.name}`
         if (seenInternal.has(key)) continue
         seenInternal.add(key)
         lines.push(
-          `    ${dotId(drv.child.id)} -> ${dotId(snk.child.id)} ` +
-            `[label="${dotEscape(net)}", penwidth=1.2,` +
-            ` arrowsize=0.7, tailport=e, headport=w];`,
+          `    ${dotId(drv.child.id)}:${drv.port.name}:e -> ` +
+            `${dotId(snk.child.id)}:${snk.port.name}:w ` +
+            `[label="${dotEscape(net)}", penwidth=1.2, arrowsize=0.7];`,
         )
       }
     }
