@@ -4,6 +4,7 @@
       <h1>rtl-buddy-view</h1>
       <div class="header-status">
         <span class="design-name" v-if="store.graph">{{ store.graph.top }}</span>
+        <ModelPicker />
         <HubStatus />
       </div>
     </header>
@@ -50,6 +51,7 @@ import NodeDetail from './components/NodeDetail.vue'
 import EdgeDetail from './components/EdgeDetail.vue'
 import AxiPerfPane from './components/AxiPerfPane.vue'
 import HubStatus from './components/HubStatus.vue'
+import ModelPicker from './components/ModelPicker.vue'
 import ToastHost from './components/ToastHost.vue'
 import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
 import { initHub } from './composables/useHub.js'

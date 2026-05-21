@@ -58,6 +58,7 @@ describe('useHub envelope dispatch', () => {
       applyHubScope: (p) => store.applyHubScope(p),
       applyDiagnostics: (s, items) => store.applyDiagnostics(s, items),
       applyHubError: (e) => store.applyHubError(e),
+      applyViewChanged: (p) => store.applyViewChanged(p),
     })
   })
   afterEach(() => {
@@ -104,6 +105,54 @@ describe('useHub envelope dispatch', () => {
       }),
     )
     expect(store.diagnosticsBySource['rtl-buddy-cdc']).toHaveLength(1)
+  })
+
+  it('view_changed forwards payload to store.applyViewChanged', async () => {
+    // Mock fetch so applyViewChanged → switchModel can complete
+    // without standing up a real /view.json endpoint.
+    const originalFetch = window.fetch
+    window.fetch = async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () =>
+        JSON.stringify({
+          schema_version: '1.0',
+          top: 'top',
+          nodes: [
+            {
+              id: 'top',
+              module: 'top',
+              is_blackbox: false,
+              parameters: {},
+              ports: [],
+              overlays: {},
+            },
+          ],
+          edges: [],
+          overlays_present: [],
+        }),
+    })
+    try {
+      _testing.applyEnvelope(
+        env(
+          'view_changed',
+          'event',
+          {
+            model: 'demo',
+            models_file: '/p/models.yaml',
+            view_url: '/view.json?model=demo',
+          },
+          'cli',
+        ),
+      )
+      // applyViewChanged is async; let microtasks drain.
+      await new Promise((r) => setTimeout(r, 0))
+      await new Promise((r) => setTimeout(r, 0))
+      expect(store.activeModel).toBe('demo')
+    } finally {
+      window.fetch = originalFetch
+    }
   })
 
   it('diagnostics_set with empty items clears that source only', () => {

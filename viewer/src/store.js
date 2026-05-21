@@ -56,6 +56,15 @@ export const useViewerStore = defineStore('viewer', {
     hubScope: null,
     diagnosticsBySource: {},
     hubError: null,
+    // Available models advertised by the hub's ``GET /models``
+    // endpoint (issue rtl_buddy#174). Empty when the SPA is running
+    // standalone (drag-drop / embed.py / no /models endpoint). The
+    // header picker is hidden when this is empty.
+    availableModels: [],
+    // Whichever model is currently active on the hub. Driven by
+    // ``GET /models`` at boot and ``view_changed`` events at runtime.
+    // ``null`` when running standalone.
+    activeModel: null,
   }),
   getters: {
     nodesById: (state) => {
@@ -142,23 +151,40 @@ export const useViewerStore = defineStore('viewer', {
   actions: {
     async bootstrap() {
       // Priority order:
-      //   1. ``?view=`` URL query — explicit caller intent.
-      //   2. ``window.__RTL_BUDDY_VIEW_URL__`` — hub injection. Set
+      //   1. ``?model=NAME`` URL query — explicit hub-model selector
+      //      (rtl_buddy#174). Calls ``/view.json?model=NAME`` and
+      //      promotes that model to active hub-side.
+      //   2. ``?view=`` URL query — explicit caller intent.
+      //   3. ``window.__RTL_BUDDY_VIEW_URL__`` — hub injection. Set
       //      by rtl-buddy-hub's index.html renderer when it has a
       //      view.json configured (see rtl_buddy hub/viewer_http.py).
       //      Visiting ``http://hub:port/`` with no query string then
       //      auto-loads the design instead of dropping the user on
       //      the empty drag-drop screen.
-      //   3. ``window.__RTL_BUDDY_VIEW_DATA__`` — embed.py inject
+      //   4. ``window.__RTL_BUDDY_VIEW_DATA__`` — embed.py inject
       //      (single-file standalone HTML build).
-      //   4. Stay idle and wait for drag-drop / file picker.
+      //   5. Stay idle and wait for drag-drop / file picker.
+      //
+      // In hub mode (priority 1-3), we also fire-and-forget a
+      // ``GET /models`` so the picker is populated by the time the
+      // first frame renders.
       const params = new URLSearchParams(window.location.search)
+      const modelParam = params.get('model')
       const viewUrl = params.get('view')
+      if (modelParam) {
+        // Best-effort models list — failure here doesn't block the
+        // primary load.
+        this.loadAvailableModels().catch(() => {})
+        await this.switchModel(modelParam, { updateUrl: false })
+        return
+      }
       if (viewUrl) {
+        this.loadAvailableModels().catch(() => {})
         await this.loadFromUrl(viewUrl)
         return
       }
       if (typeof window !== 'undefined' && window.__RTL_BUDDY_VIEW_URL__) {
+        this.loadAvailableModels().catch(() => {})
         await this.loadFromUrl(window.__RTL_BUDDY_VIEW_URL__)
         return
       }
@@ -169,6 +195,76 @@ export const useViewerStore = defineStore('viewer', {
           this._fail(`Embedded payload: ${e.message}`)
         }
       }
+    },
+
+    /**
+     * Fetch ``GET /models`` and populate the picker. Silently no-ops
+     * (clears the list) when the endpoint is missing — that's how we
+     * detect "running standalone, no hub" and hide the UI.
+     */
+    async loadAvailableModels() {
+      try {
+        const response = await fetch('/models')
+        if (!response.ok) {
+          this.availableModels = []
+          this.activeModel = null
+          return
+        }
+        const payload = await response.json()
+        this.availableModels = Array.isArray(payload.models) ? payload.models : []
+        this.activeModel =
+          typeof payload.active === 'string' ? payload.active : null
+      } catch {
+        this.availableModels = []
+        this.activeModel = null
+      }
+    },
+
+    /**
+     * Switch the hub-side active model. Calls
+     * ``GET /view.json?model=NAME``, installs the returned graph, and
+     * (by default) updates the URL bar with ``?model=NAME`` so the
+     * link is shareable. ``view_changed`` events that echo this
+     * switch are deduped by comparing against ``activeModel``.
+     */
+    async switchModel(name, { updateUrl = true } = {}) {
+      if (!name) return
+      const url = `/view.json?model=${encodeURIComponent(name)}`
+      await this.loadFromUrl(url)
+      // Only flip activeModel + URL after the load actually succeeded
+      // — a 400/500 leaves us pointed at the previous model so the
+      // next view_changed echo doesn't get masked.
+      if (this.status === 'ready') {
+        this.activeModel = name
+        if (updateUrl && typeof window !== 'undefined' && window.history) {
+          const params = new URLSearchParams(window.location.search)
+          params.set('model', name)
+          params.delete('view')
+          const newQuery = params.toString()
+          const newUrl =
+            window.location.pathname +
+            (newQuery ? `?${newQuery}` : '') +
+            window.location.hash
+          try {
+            window.history.replaceState({}, '', newUrl)
+          } catch {
+            /* security-restricted environments — best effort only */
+          }
+        }
+      }
+    },
+
+    /**
+     * Apply a ``view_changed`` event from the hub. Dedupes against
+     * ``activeModel`` so the SPA that initiated a switch via
+     * ``switchModel`` doesn't re-fetch from its own broadcast (the
+     * hub broadcasts to every WS peer including the initiator —
+     * see rtl_buddy#174 close-out comment).
+     */
+    async applyViewChanged(payload) {
+      if (!payload || typeof payload.model !== 'string') return
+      if (payload.model === this.activeModel) return
+      await this.switchModel(payload.model, { updateUrl: true })
     },
     async loadFromUrl(url) {
       this.status = 'loading'
