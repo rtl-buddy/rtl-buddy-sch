@@ -134,16 +134,31 @@ def render(
     # crowded than with curved splines. The schematic aesthetic
     # wins for RTL hierarchy.
     out.write('  splines="ortho";\n')
-    # Tighter spacing — the frame + rank=same children pattern packs
-    # vertically; reducing nodesep/ranksep keeps the diagram compact.
+    # ``ranksep`` controls the spacing between successive ranks
+    # (columns under ``rankdir=LR``). Bumping it to 1.2 puts a
+    # clear gap between input-port anchors, the central cluster
+    # column, and the output-port anchors — schematic skim
+    # convention. ``nodesep`` stays tight so per-cluster contents
+    # don't inflate vertically.
     out.write("  nodesep=0.18;\n")
-    out.write("  ranksep=0.45;\n")
+    out.write("  ranksep=1.2;\n")
     # Fixed-width font on every label so space-padding visually aligns
     # parentheses in parameter and port-connection lists.
     out.write('  fontname="Courier,monospace";\n')
+    # ``margin=0.4,0.06`` (inches) reserves a horizontal cushion
+    # inside each node polygon so labels can't reach the right
+    # edge. viz.js's WASM bundle uses Liberation-style metrics for
+    # layout but the browser renders the named ``Courier`` family
+    # noticeably wider, so labels overflow Graphviz's reserved
+    # space — without the cushion, long module-type names (e.g.
+    # ``ip_dtnpu_clk_buf``) bleed past the polygon. Graphviz's
+    # margin attribute is symmetric (horizontal applies to both
+    # left and right); we trade some wasted left padding for the
+    # right-side headroom labels actually need. The vertical
+    # cushion stays small so dense hierarchies don't inflate.
     out.write(
         f'  node [shape=box, style="rounded,filled", fillcolor="{_DEFAULT_FILL}",'
-        ' fontname="Courier,monospace"];\n'
+        ' fontname="Courier,monospace", margin="0.4,0.06"];\n'
     )
     out.write('  edge [fontname="Courier,monospace"];\n')
     out.write("\n")
@@ -187,6 +202,15 @@ def _emit_top_frame(
     out.write('    style="rounded";\n')
     out.write(f'    color="{outline}";\n')
     out.write("    penwidth=2;\n")
+    # Extra interior margin so ``splines="ortho"`` has room to route
+    # port → cluster edges WITHOUT bending past the cluster_top
+    # boundary. Ortho routing is rigid — when a corridor is tight it
+    # detours through the cluster's outer perimeter, visually
+    # "escaping" the top frame. 20pt all sides is a good fit for
+    # ip_demo_tiny_npu-class designs (deep cluster nesting + many
+    # top-port edges); cheaper than relaxing nodesep/ranksep which
+    # would inflate every cluster.
+    out.write('    margin="20,20";\n')
 
     _emit_port_anchors(top, out)
 
@@ -203,7 +227,12 @@ def _emit_top_frame(
         # the parent cluster — schematic skim convention.
         for child in _children_sorted_by_complexity(top):
             _emit_cluster_subtree(
-                child, out, domain_map, reset_map=reset_map, top_level=True
+                child,
+                out,
+                domain_map,
+                reset_map=reset_map,
+                top_level=True,
+                parent_group="cluster_top",
             )
     else:
         # Original box-and-arrow tree: each child is a flat node and
@@ -302,19 +331,45 @@ def _emit_port_signal_edges(
                 or _RESET_NAME_RE.search(net)
             ):
                 continue
+            # ``lhead`` / ``ltail`` clip the edge at the cluster
+            # boundary under ``compound=true`` when the target/source
+            # is a non-leaf child rendered as a cluster. Without it,
+            # the edge punches through the cluster border to the
+            # invisible anchor inside, which reads as "signal goes
+            # into the middle of u_dma" instead of "signal lands at
+            # u_dma's edge." Harmless attribute for box children
+            # since their cluster id wasn't emitted.
+            child_cluster = (
+                _cluster_id_for(child.instance_path) if child.children else None
+            )
             if net in inputs and net not in seen_in:
                 seen_in.add(net)
                 color = _signal_edge_color(net, child, domain_map, port_clock)
+                lhead = f', lhead="{child_cluster}"' if child_cluster else ""
+                # ``tailport=e`` pins the edge's start to the east
+                # (right) edge of the input-port anchor — lines up
+                # with the ``▶`` glyph in the anchor label so the
+                # arrow reads as exiting the port marker.
                 out.write(
                     f'    "_in_{net}" -> "{child.instance_path}" '
-                    f'[color="{color}", penwidth=1.2, arrowsize=0.6];\n'
+                    f'[color="{color}", penwidth=1.2,'
+                    f" arrowsize=0.6, tailport=e{lhead}];\n"
                 )
             if net in outputs and net not in seen_out:
                 seen_out.add(net)
                 color = _signal_edge_color(net, child, domain_map, port_clock)
+                ltail = f', ltail="{child_cluster}"' if child_cluster else ""
+                # ``tailport=e`` pins the edge's start to the east
+                # (right) edge of the source node/cluster, symmetric
+                # with the ``tailport=e`` on input-port arrows.
+                # ``headport=w`` pins the end at the west (left)
+                # edge of the output-port anchor — lines up with the
+                # ``▶`` glyph in the anchor label so the arrow reads
+                # as entering the port marker.
                 out.write(
                     f'    "{child.instance_path}" -> "_out_{net}" '
-                    f'[color="{color}", penwidth=1.2, arrowsize=0.6];\n'
+                    f'[color="{color}", penwidth=1.2,'
+                    f" arrowsize=0.6, tailport=e, headport=w{ltail}];\n"
                 )
 
 
@@ -407,6 +462,10 @@ def _emit_top_cdc_arrows(
         # default — the SDC-confirmed true-CDC subset that the tree /
         # mermaid renderers also surface.
         seen: set[tuple[str, str]] = set()
+        child_cluster = (
+            _cluster_id_for(child.instance_path) if child.children else None
+        )
+        lhead = f', lhead="{child_cluster}"' if child_cluster else ""
         for c in domain_map.crossings_into(child.instance_path):
             if c.src_clock not in input_names:
                 continue
@@ -418,7 +477,7 @@ def _emit_top_cdc_arrows(
             out.write(
                 f'    "_in_{c.src_clock}" -> "{child.instance_path}" '
                 f'[label="{label}", color="#dc2626", '
-                f'style="dashed", fontcolor="#dc2626"];\n'
+                f'style="dashed", fontcolor="#dc2626", tailport=e{lhead}];\n'
             )
 
 
@@ -513,6 +572,7 @@ def _emit_cluster_subtree(
     *,
     reset_map: ResetDomainMap | None = None,
     top_level: bool = False,
+    parent_group: str | None = None,
 ) -> None:
     """Recursively emit ``node`` and its descendants.
 
@@ -539,16 +599,19 @@ def _emit_cluster_subtree(
             domain_map,
             cdc_on_node=top_level,
             reset_map=reset_map,
+            group=parent_group,
         )
         return
 
     cluster_id = _cluster_id_for(node.instance_path)
-    label_lines = _label_text_lines(node, domain_map, reset_map)
-    # ``\l`` line-terminators left-justify each label line within the
-    # cluster title (Graphviz default is centered via ``\n``). Trailing
-    # ``\l`` so the last line aligns too. Matches the schematic
-    # convention where block titles read flush-left.
-    title = "\\l".join(_escape(line) for line in label_lines) + "\\l"
+    # Reuse the box-form label builder so cluster titles stay
+    # byte-identical to what the same instance would render as a
+    # box: ``\l`` left-justified lines, padded param parens kept
+    # column-aligned (``_label_for`` only ``_escape``\s atomic
+    # components, never the pre-padded param block — re-escaping the
+    # padded block would collapse the whitespace runs and break
+    # alignment).
+    title = _label_for(node, domain_map, reset_map)
 
     # Border colour resolution mirrors the box form's precedence:
     # CDC red > RDC orange > reset-synchroniser teal > clock-keyed
@@ -589,7 +652,9 @@ def _emit_cluster_subtree(
     if rdc_summary:
         label_suffix_parts.append(rdc_summary)
     if label_suffix_parts:
-        title = title + "\\l".join(label_suffix_parts) + "\\l"
+        # ``_label_for`` already ends with ``\l``; append the CDC /
+        # RDC summary lines as additional left-aligned suffix lines.
+        title = title + "\\l".join(_escape(p) for p in label_suffix_parts) + "\\l"
 
     out.write(f"  subgraph {cluster_id} {{\n")
     out.write(f'    label="{title}";\n')
@@ -611,12 +676,21 @@ def _emit_cluster_subtree(
     # real point *inside* this cluster instead of triggering Graphviz's
     # auto-create-undefined-node fallback — which would draw a second
     # box next to the cluster for the same instance.
+    #
+    # ``group=<parent_cluster>`` puts the anchor in the same vertical
+    # column as its sibling anchors under ``rankdir=LR`` — dot's
+    # documented knob for "stack these in one column." Combined with
+    # emission order it biases the layout to render the children
+    # top-down in the sorted order.
+    group_attr = f', group="{parent_group}"' if parent_group else ""
     out.write(
         f'    "{node.instance_path}" [shape=point, style=invis,'
-        " width=0, height=0];\n"
+        f" width=0, height=0{group_attr}];\n"
     )
     for child in _children_sorted_by_complexity(node):
-        _emit_cluster_subtree(child, out, domain_map, reset_map=reset_map)
+        _emit_cluster_subtree(
+            child, out, domain_map, reset_map=reset_map, parent_group=cluster_id
+        )
     out.write("  }\n")
 
 
@@ -627,6 +701,7 @@ def _emit_node(
     *,
     cdc_on_node: bool = False,
     reset_map: ResetDomainMap | None = None,
+    group: str | None = None,
 ) -> None:
     """Emit a node line.
 
@@ -703,6 +778,8 @@ def _emit_node(
     if is_sync and not has_border:
         attrs.append(f'color="{_RSTSYNC_OUTLINE}"')
         attrs.append("penwidth=2")
+    if group:
+        attrs.append(f'group="{group}"')
     out.write(f'  "{node.instance_path}" [{", ".join(attrs)}];\n')
     for child in node.children:
         _emit_node(child, out, domain_map, reset_map=reset_map)
@@ -1048,6 +1125,10 @@ def _emit_top_rdc_arrows(
     input_names = {p.name for p in top.module.ports if p.direction == "input"}
     for child in top.children:
         seen: set[tuple[str, str]] = set()
+        child_cluster = (
+            _cluster_id_for(child.instance_path) if child.children else None
+        )
+        lhead = f', lhead="{child_cluster}"' if child_cluster else ""
         for c in reset_map.crossings_into(child.instance_path):
             if c.reset not in input_names:
                 continue
@@ -1059,7 +1140,7 @@ def _emit_top_rdc_arrows(
             out.write(
                 f'    "_in_{c.reset}" -> "{child.instance_path}" '
                 f'[label="{label}", color="{_RDC_COLOR}", '
-                f'style="dashed", fontcolor="{_RDC_COLOR}"];\n'
+                f'style="dashed", fontcolor="{_RDC_COLOR}", tailport=e{lhead}];\n'
             )
 
 

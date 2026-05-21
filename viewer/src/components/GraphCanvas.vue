@@ -142,18 +142,17 @@ function onClick(e) {
 }
 
 function onContextMenu(e) {
-  // Right-click is an explicit escape hatch: dispatch ``node.link``
-  // straight to the OS (rtlbuddy:// or vscode://), bypassing the
-  // hub even when it's connected. Handy when the hub's resolver
-  // is misconfigured or the user wants the editor to open without
-  // also panning surfer.
+  // Right-click asks the editor to open the source location. When
+  // the hub is up, we send an ``open_source`` request through the
+  // wire — nvim's RtlBuddyOpen handler picks it up and jumps in
+  // place, no OS round-trip. With the hub offline,
+  // ``requestOpenSource`` falls back to dispatching ``node.link``
+  // (rtlbuddy://) through the OS so the action is never a no-op.
   const hit = nodeFromEvent(e)
   if (!hit) return
   e.preventDefault()
   store.select(hit.id)
-  if (hit.node.link) {
-    window.open(hit.node.link, '_blank')
-  }
+  hub.requestOpenSource(hit.node)
 }
 
 // --- pan / zoom -----------------------------------------------------------
