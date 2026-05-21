@@ -12,6 +12,7 @@
         <OverlayPanel />
         <NodeDetail v-if="!store.selectedEdgeObj" />
         <EdgeDetail v-if="store.selectedEdgeObj" />
+        <AxiPerfPane />
         <DiagnosticsPanel />
       </aside>
       <GraphCanvas />
@@ -47,6 +48,7 @@ import GraphCanvas from './components/GraphCanvas.vue'
 import OverlayPanel from './components/OverlayPanel.vue'
 import NodeDetail from './components/NodeDetail.vue'
 import EdgeDetail from './components/EdgeDetail.vue'
+import AxiPerfPane from './components/AxiPerfPane.vue'
 import HubStatus from './components/HubStatus.vue'
 import ToastHost from './components/ToastHost.vue'
 import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
