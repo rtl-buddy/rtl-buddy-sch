@@ -25,9 +25,8 @@
           <ul>
             <li v-for="(pair, idx) in edge.port_pairs" :key="idx">
               <code>
-                <span v-if="pair.child_port">{{ pair.child_port }}</span>
-                <span v-if="pair.child_port && pair.net_expr_at_parent"> ← </span>
-                <span v-if="pair.net_expr_at_parent">{{ pair.net_expr_at_parent }}</span>
+                <span class="port-name">.{{ pair[1] }}</span>
+                <span class="port-arrow">({{ pair[0] }})</span>
               </code>
             </li>
           </ul>
@@ -92,4 +91,6 @@ const hasOverlays = computed(
   font-size: 0.75rem;
 }
 .empty { color: #64748b; }
+.port-name { color: #1e293b; }
+.port-arrow { color: #64748b; font-size: 0.75rem; margin-left: 0.25rem; }
 </style>
