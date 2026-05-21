@@ -40,6 +40,7 @@ from typing import IO
 from urllib.parse import quote
 
 from rtl_buddy_view.annotations import DomainMap
+from rtl_buddy_view.axi_perf_annotations import AxiPerfMap, Bundle as AxiPerfBundle
 from rtl_buddy_view.extractor import Port, PortConnection, SourceLocation
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.render import dot as dot_render
@@ -54,6 +55,7 @@ def render(
     *,
     domain_map: DomainMap | None = None,
     reset_map: ResetDomainMap | None = None,
+    axi_perf_map: AxiPerfMap | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
 ) -> None:
@@ -72,6 +74,7 @@ def render(
         node,
         domain_map,
         reset_map,
+        axi_perf_map,
         with_legend=with_legend,
         embed_layout=embed_layout,
     )
@@ -83,19 +86,20 @@ def _build_payload(
     node: HierNode,
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
+    axi_perf_map: AxiPerfMap | None,
     *,
     with_legend: bool = False,
     embed_layout: bool = True,
 ) -> dict:
     nodes = sorted(
-        (_node_dict(n, domain_map, reset_map) for n in _walk(node)),
+        (_node_dict(n, domain_map, reset_map, axi_perf_map) for n in _walk(node)),
         key=lambda d: d["id"],
     )
     edges = sorted(
-        _walk_edges(node, domain_map, reset_map),
+        _walk_edges(node, domain_map, reset_map, axi_perf_map),
         key=lambda d: (d["from"], d["to"]),
     )
-    overlays_present = _overlays_present(domain_map, reset_map)
+    overlays_present = _overlays_present(domain_map, reset_map, axi_perf_map)
     payload: dict = {
         "schema_version": SCHEMA_VERSION,
         "top": node.module_name,
@@ -167,6 +171,7 @@ def _layout_block(
 def _overlays_present(
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
+    axi_perf_map: AxiPerfMap | None,
 ) -> list[str]:
     """Sorted list of overlay names whose payloads contributed to this view.
 
@@ -190,6 +195,10 @@ def _overlays_present(
         or reset_map.reset_sources
     ):
         present.append("reset")
+    if axi_perf_map is not None and (
+        axi_perf_map.bundles or axi_perf_map.interconnects
+    ):
+        present.append("axi-perf")
     return sorted(present)
 
 
@@ -210,6 +219,7 @@ def _node_dict(
     node: HierNode,
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
+    axi_perf_map: AxiPerfMap | None,
 ) -> dict:
     """One ``view.json`` v1 node entry.
 
@@ -227,7 +237,7 @@ def _node_dict(
         "ports": _ports_for_node(node),
         "source": _source_block(node),
         "link": _link_for(node),
-        "overlays": _node_overlays(node, domain_map, reset_map),
+        "overlays": _node_overlays(node, domain_map, reset_map, axi_perf_map),
     }
     return out
 
@@ -389,6 +399,7 @@ def _node_overlays(
     node: HierNode,
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
+    axi_perf_map: AxiPerfMap | None,
 ) -> dict:
     """Per-overlay contributions for ``node``.
 
@@ -410,7 +421,31 @@ def _node_overlays(
         reset_block = _reset_node_contribution(node, reset_map)
         if reset_block:
             overlays["reset"] = reset_block
+    if axi_perf_map is not None:
+        axi_perf_block = _axi_perf_node_contribution(node, axi_perf_map)
+        if axi_perf_block:
+            overlays["axi-perf"] = axi_perf_block
     return overlays
+
+
+def _axi_perf_node_contribution(node: HierNode, axi_perf_map: AxiPerfMap) -> dict:
+    """Surface the interconnect roll-up when ``node`` is one of the
+    producer's named interconnect nodes."""
+    ic = axi_perf_map.interconnect_at(node.instance_path)
+    if ic is None:
+        return {}
+    return {
+        "interconnect": {
+            "total_read_bps": ic.total_read_bps,
+            "total_write_bps": ic.total_write_bps,
+            "hottest_master": ic.hottest_master,
+            "hottest_slave": ic.hottest_slave,
+            "arbitration": {
+                "fairness_jain": ic.arbitration.fairness_jain,
+                "starved_masters": list(ic.arbitration.starved_masters),
+            },
+        }
+    }
 
 
 def _clock_node_contribution(node: HierNode, domain_map: DomainMap) -> dict:
@@ -453,15 +488,18 @@ def _walk_edges(
     node: HierNode,
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
+    axi_perf_map: AxiPerfMap | None,
 ):
     for child in node.children:
         yield {
             "from": node.instance_path,
             "to": child.instance_path,
             "port_pairs": _port_pairs(child),
-            "overlays": _edge_overlays(child, domain_map, reset_map),
+            "overlays": _edge_overlays(
+                node, child, domain_map, reset_map, axi_perf_map
+            ),
         }
-        yield from _walk_edges(child, domain_map, reset_map)
+        yield from _walk_edges(child, domain_map, reset_map, axi_perf_map)
 
 
 def _port_pairs(child: HierNode) -> list[list[str | None]]:
@@ -480,16 +518,71 @@ def _port_pairs(child: HierNode) -> list[list[str | None]]:
 
 
 def _edge_overlays(
+    parent: HierNode,
     child: HierNode,
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
+    axi_perf_map: AxiPerfMap | None,
 ) -> dict:
     overlays: dict[str, dict] = {}
     if domain_map is not None and domain_map.crossings_into(child.instance_path):
         overlays["clock"] = {"crossing": True}
     if reset_map is not None and reset_map.crossings_into(child.instance_path):
         overlays["reset"] = {"crossing": True}
+    if axi_perf_map is not None:
+        bundle = axi_perf_map.bundle_at_edge(parent.instance_path, child.instance_path)
+        if bundle is not None:
+            overlays["axi-perf"] = _axi_perf_bundle_block(bundle)
     return overlays
+
+
+def _axi_perf_bundle_block(bundle: AxiPerfBundle) -> dict:
+    """Serialize an AxiPerfBundle into the v1 view.json edge-overlay shape."""
+    return {
+        "name": bundle.name,
+        "protocol": bundle.protocol,
+        "data_width": bundle.data_width,
+        "id_width": bundle.id_width,
+        "default_view": bundle.default_view,
+        "channels": {
+            role: {
+                "util_pct": stats.util_pct,
+                "bp_pct": stats.bp_pct,
+                "peak_occ": stats.peak_occ,
+                **({"txns": stats.txns} if stats.txns is not None else {}),
+                **({"beats": stats.beats} if stats.beats is not None else {}),
+            }
+            for role, stats in bundle.channels.items()
+        },
+        "throughput": {
+            "read_bps": bundle.throughput.read_bps,
+            "write_bps": bundle.throughput.write_bps,
+        },
+        "outstanding": {
+            "read_peak": bundle.outstanding.read_peak,
+            "read_avg": bundle.outstanding.read_avg,
+            "write_peak": bundle.outstanding.write_peak,
+            "write_avg": bundle.outstanding.write_avg,
+        },
+        "latency_cycles": {
+            "ar_to_r_first": _latency_block(bundle.ar_to_r_first),
+            "aw_to_b": _latency_block(bundle.aw_to_b),
+        },
+        "errors": {
+            "slverr": bundle.errors.slverr,
+            "decerr": bundle.errors.decerr,
+        },
+    }
+
+
+def _latency_block(lat) -> dict:
+    return {
+        "p50": lat.p50,
+        "p95": lat.p95,
+        "p99": lat.p99,
+        "max": lat.max,
+        "hist_log2": list(lat.hist_log2),
+    }
 
 
 # --- traversal --------------------------------------------------------------
