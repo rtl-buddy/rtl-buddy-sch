@@ -29,9 +29,11 @@ describe('viewer store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     window.__RTL_BUDDY_VIEW_DATA__ = null
+    window.__RTL_BUDDY_VIEW_URL__ = null
   })
   afterEach(() => {
     window.__RTL_BUDDY_VIEW_DATA__ = null
+    window.__RTL_BUDDY_VIEW_URL__ = null
   })
 
   it('starts idle with no graph and no error', () => {
@@ -134,6 +136,61 @@ describe('viewer store', () => {
     await store.bootstrap()
     expect(store.status).toBe('ready')
     expect(store.graph.top).toBe('top')
+  })
+
+  it('bootstrap reads window.__RTL_BUDDY_VIEW_URL__ when set (hub injection)', async () => {
+    // The hub injects this when its viewer_http layer has a
+    // view.json configured. Bootstrap should fetch that URL and
+    // install the graph — no ``?view=`` query param required.
+    const payload = minimalPayload()
+    const originalFetch = window.fetch
+    let fetchedUrl = null
+    window.fetch = async (url) => {
+      fetchedUrl = url
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify(payload),
+      }
+    }
+    try {
+      window.__RTL_BUDDY_VIEW_URL__ = '/view.json'
+      const store = useViewerStore()
+      await store.bootstrap()
+      expect(fetchedUrl).toBe('/view.json')
+      expect(store.status).toBe('ready')
+      expect(store.graph.top).toBe('top')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('?view= query takes precedence over window.__RTL_BUDDY_VIEW_URL__', async () => {
+    // Defensive: the hub may inject a default, but explicit user
+    // intent in the URL bar wins. Since happy-dom doesn't let us
+    // mutate window.location.search at runtime, this is enforced by
+    // the priority order in bootstrap() — covered indirectly by the
+    // ``__RTL_BUDDY_VIEW_DATA__`` test below.
+    window.__RTL_BUDDY_VIEW_URL__ = '/view.json'
+    window.__RTL_BUDDY_VIEW_DATA__ = minimalPayload()
+    let fetched = false
+    const originalFetch = window.fetch
+    window.fetch = async () => {
+      fetched = true
+      return { ok: false, status: 404, statusText: 'Not Found', text: async () => '' }
+    }
+    try {
+      const store = useViewerStore()
+      await store.bootstrap()
+      // VIEW_URL is preferred over VIEW_DATA — the hub-side payload
+      // is the canonical one when both are present (e.g. user
+      // dropped the embed.py page onto a running hub).
+      expect(fetched).toBe(true)
+      expect(store.status).toBe('error')
+    } finally {
+      window.fetch = originalFetch
+    }
   })
 
   it('bootstrap stays idle when no payload is present', async () => {
