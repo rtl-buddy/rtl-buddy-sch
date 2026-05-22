@@ -70,6 +70,7 @@ import { layoutGraph, layoutDot, clusterIdFor } from '../layout/viz.js'
 import { buildBlockFlowDot } from '../layout/blockFlow.js'
 import { applyOverlays } from '../overlays/index.js'
 import { useHub } from '../composables/useHub.js'
+import { registerSvgProvider, unregisterSvgProvider } from '../capture.js'
 import NodeBadge from './NodeBadge.vue'
 
 const store = useViewerStore()
@@ -582,6 +583,10 @@ function onClick(e) {
     store.selectEdge(edgeHit.from, edgeHit.to)
     return
   }
+  // Background click — clear any selection so NodeDetail / EdgeDetail
+  // collapse. Matches conventional graph-tool behaviour (clicking
+  // empty canvas deselects).
+  store.clearSelection()
 }
 
 function onContextMenu(e) {
@@ -756,6 +761,11 @@ function onDoubleClick(e) {
   store.descend(nodeHit.id)
 }
 
+// Capture module reads the live ``_svgEl`` through this getter — viz.js
+// rewrites the host's innerHTML on every renderSvg(), so the SVG node
+// identity moves; a function dodges that staleness.
+const _captureSvgProvider = () => _svgEl
+
 onMounted(() => {
   if (svgHostEl.value) {
     svgHostEl.value.addEventListener('click', onClick)
@@ -766,6 +776,7 @@ onMounted(() => {
   }
   document.addEventListener('mousemove', onMouseMove)
   document.addEventListener('mouseup', onMouseUp)
+  registerSvgProvider(_captureSvgProvider)
   renderSvg()
 })
 onBeforeUnmount(() => {
@@ -778,6 +789,7 @@ onBeforeUnmount(() => {
   }
   document.removeEventListener('mousemove', onMouseMove)
   document.removeEventListener('mouseup', onMouseUp)
+  unregisterSvgProvider(_captureSvgProvider)
 })
 </script>
 
