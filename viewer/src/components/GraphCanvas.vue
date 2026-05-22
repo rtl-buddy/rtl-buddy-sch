@@ -137,12 +137,19 @@ async function renderSvg() {
   // the cluster-tree layout switch).
   const clusterLookup =
     (graph.value && graph.value.layout && graph.value.layout.cluster_lookup) || null
+  const graphTop = graph.value?.top
   for (const group of _svgEl.querySelectorAll('g.cluster')) {
     const titleEl = group.querySelector('title')
     if (!titleEl) continue
     const clusterId = titleEl.textContent
     if (clusterLookup && clusterLookup[clusterId]) {
       group.setAttribute('data-node-id', clusterLookup[clusterId])
+    } else if (clusterId === 'cluster_top' && graphTop) {
+      // ``graphToDot`` (the in-JS fallback for graphs without an
+      // embedded layout) wraps the root in a single
+      // ``subgraph cluster_top``. No cluster_lookup is emitted in
+      // that path, so map cluster_top → graph.top directly here.
+      group.setAttribute('data-node-id', graphTop)
     }
   }
   for (const group of _svgEl.querySelectorAll('g.edge')) {
