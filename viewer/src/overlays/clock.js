@@ -76,6 +76,18 @@ export const clockOverlay = {
         `[data-node-id="${cssEscape(node.id)}"]`,
       )
       if (!group) continue
+      // Skip ALL clusters: painting their background rect fills the
+      // whole subtree's scope frame, drowning out the per-leaf
+      // colours nested inside. The cluster's role is the labelled
+      // frame; clock colour belongs on the leaf boxes (and on bridge
+      // HTML-table cells, whose colour is baked into the DOT
+      // directly).
+      if (group.classList && group.classList.contains('cluster')) {
+        const shape0 = group.querySelector('polygon, ellipse, rect, path')
+        if (shape0) shape0.style.fill = ''
+        group.removeAttribute('data-overlay-clock')
+        continue
+      }
       const shape = group.querySelector('polygon, ellipse, rect, path')
       if (!shape) continue
       if (enabled && ov && ov.clock && palette.has(ov.clock)) {
