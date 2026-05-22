@@ -412,8 +412,20 @@ function onClick(e) {
       return
     }
     highlightEdgesForPort(bfHit.nodeId, bfHit.portName)
-    const peerEl = findFlowPeerSvgEl(bfHit)
-    if (peerEl) panToElement(peerEl)
+    // Pan to the centre of the connecting edge — keeps both
+    // endpoints visible in the same shot, which is more useful
+    // than centring on just the peer port. ``getBBox`` on the
+    // edge group covers the path + arrowhead. Fall back to the
+    // peer-port pan when no edge is incident (e.g. an
+    // unconnected port within the current scope, or a port whose
+    // only connection is via the scope-boundary anchor).
+    const edgeEl = _svgEl?.querySelector('g.edge[data-rb-edge-highlighted]')
+    if (edgeEl) {
+      panToElement(edgeEl)
+    } else {
+      const peerEl = findFlowPeerSvgEl(bfHit)
+      if (peerEl) panToElement(peerEl)
+    }
     return
   }
   // Hier-view contract: node selects, edge selects.
