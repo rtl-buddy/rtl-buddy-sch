@@ -377,46 +377,40 @@ export const useViewerStore = defineStore('viewer', {
       // when the node has no children (the canvas would render a
       // single floating node).
       //
-      // The "scope" that descends depends on the current view mode:
-      // ``hier`` updates ``rootInstancePath`` (the cluster-tree's
-      // visible-subtree filter); ``flow`` updates ``flowScope`` (the
-      // block-flow's expand-one-level target). Both views share the
-      // same selection so the NodeDetail panel stays meaningful.
+      // Each view mode has its own scope field — ``rootInstancePath``
+      // for hier (cluster-tree subtree filter), ``flowScope`` for
+      // block-flow (the expand-one-level target). We update both so
+      // switching tabs lands on the same logical scope; otherwise
+      // descending in hier and flipping to flow would dump the user
+      // back at the design top.
       if (!id) return
       const prefix = id + '.'
       const hasChildren = this.graph?.nodes.some((n) =>
         n.id.startsWith(prefix),
       )
       if (!hasChildren) return
-      if (this.viewMode === 'flow') {
-        this.flowScope = id
-      } else {
-        this.rootInstancePath = id
-      }
+      this.rootInstancePath = id
+      this.flowScope = id
       this.selection = id
     },
     ascend() {
-      // Pop one level. If we're already showing the original top,
-      // this is a no-op. View-mode-aware in the same way ``descend``
-      // is.
-      if (this.viewMode === 'flow') {
-        if (!this.flowScope) return
-        const parent = this.flowScope.replace(/\.[^.]+$/, '')
-        this.flowScope =
-          parent === this.flowScope ? null : parent || null
-        return
-      }
-      if (!this.rootInstancePath) return
-      const parent = this.rootInstancePath.replace(/\.[^.]+$/, '')
-      this.rootInstancePath =
-        parent === this.rootInstancePath ? null : parent || null
+      // Pop one level on both scope fields so the two view modes stay
+      // in sync (see descend's note), and follow the selection up
+      // too — without the selection bump the NodeDetail panel keeps
+      // showing the deeper path (e.g. ``ip_dma.i_cor.i_wlg``) even
+      // though the canvas is now at ``ip_dma.i_cor``.
+      if (!this.rootInstancePath && !this.flowScope) return
+      const cur = this.rootInstancePath || this.flowScope
+      const parent = cur.replace(/\.[^.]+$/, '')
+      const next = parent === cur ? null : parent || null
+      this.rootInstancePath = next
+      this.flowScope = next
+      this.selection = next
     },
     goToTop() {
-      if (this.viewMode === 'flow') {
-        this.flowScope = null
-        return
-      }
       this.rootInstancePath = null
+      this.flowScope = null
+      this.selection = null
     },
     setViewMode(mode) {
       if (mode === 'hier' || mode === 'flow') {

@@ -525,8 +525,10 @@ def _edge_overlays(
     axi_perf_map: AxiPerfMap | None,
 ) -> dict:
     overlays: dict[str, dict] = {}
-    if domain_map is not None and domain_map.crossings_into(child.instance_path):
-        overlays["clock"] = {"crossing": True}
+    if domain_map is not None:
+        clock_block = _clock_edge_contribution(child, domain_map)
+        if clock_block:
+            overlays["clock"] = clock_block
     if reset_map is not None and reset_map.crossings_into(child.instance_path):
         overlays["reset"] = {"crossing": True}
     if axi_perf_map is not None:
@@ -534,6 +536,35 @@ def _edge_overlays(
         if bundle is not None:
             overlays["axi-perf"] = _axi_perf_bundle_block(bundle)
     return overlays
+
+
+def _clock_edge_contribution(child: HierNode, domain_map: DomainMap) -> dict:
+    """Edge-level clock overlay payload.
+
+    Carries the boolean ``crossing`` flag and, when one or more
+    crossings target this edge's destination, the deduplicated
+    ``(src_clock, dst_clock)`` pairs with per-pair flop counts. The
+    SPA's EdgeDetail panel and edge-label rendering both consume
+    this so users see *which* clocks cross without re-opening the
+    domain map JSON.
+
+    Multiple flops in the same destination instance frequently share
+    a single (src, dst) clock pair; dedup keeps the panel readable.
+    """
+    crossings = domain_map.crossings_into(child.instance_path)
+    if not crossings:
+        return {}
+    pairs: dict[tuple[str, str], int] = {}
+    for c in crossings:
+        key = (c.src_clock, c.dst_clock)
+        pairs[key] = pairs.get(key, 0) + 1
+    return {
+        "crossing": True,
+        "pairs": [
+            {"src_clock": src, "dst_clock": dst, "flops": n}
+            for (src, dst), n in sorted(pairs.items())
+        ],
+    }
 
 
 def _axi_perf_bundle_block(bundle: AxiPerfBundle) -> dict:

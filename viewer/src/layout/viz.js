@@ -80,26 +80,82 @@ export function pickDot(graph) {
  * overlay styling is applied by the GraphCanvas component as CSS
  * classes after layout, so toggling an overlay never re-runs
  * viz.js. (Layout is the expensive step; restyling is free.)
+ *
+ * The root node (``graph.top``) becomes an outer ``cluster_top``
+ * subgraph so the descend / subtree view gets a labelled frame
+ * around it (matches the producer-supplied embedded DOT's
+ * convention). Without this, the descend canvas was a flat list
+ * of children with no scope title.
  */
 export function graphToDot(graph) {
   const lines = []
   lines.push('digraph view {')
   lines.push('  rankdir="LR";')
+  lines.push('  compound=true;')
   lines.push('  node [shape=box, style="rounded,filled", fillcolor="#f5f5f5"];')
   lines.push('  edge [arrowsize=0.7];')
-  for (const node of graph.nodes) {
-    const label = nodeLabel(node)
-    // ``label`` carries deliberate ``\n`` line-break markers that
-    // Graphviz interprets as newlines; passing it through
-    // ``dotEscape`` would double those backslashes and disable the
-    // line-break behavior. Escape quotes only here.
-    lines.push(`  ${dotId(node.id)} [label="${labelEscape(label)}"];`)
+
+  const rootId = graph.top
+  const rootNode = graph.nodes.find((n) => n.id === rootId)
+  const rootLabel = rootNode ? scopeLabel(rootNode) : (rootId || '')
+  const childNodes = graph.nodes.filter((n) => n.id !== rootId)
+  const childIds = new Set(childNodes.map((n) => n.id))
+
+  if (rootNode) {
+    lines.push('  subgraph cluster_top {')
+    lines.push(`    label="${labelEscape(rootLabel)}";`)
+    lines.push('    labelloc="t";')
+    lines.push('    style="rounded";')
+    lines.push('    color="#94a3b8";')
+    lines.push('    penwidth=2;')
+    for (const node of childNodes) {
+      const label = nodeLabel(node)
+      lines.push(`    ${dotId(node.id)} [label="${labelEscape(label)}"];`)
+    }
+    lines.push('  }')
+    // Emit the root's own ``data-node-id`` anchor so click handlers
+    // and overlays can still find it. The cluster <g> picks up
+    // ``data-node-id`` separately via ``cluster_lookup`` (set below)
+    // — but only if we tell the DOM what cluster→id mapping is.
+  } else {
+    for (const node of childNodes) {
+      const label = nodeLabel(node)
+      lines.push(`  ${dotId(node.id)} [label="${labelEscape(label)}"];`)
+    }
   }
+
+  // Skip edges that touch the root — its visual representation is the
+  // cluster frame, not a node, so a ``rootId -> child`` arrow would
+  // dangle. Inner edges (child→grandchild) render normally. CDC-flagged
+  // edges get a ``src_clk → dst_clk`` label so the clock pair is
+  // visible without clicking through to EdgeDetail.
   for (const edge of graph.edges) {
-    lines.push(`  ${dotId(edge.from)} -> ${dotId(edge.to)};`)
+    if (edge.from === rootId || edge.to === rootId) continue
+    if (!childIds.has(edge.from) || !childIds.has(edge.to)) continue
+    const label = edgeLabel(edge)
+    const attrs = label ? ` [label="${labelEscape(label)}", fontsize=9, fontcolor="#dc2626"]` : ''
+    lines.push(`  ${dotId(edge.from)} -> ${dotId(edge.to)}${attrs};`)
   }
   lines.push('}')
   return lines.join('\n')
+}
+
+// Cluster-frame title: prefer the instance name (familiar to the
+// user from the breadcrumb), fall back to module name for
+// blackboxes or the top of the full graph where the instance name
+// might be empty.
+function scopeLabel(node) {
+  return node.instance_name || node.module || node.id || ''
+}
+
+// Label for a CDC-flagged edge: dedupe the per-flop pairs (already
+// deduped in json_render.py) into ``src → dst`` lines. Multiple
+// distinct pairs stack vertically. Returns empty string when the
+// edge has no CDC overlay.
+function edgeLabel(edge) {
+  const ov = edge?.overlays?.clock
+  if (!ov || !Array.isArray(ov.pairs) || ov.pairs.length === 0) return ''
+  return ov.pairs.map((p) => `${p.src_clock} → ${p.dst_clock}`).join('\\n')
 }
 
 function nodeLabel(node) {
