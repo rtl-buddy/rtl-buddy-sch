@@ -98,21 +98,16 @@ export function graphToDot(graph) {
   const rootId = graph.top
   const rootNode = graph.nodes.find((n) => n.id === rootId)
   const rootLabel = rootNode ? scopeLabel(rootNode) : (rootId || '')
-  const childNodes = graph.nodes.filter((n) => n.id !== rootId)
-  const childIds = new Set(childNodes.map((n) => n.id))
 
-  // Pre-compute the clock palette + per-node CDC pair list so each
-  // child node can opt into the HTML-TABLE / striped-fill rendering
-  // mirrored from ``dot.py``. Both helpers walk the graph once.
+  // Pre-compute clock palette, per-node CDC pair list, and the
+  // parent→child tree (derived from dotted instance paths — every
+  // node's parent is the longest prefix that's also a node in this
+  // graph).
   const palette = buildClockPalette(graph)
   const pairsByNode = collectCdcPairsByNode(graph)
+  const childrenById = buildChildrenMap(graph, rootId)
 
-  // Virtual stand-in source for crossings whose ``src_clock`` is
-  // ``<unconstrained>`` — typically reset / async-clear ports that
-  // the CDC tool flagged as async paths but the SDC didn't bind to
-  // a real clock. The edges still need to be drawn (the user has
-  // to know they exist) so we route them from this placeholder
-  // instead of dropping them on the floor.
+  // Virtual stand-in for crossings with ``<unconstrained>`` source.
   const UNCONSTRAINED_ID = '_rb_unconstrained'
   const needUnconstrained = (graph.edges || []).some((e) =>
     (e?.overlays?.clock?.pairs || []).some(
@@ -120,6 +115,10 @@ export function graphToDot(graph) {
     ),
   )
 
+  // --- nodes (nested clusters) -------------------------------------
+  // Top frame is always cluster_top (the descend scope). What sits
+  // *inside* depends on whether the root is a leaf, a CDC bridge,
+  // or a non-CDC container — see emitSubtree's per-branch logic.
   if (rootNode) {
     lines.push('  subgraph cluster_top {')
     lines.push(`    label="${labelEscape(rootLabel)}";`)
@@ -132,9 +131,9 @@ export function graphToDot(graph) {
         `label="?", fontcolor="#dc2626", fontsize=14, ` +
         `tooltip="async crossing whose src_clock is unconstrained in SDC"];`)
     }
-    for (const node of childNodes) {
-      lines.push('    ' + emitNode(node, palette, pairsByNode))
-    }
+    emitInsideRootCluster(
+      rootNode, '    ', graph, palette, pairsByNode, childrenById, lines,
+    )
     lines.push('  }')
   } else {
     if (needUnconstrained) {
@@ -142,66 +141,152 @@ export function graphToDot(graph) {
         `label="?", fontcolor="#dc2626", fontsize=14, ` +
         `tooltip="async crossing whose src_clock is unconstrained in SDC"];`)
     }
-    for (const node of childNodes) {
+    for (const node of graph.nodes) {
       lines.push('  ' + emitNode(node, palette, pairsByNode))
     }
   }
 
-  // Skip edges that touch the root — its visual representation is the
-  // cluster frame, not a node, so a ``rootId -> child`` arrow would
-  // dangle. Inner edges (child→grandchild) render normally. CDC-flagged
-  // edges get a ``src_clk → dst_clk`` label so the clock pair is
-  // visible without clicking through to EdgeDetail.
+  // --- edges --------------------------------------------------------
+  // Skip plain parent→child containment edges (their relationship is
+  // already shown by cluster nesting). Only emit edges that carry
+  // CDC overlay info. ``isContainmentEdge`` checks via the prefix
+  // rule used in ``buildChildrenMap``.
   for (const edge of graph.edges) {
-    if (edge.from === rootId || edge.to === rootId) continue
-    if (!childIds.has(edge.from) || !childIds.has(edge.to)) continue
     const allPairs = edge?.overlays?.clock?.pairs || []
-    // Distinct non-unconstrained pairs become their own DOT edges
-    // (one per crossing direction), each pinned + labelled with
-    // that specific src→dst pair. Without splitting, ``pairs[0]``
-    // wins port-pinning lottery — and when ``<unconstrained>``
-    // sorts first the edge falls back to auto-routing even though
-    // a real-clock pair was available.
     const realPairs = allPairs.filter(
       (p) => p && typeof p.src_clock === 'string' && !isUnconstrained(p.src_clock),
     )
     const unconPairs = allPairs.filter(
       (p) => p && typeof p.src_clock === 'string' && isUnconstrained(p.src_clock),
     )
-    if (realPairs.length === 0 && unconPairs.length === 0) {
-      // Plain containment edge — no CDC at all.
-      lines.push(`  ${dotId(edge.from)} -> ${dotId(edge.to)};`)
-      continue
-    }
+    if (realPairs.length === 0 && unconPairs.length === 0) continue
     for (const p of realPairs) {
       const label = `${p.src_clock} → ${p.dst_clock}`
       const attrs = ` [label="${labelEscape(label)}", color="#dc2626", style="dashed", fontcolor="#dc2626", fontsize=9]`
-      // Pin to the cells that name the data domain of THIS specific
-      // pair on each end. The grid columns are ``in_<src>`` on the
-      // left and ``out_<dst>`` on the right; ``portRefForPair``
-      // resolves the right side for ``outgoing`` and the left for
-      // ``incoming`` so the arrow visually flows across the box.
       const fromRef = portRefForPair(edge.from, p, 'outgoing', pairsByNode)
       const toRef = portRefForPair(edge.to, p, 'incoming', pairsByNode)
       lines.push(`  ${fromRef} -> ${toRef}${attrs};`)
     }
-    // Unconstrained pairs route from the virtual ``_rb_unconstrained``
-    // placeholder source rather than from ``edge.from`` — the actual
-    // source isn't a real clock domain so there's no cell to pin to
-    // on the from side. The destination side still pins to its
-    // ``in_<dst>`` cell when the dst node has a grid, so the user
-    // still gets a visual line into the receiving clock.
     for (const p of unconPairs) {
       const label = `${p.src_clock} → ${p.dst_clock}`
       const attrs = ` [label="${labelEscape(label)}", color="#dc2626", style="dashed", fontcolor="#dc2626", fontsize=9]`
-      // Repurpose the in_<dst> cell on the destination side — the
-      // pair has no usable src clock, so anchor by dst instead.
       const toRef = portRefForUnconstrainedDst(edge.to, p, pairsByNode)
       lines.push(`  ${dotId(UNCONSTRAINED_ID)} -> ${toRef}${attrs};`)
     }
   }
   lines.push('}')
   return lines.join('\n')
+}
+
+// Derive each node's direct children from dotted instance paths.
+// A node B is a direct child of A iff B.id starts with ``A.id + "."``
+// AND there is no other node C in the graph whose id is a longer
+// prefix of B.id (i.e., C sits between A and B). Returns
+// ``Map<parentId, [childId, ...]>`` covering every node in graph.
+function buildChildrenMap(graph) {
+  const children = new Map()
+  const ids = new Set()
+  for (const n of graph.nodes) {
+    ids.add(n.id)
+    children.set(n.id, [])
+  }
+  for (const n of graph.nodes) {
+    let cur = n.id
+    while (true) {
+      const lastDot = cur.lastIndexOf('.')
+      if (lastDot < 0) break
+      cur = cur.substring(0, lastDot)
+      if (ids.has(cur)) {
+        children.get(cur).push(n.id)
+        break
+      }
+    }
+  }
+  // Stable sort by instance path so the output is deterministic.
+  for (const arr of children.values()) arr.sort()
+  return children
+}
+
+// Render the contents of the root cluster_top. Three cases:
+//   - root has no children → just emit the root as a flat node so
+//     the scope frame has a visible anchor.
+//   - root is a CDC bridge with children → emit root as a flat
+//     HTML-TABLE grid + its children at the same level (matches
+//     dot.py's CDC bridge convention — the children sit alongside
+//     the bridge node, not nested inside it).
+//   - root is a non-CDC container with children → recurse via
+//     emitSubtree which uses nested ``subgraph cluster_<id>`` for
+//     each non-leaf descendant.
+function emitInsideRootCluster(
+  rootNode, indent, graph, palette, pairsByNode, childrenById, lines,
+) {
+  const rootId = rootNode.id
+  const rootChildren = childrenById.get(rootId) || []
+  if (rootChildren.length === 0) {
+    // Leaf scope — no children to recurse into, render the root as a
+    // flat node so cluster_top has something inside it.
+    lines.push(indent + emitNode(rootNode, palette, pairsByNode))
+    return
+  }
+  // Container scope (CDC bridge or non-CDC). The scope's identity is
+  // already conveyed by cluster_top's ``label=`` and the cluster
+  // frame; re-emitting the root as a grid node or anchor would just
+  // produce a redundant box alongside its children. Recurse straight
+  // into the children — they'll cluster / grid / striped themselves
+  // as needed.
+  for (const childId of rootChildren) {
+    emitSubtree(childId, indent, graph, palette, pairsByNode, childrenById, lines)
+  }
+}
+
+// Recursive subtree emit. Cluster vs flat-node decision is the
+// same as for the root, minus the cluster_top framing.
+function emitSubtree(
+  nodeId, indent, graph, palette, pairsByNode, childrenById, lines,
+) {
+  const node = graph.nodes.find((n) => n.id === nodeId)
+  if (!node) return
+  const children = childrenById.get(nodeId) || []
+  const pairs = pairsByNode.get(nodeId) || []
+  if (children.length === 0) {
+    lines.push(indent + emitNode(node, palette, pairsByNode))
+    return
+  }
+  if (pairs.length >= 2) {
+    // CDC bridge: flat HTML-TABLE + children as siblings.
+    lines.push(indent + emitGridNode(node, palette, pairs))
+    for (const childId of children) {
+      emitSubtree(childId, indent, graph, palette, pairsByNode, childrenById, lines)
+    }
+    return
+  }
+  // Non-CDC container: nested cluster. The invisible anchor inside
+  // lets edges (if any) reference this scope by ``"<id>"``;
+  // viz.js auto-routes to the cluster boundary.
+  const clusterName = clusterIdFor(nodeId)
+  lines.push(`${indent}subgraph ${clusterName} {`)
+  lines.push(`${indent}  label="${labelEscape(scopeLabel(node))}";`)
+  lines.push(`${indent}  labelloc="t";`)
+  lines.push(`${indent}  labeljust="l";`)
+  lines.push(`${indent}  style="rounded";`)
+  lines.push(`${indent}  color="#94a3b8";`)
+  lines.push(`${indent}  penwidth=1;`)
+  lines.push(
+    `${indent}  ${dotId(nodeId)} [shape=point, style=invis, width=0, height=0];`,
+  )
+  for (const childId of children) {
+    emitSubtree(
+      childId, indent + '  ', graph, palette, pairsByNode, childrenById, lines,
+    )
+  }
+  lines.push(`${indent}}`)
+}
+
+// Sanitize an instance path into a cluster name that's a valid DOT
+// identifier prefix. Same scheme used by GraphCanvas to recover the
+// original instance path from a cluster's ``<title>`` text.
+export function clusterIdFor(instanceId) {
+  return 'cluster_' + String(instanceId).replace(/[^A-Za-z0-9_]/g, '_')
 }
 
 // ---------------------------------------------------------------------------

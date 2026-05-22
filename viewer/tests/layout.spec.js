@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { graphToDot, dotEscape, dotId, pickDot } from '../src/layout/viz.js'
 
 const graph = {
+  top: 'top',
   nodes: [
     {
       id: 'top',
@@ -34,16 +35,20 @@ const graph = {
 }
 
 describe('graphToDot', () => {
-  it('emits a digraph with every node + edge', () => {
+  it('emits a digraph with every node id present', () => {
     const dot = graphToDot(graph)
     expect(dot).toMatch(/^digraph view \{/)
     // Every node id is quoted (dots aren't legal in bare ids).
     expect(dot).toContain('"top"')
     expect(dot).toContain('"top.u_a"')
     expect(dot).toContain('"top.u_bb"')
-    // Edges in source order.
-    expect(dot).toContain('"top" -> "top.u_a"')
-    expect(dot).toContain('"top" -> "top.u_bb"')
+    // The root is framed by ``cluster_top`` so its scope name is
+    // visible. Plain parent→child containment edges are intentionally
+    // NOT emitted any more — nesting (cluster_top + future nested
+    // clusters) is the source of containment info.
+    expect(dot).toContain('subgraph cluster_top')
+    expect(dot).not.toContain('"top" -> "top.u_a"')
+    expect(dot).not.toContain('"top" -> "top.u_bb"')
   })
 
   it('labels blackbox nodes with the (blackbox) tag', () => {
