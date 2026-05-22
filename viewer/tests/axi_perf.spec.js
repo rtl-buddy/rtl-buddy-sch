@@ -101,8 +101,12 @@ describe('nodeAxiPerfInterconnect', () => {
 })
 
 describe('axiPerfOverlay.apply', () => {
+  // Per the design discussion, AXI rendering lives in its own
+  // viewer tab (AxiPerfView.vue) rather than as per-edge SVG
+  // painting on the hierarchy. apply() is intentionally a no-op
+  // so the overlay registry's uniform iteration still works.
+
   function _buildSvg() {
-    // happy-dom is the test env, so document is available.
     const root = document.createElement('svg')
     const edgeGroup = document.createElement('g')
     edgeGroup.setAttribute('data-edge-from', 'soc.u_cpu')
@@ -113,31 +117,7 @@ describe('axiPerfOverlay.apply', () => {
     return { root, path }
   }
 
-  it('styles edges with high backpressure red', () => {
-    const { root, path } = _buildSvg()
-    const graph = {
-      edges: [{
-        from: 'soc.u_cpu',
-        to: 'soc.u_dram',
-        overlays: {
-          'axi-perf': _bundleBlock({
-            channels: {
-              ar: { util_pct: 30, bp_pct: 5, peak_occ: 8, txns: 1000 },
-              aw: { util_pct: 15, bp_pct: 1, peak_occ: 4, txns: 500 },
-              r:  { util_pct: 60, bp_pct: 50, peak_occ: 12, beats: 8000 }, // bp 50%
-              w:  { util_pct: 35, bp_pct: 8, peak_occ: 6, beats: 2000 },
-              b:  { util_pct: 5, bp_pct: 0, peak_occ: 2, txns: 500 },
-            },
-          }),
-        },
-      }],
-    }
-    axiPerfOverlay.apply(root, graph, true)
-    // happy-dom keeps the hex; jsdom would normalize to rgb(). Accept either.
-    expect(['rgb(220, 38, 38)', '#dc2626']).toContain(path.style.stroke)
-  })
-
-  it('clears styling when disabled', () => {
+  it('is a no-op — does not style the hierarchy SVG', () => {
     const { root, path } = _buildSvg()
     const graph = {
       edges: [{
@@ -147,44 +127,17 @@ describe('axiPerfOverlay.apply', () => {
       }],
     }
     axiPerfOverlay.apply(root, graph, true)
-    expect(path.style.stroke).not.toBe('')
-    axiPerfOverlay.apply(root, graph, false)
     expect(path.style.stroke).toBe('')
+    expect(path.style.strokeWidth).toBe('')
+    expect(path.style.strokeDasharray).toBe('')
   })
 
-  it('dashes the stroke when errors are present', () => {
-    const { root, path } = _buildSvg()
-    const graph = {
-      edges: [{
-        from: 'soc.u_cpu',
-        to: 'soc.u_dram',
-        overlays: {
-          'axi-perf': _bundleBlock({ errors: { slverr: 2, decerr: 1 } }),
-        },
-      }],
-    }
-    axiPerfOverlay.apply(root, graph, true)
-    expect(path.style.strokeDasharray).toBe('4 3')
-  })
-
-  it('is a no-op on edges without an axi-perf overlay', () => {
+  it('is also a no-op when disabled', () => {
     const { root, path } = _buildSvg()
     const graph = {
       edges: [{ from: 'soc.u_cpu', to: 'soc.u_dram', overlays: {} }],
     }
-    axiPerfOverlay.apply(root, graph, true)
+    axiPerfOverlay.apply(root, graph, false)
     expect(path.style.stroke).toBe('')
-  })
-
-  it('survives an edge whose SVG group is absent (graph⇄DOM drift)', () => {
-    const root = document.createElement('svg')
-    const graph = {
-      edges: [{
-        from: 'orphan',
-        to: 'orphan2',
-        overlays: { 'axi-perf': _bundleBlock() },
-      }],
-    }
-    expect(() => axiPerfOverlay.apply(root, graph, true)).not.toThrow()
   })
 })

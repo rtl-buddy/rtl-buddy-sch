@@ -2,21 +2,37 @@
   <div class="app">
     <header class="app-header">
       <h1>rtl-buddy-view</h1>
+      <nav class="app-tabs" v-if="store.status === 'ready'">
+        <button
+          type="button"
+          :class="{ active: store.activeTab === 'hierarchy' }"
+          @click="store.setActiveTab('hierarchy')"
+        >Hierarchy</button>
+        <button
+          type="button"
+          :class="{ active: store.activeTab === 'axi-perf' }"
+          :disabled="!hasAxiPerf"
+          :title="hasAxiPerf ? '' : 'Load a view.json with --overlay axi-perf=...'"
+          @click="store.setActiveTab('axi-perf')"
+        >AXI Performance</button>
+      </nav>
       <div class="header-status">
         <span class="design-name" v-if="store.graph">{{ store.graph.top }}</span>
         <ModelPicker />
         <HubStatus />
       </div>
     </header>
-    <div class="app-body" v-if="store.status === 'ready'">
+    <div class="app-body" v-if="store.status === 'ready' && store.activeTab === 'hierarchy'">
       <aside class="sidebar">
         <OverlayPanel />
         <NodeDetail v-if="!store.selectedEdgeObj" />
         <EdgeDetail v-if="store.selectedEdgeObj" />
-        <AxiPerfPane />
         <DiagnosticsPanel />
       </aside>
       <GraphCanvas />
+    </div>
+    <div class="app-body axi-tab" v-else-if="store.status === 'ready' && store.activeTab === 'axi-perf'">
+      <AxiPerfView />
     </div>
     <div class="empty-state" v-else-if="store.status === 'idle'">
       <h2>Load a view.json</h2>
@@ -49,14 +65,22 @@ import GraphCanvas from './components/GraphCanvas.vue'
 import OverlayPanel from './components/OverlayPanel.vue'
 import NodeDetail from './components/NodeDetail.vue'
 import EdgeDetail from './components/EdgeDetail.vue'
-import AxiPerfPane from './components/AxiPerfPane.vue'
+import AxiPerfView from './components/AxiPerfView.vue'
 import HubStatus from './components/HubStatus.vue'
 import ModelPicker from './components/ModelPicker.vue'
 import ToastHost from './components/ToastHost.vue'
 import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
 import { initHub } from './composables/useHub.js'
 
+import { computed } from 'vue'
+
 const store = useViewerStore()
+
+const hasAxiPerf = computed(
+  () =>
+    Array.isArray(store.graph?.overlays_present) &&
+    store.graph.overlays_present.includes('axi-perf'),
+)
 
 function onPickFile(event) {
   const file = event.target.files && event.target.files[0]
@@ -102,9 +126,32 @@ body, html, .app { margin: 0; height: 100%; }
   border-bottom: 1px solid #e5e7eb;
 }
 .app-header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+.app-tabs { display: flex; gap: 0; }
+.app-tabs button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+  color: #475569;
+  cursor: pointer;
+}
+.app-tabs button:hover:not(:disabled) {
+  color: #1e293b;
+}
+.app-tabs button.active {
+  color: #4f46e5;
+  border-bottom-color: #4f46e5;
+  font-weight: 600;
+}
+.app-tabs button:disabled {
+  color: #cbd5e1;
+  cursor: not-allowed;
+}
 .header-status { display: flex; gap: 1rem; align-items: center; }
 .design-name { font-family: ui-monospace, Menlo, monospace; color: #475569; }
 .app-body { display: flex; height: calc(100vh - 48px); }
+.app-body.axi-tab { padding: 0; }
 .sidebar {
   width: 280px;
   border-right: 1px solid #e5e7eb;
