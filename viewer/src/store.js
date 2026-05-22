@@ -50,6 +50,13 @@ export const useViewerStore = defineStore('viewer', {
     // block-diagram view with sibling-to-sibling connectivity
     // inferred from per-node port expressions.
     viewMode: 'hier',
+    // Explicit scope for the block-flow view (the instance whose
+    // direct children are rendered). ``null`` means show
+    // ``graph.top``. Kept independent of ``selection`` so clicking
+    // a block in flow view selects it (populating NodeDetail)
+    // without changing scope — matching hier-view's click =
+    // focus, button = navigate contract.
+    flowScope: null,
     // Hub-mirrored state. All written by applyHub*/applyDiagnostics
     // actions; consumers read these directly.
     hubCursorTimeFs: null,
@@ -101,12 +108,12 @@ export const useViewerStore = defineStore('viewer', {
         state.graph.edges.find((e) => e.from === from && e.to === to) || null
       )
     },
-    // Scope shown in the block-flow view: the currently-selected
-    // instance when there is one, otherwise the design top. The
+    // Scope shown in the block-flow view: the explicit
+    // ``flowScope`` state when set, otherwise the design top. The
     // flow renderer reads this to decide *which* instance to expand
     // (showing its direct children + their interconnections).
     flowScopeId(state) {
-      if (state.selection) return state.selection
+      if (state.flowScope) return state.flowScope
       return state.graph ? state.graph.top : null
     },
     // True when the selected node has at least one child in the
@@ -342,24 +349,46 @@ export const useViewerStore = defineStore('viewer', {
       // Drill the canvas into the subtree rooted at ``id``. No-op
       // when the node has no children (the canvas would render a
       // single floating node).
+      //
+      // The "scope" that descends depends on the current view mode:
+      // ``hier`` updates ``rootInstancePath`` (the cluster-tree's
+      // visible-subtree filter); ``flow`` updates ``flowScope`` (the
+      // block-flow's expand-one-level target). Both views share the
+      // same selection so the NodeDetail panel stays meaningful.
       if (!id) return
       const prefix = id + '.'
       const hasChildren = this.graph?.nodes.some((n) =>
         n.id.startsWith(prefix),
       )
       if (!hasChildren) return
-      this.rootInstancePath = id
+      if (this.viewMode === 'flow') {
+        this.flowScope = id
+      } else {
+        this.rootInstancePath = id
+      }
       this.selection = id
     },
     ascend() {
       // Pop one level. If we're already showing the original top,
-      // this is a no-op.
+      // this is a no-op. View-mode-aware in the same way ``descend``
+      // is.
+      if (this.viewMode === 'flow') {
+        if (!this.flowScope) return
+        const parent = this.flowScope.replace(/\.[^.]+$/, '')
+        this.flowScope =
+          parent === this.flowScope ? null : parent || null
+        return
+      }
       if (!this.rootInstancePath) return
       const parent = this.rootInstancePath.replace(/\.[^.]+$/, '')
       this.rootInstancePath =
         parent === this.rootInstancePath ? null : parent || null
     },
     goToTop() {
+      if (this.viewMode === 'flow') {
+        this.flowScope = null
+        return
+      }
       this.rootInstancePath = null
     },
     setViewMode(mode) {
