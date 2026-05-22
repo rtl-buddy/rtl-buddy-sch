@@ -57,11 +57,15 @@
         >
           <EdgeDetail />
         </CollapsiblePanel>
+        <!-- Diagnostics default-expanded so dynamically-arriving
+             items (hub-pushed after page load) are immediately
+             visible — auto-collapse based on initial count would
+             swallow late-arriving updates and broke the e2e
+             ``diagnostics_set`` tests. -->
         <CollapsiblePanel
           title="Diagnostics"
           persist-key="diagnostics"
           :badge="diagnosticsCount || null"
-          :default-collapsed="!diagnosticsCount"
         >
           <DiagnosticsPanel />
         </CollapsiblePanel>
