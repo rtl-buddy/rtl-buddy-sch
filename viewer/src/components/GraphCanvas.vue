@@ -644,9 +644,22 @@ function fitToWindow() {
   applyTransform()
 }
 
+function onDoubleClick(e) {
+  // Double-click = descend into the clicked node. Skips edges /
+  // block-flow port cells (those have their own single-click
+  // behaviour we don't want to override). When the node is a leaf
+  // ``store.descend`` is a no-op so the action degrades safely.
+  const nodeHit = nodeFromEvent(e)
+  if (!nodeHit) return
+  e.preventDefault()
+  store.select(nodeHit.id)
+  store.descend(nodeHit.id)
+}
+
 onMounted(() => {
   if (svgHostEl.value) {
     svgHostEl.value.addEventListener('click', onClick)
+    svgHostEl.value.addEventListener('dblclick', onDoubleClick)
     svgHostEl.value.addEventListener('contextmenu', onContextMenu)
     svgHostEl.value.addEventListener('wheel', onWheel, { passive: false })
     svgHostEl.value.addEventListener('mousedown', onMouseDown)
@@ -658,6 +671,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (svgHostEl.value) {
     svgHostEl.value.removeEventListener('click', onClick)
+    svgHostEl.value.removeEventListener('dblclick', onDoubleClick)
     svgHostEl.value.removeEventListener('contextmenu', onContextMenu)
     svgHostEl.value.removeEventListener('wheel', onWheel)
     svgHostEl.value.removeEventListener('mousedown', onMouseDown)
