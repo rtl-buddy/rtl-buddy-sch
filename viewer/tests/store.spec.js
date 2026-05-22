@@ -200,6 +200,90 @@ describe('viewer store', () => {
   })
 
   // ---------------------------------------------------------------------------
+  // View-mode-aware descend / ascend (issue: unify hier/flow click contract)
+  // ---------------------------------------------------------------------------
+
+  it('select alone does not change the flow scope (decoupled from selection)', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(minimalPayload()))
+    store.setViewMode('flow')
+    expect(store.flowScopeId).toBe('top') // graph.top default
+    store.select('top.u_a')
+    expect(store.selection).toBe('top.u_a')
+    // Crucially: flow scope DOES NOT follow selection. Without this
+    // decoupling, clicking a block in the flow view would
+    // immediately re-render at that block — the "click descends"
+    // behaviour the user explicitly rejected.
+    expect(store.flowScopeId).toBe('top')
+  })
+
+  it('descend in flow mode sets flowScope, not rootInstancePath', () => {
+    const store = useViewerStore()
+    // Build a graph where ``top.u_a`` has a child so descend isn't a no-op.
+    const p = minimalPayload()
+    p.nodes.push({
+      id: 'top.u_a.sub',
+      module: 's',
+      is_blackbox: false,
+      parameters: {},
+      ports: [],
+      overlays: {},
+    })
+    store.loadFromText(JSON.stringify(p))
+    store.setViewMode('flow')
+    store.select('top.u_a')
+    store.descend('top.u_a')
+    expect(store.flowScope).toBe('top.u_a')
+    expect(store.flowScopeId).toBe('top.u_a')
+    expect(store.rootInstancePath).toBeNull()
+  })
+
+  it('descend in hier mode sets rootInstancePath, not flowScope', () => {
+    const store = useViewerStore()
+    const p = minimalPayload()
+    p.nodes.push({
+      id: 'top.u_a.sub',
+      module: 's',
+      is_blackbox: false,
+      parameters: {},
+      ports: [],
+      overlays: {},
+    })
+    store.loadFromText(JSON.stringify(p))
+    store.setViewMode('hier')
+    store.select('top.u_a')
+    store.descend('top.u_a')
+    expect(store.rootInstancePath).toBe('top.u_a')
+    expect(store.flowScope).toBeNull()
+  })
+
+  it('ascend in flow mode pops the flowScope by one segment', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(minimalPayload()))
+    store.setViewMode('flow')
+    store.flowScope = 'top.u_a.sub'
+    store.ascend()
+    expect(store.flowScope).toBe('top.u_a')
+    store.ascend()
+    expect(store.flowScope).toBe('top')
+    store.ascend()
+    // ``top`` is a single segment with no parent → cleared.
+    expect(store.flowScope).toBeNull()
+  })
+
+  it('goToTop in flow mode clears only flowScope', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(minimalPayload()))
+    store.setViewMode('flow')
+    store.flowScope = 'top.u_a.sub'
+    store.rootInstancePath = 'top.u_a' // would also be cleared in hier mode
+    store.goToTop()
+    expect(store.flowScope).toBeNull()
+    // rootInstancePath untouched in flow mode.
+    expect(store.rootInstancePath).toBe('top.u_a')
+  })
+
+  // ---------------------------------------------------------------------------
   // Model picker (rtl-buddy-view#72 Part 2 / rtl_buddy#174)
   // ---------------------------------------------------------------------------
 

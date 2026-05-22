@@ -73,17 +73,10 @@ const canAscendScope = computed(() => {
   return store.flowScopeId && store.flowScopeId !== store.graph.top
 })
 function ascendScope() {
+  // Flow-view scope is owned by the store now; ``ascend()`` is
+  // view-mode-aware and pops one level when in flow mode.
   if (!canAscendScope.value) return
-  const cur = store.flowScopeId
-  // Strip the last dot-segment to get the parent path.
-  const lastDot = cur.lastIndexOf('.')
-  if (lastDot < 0) {
-    // Already a top-level identifier — clear selection so the
-    // scope falls back to graph.top via flowScopeId getter.
-    store.clearSelection()
-  } else {
-    store.select(cur.slice(0, lastDot))
-  }
+  store.ascend()
 }
 
 async function renderSvg() {
@@ -321,9 +314,12 @@ function panToElement(el) {
 }
 
 function onClick(e) {
-  // Block-flow mode owns its own click contract:
+  // Block-flow mode click contract — matches hier-view: click =
+  // focus, button = navigate. Descending into a block is owned by
+  // NodeDetail's "Descend" button (which routes through
+  // store.descend(id), view-mode-aware).
   //   - port cell  → pan view to the peer (driver / sink)
-  //   - centre     → descend into that block (set as new scope)
+  //   - centre     → select the block (populates NodeDetail)
   // ``HREF`` on the HTML-table cell makes viz.js wrap the cell in
   // an ``<a>`` with a relative href — without preventDefault the
   // browser would try to navigate to ``bf-in:...``.
