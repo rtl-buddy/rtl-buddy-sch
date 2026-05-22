@@ -103,7 +103,17 @@ export const useViewerStore = defineStore('viewer', {
       const edges = state.graph.edges.filter(
         (e) => ids.has(e.from) && ids.has(e.to),
       )
-      return { ...state.graph, top: rootId, nodes, edges }
+      // Drop the producer-supplied embedded DOT (state.graph.layout)
+      // when descending into a subtree. That DOT was generated for
+      // the FULL graph; pickDot would otherwise hand it back to
+      // viz.js verbatim and the canvas would re-render the original
+      // hier — overlays would still recolour by the filtered node
+      // list, producing "only the subtree node has a clock fill" /
+      // "the rest of the hier visually unchanged" (see fix in
+      // PR #xx). graphToDot rebuilds DOT from nodes+edges, which is
+      // correct for the subtree.
+      const { layout: _drop, ...rest } = state.graph
+      return { ...rest, top: rootId, nodes, edges }
     },
     selectedNode(state) {
       if (!state.selection) return null
