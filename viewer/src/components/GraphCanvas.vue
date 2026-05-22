@@ -185,9 +185,15 @@ function applySelectionHighlight(selectedId) {
     el.removeAttribute('data-rb-selected')
   }
   if (!selectedId) return
+  let first = null
   for (const el of _svgEl.querySelectorAll(`[data-node-id="${selectedId}"]`)) {
     el.setAttribute('data-rb-selected', 'true')
+    if (first === null) first = el
   }
+  // Pan + zoom on selection so the user (or a hub-driven peer) can
+  // actually see where the focus moved — without this, the highlight
+  // sits offscreen when the node isn't already in view.
+  if (first !== null) zoomToElement(first)
 }
 
 // Block-flow edges carry a stable ``id="bf-edge:<src>:<srcPort>:
@@ -241,6 +247,42 @@ watch(
     }
   },
 )
+
+// Pan + zoom so the element fills roughly 30% of the viewport.
+// Distinct from ``panToElement`` (used by port-cell clicks) which
+// deliberately preserves the current zoom; on a fresh "fit to
+// window" scale a typical sub-module is too small to read, so for
+// selection we want zoom-in as well. ``applySelectionHighlight``
+// invokes us alongside marking the data-rb-selected attribute, so
+// both local clicks and inbound hub ``selection_changed`` events
+// produce the same visible reaction.
+function zoomToElement(el) {
+  if (!el || !_svgEl || !svgHostEl.value) return
+  let bb
+  try {
+    bb = el.getBBox()
+  } catch {
+    return
+  }
+  if (!bb || !bb.width || !bb.height) return
+  const rect = svgHostEl.value.getBoundingClientRect()
+  // Want the element to occupy ~1 / MARGIN_FACTOR of the viewport on
+  // its limiting axis — i.e. ~30% with a 3.3× margin. Lots of context
+  // around the selected node, not "fill the screen".
+  const MARGIN_FACTOR = 3.3
+  const fitW = rect.width / (bb.width * MARGIN_FACTOR)
+  const fitH = rect.height / (bb.height * MARGIN_FACTOR)
+  // Clamp: lower bound so the top-level cluster doesn't zoom out
+  // below a useful overview; upper bound so a tiny leaf node doesn't
+  // jump to an aggressive close-up.
+  const scale = Math.max(0.4, Math.min(1.5, Math.min(fitW, fitH)))
+  transform.value = {
+    scale,
+    x: rect.width / 2 - (bb.x + bb.width / 2) * scale,
+    y: rect.height / 2 - (bb.y + bb.height / 2) * scale,
+  }
+  applyTransform()
+}
 
 function nodeFromEvent(e) {
   // ``g.cluster`` is the cluster-tree wrapper; ``g.node`` the leaf
@@ -746,12 +788,15 @@ onBeforeUnmount(() => {
    which stamps ``data-rb-selected`` on the SVG group whose
    ``data-node-id`` matches the store's selection. Covers both
    hier-view ``g.node`` polygons + flow-view HTML-table outer
-   tables. The thicker stroke is more visible across the wide
-   range of node fill colours overlays may apply. */
+   tables. The thicker stroke + drop-shadow makes the highlight
+   visible across the wide range of node fill colours overlays may
+   apply, and the glow still cues the eye when the node has just
+   panned in from the edge of the viewport. */
 .svg-host :deep([data-rb-selected]) > polygon,
 .svg-host :deep([data-rb-selected]) > path {
   stroke: #2563eb;
   stroke-width: 3 !important;
+  filter: drop-shadow(0 0 4px rgba(37, 99, 235, 0.55));
 }
 /* For HTML-table labels (block-flow boxes), the outer table is a
    nested polygon — accent that one too. */
