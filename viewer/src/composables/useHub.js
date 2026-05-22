@@ -24,6 +24,8 @@
 
 import { ref } from 'vue'
 
+import { captureGraphImage } from '../capture.js'
+
 const PROTOCOL_VERSION = 1
 const CLIENT_VERSION = '0.1.0'
 const RECONNECT_INITIAL_MS = 500
@@ -248,6 +250,16 @@ function applyEnvelope(env) {
       break
     }
 
+    case 'view_capture': {
+      // Hub-routed request from a peer (typically ``rb hub send
+      // capture`` driven by the CLI): rasterise the current graph
+      // SVG and reply with base64 bytes. Graph-only — surrounding
+      // panels are not in scope for v1.
+      if (env.kind !== 'request') break
+      handleViewCapture(env)
+      break
+    }
+
     case 'view_changed': {
       // Hub-driven model switch (rtl_buddy#174). Forwarded to the
       // store, which dedupes against ``activeModel`` so a switch we
@@ -261,6 +273,40 @@ function applyEnvelope(env) {
     default:
       // Unknown types are silently dropped (protocol §11).
       break
+  }
+}
+
+async function handleViewCapture(env) {
+  // Response uses the request ``id`` per protocol §4 — that is the
+  // correlation key the hub uses to route the answer back to the
+  // requester. ``in_reply_to`` is the conceptual name in the Python
+  // helpers; on the wire it's just ``id``.
+  const reqId = env.id
+  const payload = env.payload || {}
+  const format = payload.format === 'svg' ? 'svg' : 'png'
+  const scale = Number.isFinite(payload.scale) && payload.scale > 0 ? payload.scale : 1
+  try {
+    const result = await captureGraphImage(format, { scale })
+    sendEnvelope({
+      v: PROTOCOL_VERSION,
+      id: reqId,
+      origin: 'view',
+      kind: 'response',
+      type: 'view_capture',
+      payload: result,
+    })
+  } catch (err) {
+    sendEnvelope({
+      v: PROTOCOL_VERSION,
+      id: reqId,
+      origin: 'view',
+      kind: 'error',
+      type: 'error',
+      payload: {
+        code: 'bad_request',
+        message: String((err && err.message) || err || 'capture failed'),
+      },
+    })
   }
 }
 

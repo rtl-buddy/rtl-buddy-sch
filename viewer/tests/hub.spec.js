@@ -10,6 +10,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import { useViewerStore } from '../src/store.js'
 import { useHub, initHub, _testing } from '../src/composables/useHub.js'
+import { registerSvgProvider, unregisterSvgProvider } from '../src/capture.js'
 
 class MockSocket {
   constructor(url) {
@@ -432,5 +433,124 @@ describe('viewer store hub reducers', () => {
     expect(flat).toHaveLength(2)
     const sources = flat.map((d) => d.source).sort()
     expect(sources).toEqual(['a', 'b'])
+  })
+})
+
+describe('useHub view_capture request handler', () => {
+  // Fake <svg> shaped the way capture.js inspects it: ``getAttribute``
+  // for viewBox/width/height, ``cloneNode(true)`` returning a serialisable
+  // copy, and XMLSerializer chewing on it. jsdom provides both, so the
+  // SVG branch round-trips cleanly without a real layout pass.
+  function makeFakeSvg() {
+    // Use the live HTML document's createElementNS — jsdom serialises
+    // its detached SVGDocument as <html>, while elements attached
+    // through the main document keep their <svg> tag through
+    // XMLSerializer.
+    const ns = 'http://www.w3.org/2000/svg'
+    const svg = document.createElementNS(ns, 'svg')
+    svg.setAttribute('viewBox', '0 0 100 50')
+    svg.setAttribute('width', '100')
+    svg.setAttribute('height', '50')
+    const rect = document.createElementNS(ns, 'rect')
+    rect.setAttribute('x', '0')
+    rect.setAttribute('y', '0')
+    rect.setAttribute('width', '100')
+    rect.setAttribute('height', '50')
+    rect.setAttribute('fill', '#abcdef')
+    svg.appendChild(rect)
+    // Park it in the DOM so the cloneNode + XMLSerializer path
+    // doesn't fall through to the html serializer fallback.
+    document.body.appendChild(svg)
+    return svg
+  }
+
+  let sock
+  let provider
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    _testing.reset()
+    sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({})
+    sock.open()
+    sock.receive(
+      env('welcome', 'response', {
+        server_version: '1.0',
+        registered_clients: ['view'],
+      }),
+    )
+    provider = () => makeFakeSvg()
+    registerSvgProvider(provider)
+  })
+  afterEach(() => {
+    unregisterSvgProvider(provider)
+    _testing.reset()
+  })
+
+  it('responds with format=svg and base64 bytes when SVG requested', async () => {
+    const reqId = '11111111-1111-4111-8111-111111111111'
+    const sentBefore = sock.sent.length
+    sock.receive({
+      v: 1,
+      id: reqId,
+      origin: 'cli',
+      kind: 'request',
+      type: 'view_capture',
+      payload: { format: 'svg' },
+    })
+    // The handler is async — let microtasks drain so the response send
+    // lands in sock.sent before we inspect it.
+    await new Promise((r) => setTimeout(r, 0))
+    const out = sock.sent.slice(sentBefore).map((s) => JSON.parse(s))
+    const resp = out.find((e) => e.type === 'view_capture' && e.kind === 'response')
+    expect(resp).toBeDefined()
+    expect(resp.id).toBe(reqId) // correlation: same id back
+    expect(resp.origin).toBe('view')
+    expect(resp.payload.format).toBe('svg')
+    expect(resp.payload.width).toBe(100)
+    expect(resp.payload.height).toBe(50)
+    expect(typeof resp.payload.bytes_b64).toBe('string')
+    expect(resp.payload.bytes_b64.length).toBeGreaterThan(0)
+    // The decoded body should be SVG markup containing the rect we added.
+    const decoded = atob(resp.payload.bytes_b64)
+    expect(decoded).toContain('<svg')
+    expect(decoded).toContain('#abcdef')
+  })
+
+  it('responds with kind=error when no SVG is registered', async () => {
+    unregisterSvgProvider(provider)
+    const reqId = '22222222-2222-4222-8222-222222222222'
+    const sentBefore = sock.sent.length
+    sock.receive({
+      v: 1,
+      id: reqId,
+      origin: 'cli',
+      kind: 'request',
+      type: 'view_capture',
+      payload: { format: 'svg' },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    const out = sock.sent.slice(sentBefore).map((s) => JSON.parse(s))
+    const err = out.find((e) => e.kind === 'error')
+    expect(err).toBeDefined()
+    expect(err.id).toBe(reqId)
+    expect(err.payload.code).toBe('bad_request')
+    expect(err.payload.message).toMatch(/no graph rendered/i)
+  })
+
+  it('ignores view_capture envelopes whose kind is not request', async () => {
+    const sentBefore = sock.sent.length
+    sock.receive({
+      v: 1,
+      id: '33333333-3333-4333-8333-333333333333',
+      origin: 'cli',
+      kind: 'event',
+      type: 'view_capture',
+      payload: {},
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    // No new envelope sent — wrong-kind capture is a silent drop, not
+    // an error reply (responses to non-requests would loop).
+    expect(sock.sent.length).toBe(sentBefore)
   })
 })
