@@ -29,6 +29,96 @@
 import { defineStore } from 'pinia'
 import { parseViewJson } from './parse.js'
 
+
+// -------------------------------------------------------------------
+// Diagnostic → node mapping
+// -------------------------------------------------------------------
+//
+// The v1 ``diagnostics_set`` payload carries each item with at least
+// ``{ file, line, col, severity, message }``. Producers MAY also
+// attach an ``instance_path`` hint for fast-path matching (the hub
+// doesn't strip it from forwarded events). To render badges on the
+// schematic we need to map each item to one of the nodes currently
+// loaded in the graph.
+//
+// Strategy, in priority order:
+//
+//   1. ``item.instance_path`` literal → if it names a known node,
+//      use it. No file lookup needed.
+//   2. File+line range → walk every node whose ``source.file``
+//      matches and whose ``[start_line, end_line]`` range contains
+//      ``item.line``, then pick the *deepest* match (the smallest
+//      enclosing range). "Deepest" because nested instances at the
+//      same source produce overlapping ranges; the most specific
+//      one is what the producer almost certainly meant.
+//   3. No match → null (item still appears in the DiagnosticsPanel
+//      sidebar; it just doesn't anchor to a canvas node).
+//
+// The line range in ``node.source`` is the *instantiation site* in
+// the parent module's file, not the instantiated module's body.
+// A diagnostic at e.g. ``rtl/fifo.sv:142`` matches the instance
+// whose declaration spans line 142 in ``rtl/fifo.sv`` — which works
+// for issues reported against an instance declaration but not for
+// issues reported against the module body unless the producer also
+// hands in ``instance_path``.
+
+function _resolveDiagnosticItemToNodeId(item, nodesByFile, nodeIdSet) {
+  if (typeof item?.instance_path === 'string' && item.instance_path) {
+    return nodeIdSet.has(item.instance_path) ? item.instance_path : null
+  }
+  if (typeof item?.file !== 'string' || !item.file) return null
+  const candidates = nodesByFile.get(item.file)
+  if (!candidates || candidates.length === 0) return null
+  const line = typeof item?.line === 'number' ? item.line : null
+  if (line === null) return null
+  let bestId = null
+  let bestSpan = Infinity
+  for (const n of candidates) {
+    const s = n.source
+    if (!s) continue
+    if (typeof s.start_line !== 'number' || typeof s.end_line !== 'number') continue
+    if (line < s.start_line || line > s.end_line) continue
+    const span = s.end_line - s.start_line
+    if (span < bestSpan) {
+      bestSpan = span
+      bestId = n.id
+    }
+  }
+  return bestId
+}
+
+// Build the (file → nodes) index once per ``diagnosticsByNode`` read.
+// The graph is mutated wholesale on load so we don't cache across
+// reads — the work is O(nodes) and the call cadence is gated by
+// Vue's reactivity (only fires when ``diagnosticsBySource`` or
+// ``graph`` actually changes).
+function _diagnosticsByNode(state) {
+  const out = {}
+  if (!state.graph || !state.graph.nodes) return out
+  const nodesByFile = new Map()
+  const nodeIdSet = new Set()
+  for (const n of state.graph.nodes) {
+    nodeIdSet.add(n.id)
+    const f = n?.source?.file
+    if (!f) continue
+    let arr = nodesByFile.get(f)
+    if (!arr) {
+      arr = []
+      nodesByFile.set(f, arr)
+    }
+    arr.push(n)
+  }
+  for (const [source, items] of Object.entries(state.diagnosticsBySource)) {
+    for (const item of items) {
+      const nodeId = _resolveDiagnosticItemToNodeId(item, nodesByFile, nodeIdSet)
+      if (nodeId === null) continue
+      if (!out[nodeId]) out[nodeId] = []
+      out[nodeId].push({ source, ...item })
+    }
+  }
+  return out
+}
+
 export const useViewerStore = defineStore('viewer', {
   state: () => ({
     graph: null,
@@ -139,22 +229,15 @@ export const useViewerStore = defineStore('viewer', {
       state.graph ? state.graph.overlays_present : [],
     diagnosticsForNode: (state) => (nodeId) => {
       // Flatten diagnostics across all sources that reference this
-      // node. The wire uses absolute paths (file:line); for the
-      // viewer we key on the rtl-buddy-cdc-style optional
-      // `instance_path` field embedded in the item if present. The
-      // hub doesn't enforce that yet, so this getter returns an
-      // empty list when the producer is path-only.
+      // node. Producers may attach an optional ``instance_path``
+      // field to each item for fast-path matching; otherwise we
+      // resolve via the file+line range carried by every item per
+      // the v1 protocol's ``diagnostics_set`` shape (§3).
       if (!nodeId) return []
-      const out = []
-      for (const [source, items] of Object.entries(state.diagnosticsBySource)) {
-        for (const item of items) {
-          if (item.instance_path === nodeId) {
-            out.push({ source, ...item })
-          }
-        }
-      }
-      return out
+      const byNode = _diagnosticsByNode(state)
+      return byNode[nodeId] ? byNode[nodeId].slice() : []
     },
+    diagnosticsByNode: (state) => _diagnosticsByNode(state),
     diagnosticsFlat: (state) => {
       const out = []
       for (const [source, items] of Object.entries(state.diagnosticsBySource)) {

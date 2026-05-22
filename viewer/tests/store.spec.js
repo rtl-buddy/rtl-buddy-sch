@@ -457,4 +457,151 @@ describe('viewer store', () => {
       window.fetch = originalFetch
     }
   })
+
+  // ------------------------------------------------------------
+  // diagnosticsByNode — file+line → instance_path resolution
+  // ------------------------------------------------------------
+
+  function diagPayload() {
+    return {
+      schema_version: '1.0',
+      top: 'top',
+      nodes: [
+        {
+          id: 'top',
+          module: 'top',
+          is_blackbox: false,
+          parameters: {},
+          ports: [],
+          overlays: {},
+          source: { file: '/abs/parent.sv', start_line: 1, end_line: 200 },
+        },
+        {
+          id: 'top.u_dma',
+          module: 'dma',
+          is_blackbox: false,
+          parameters: {},
+          ports: [],
+          overlays: {},
+          source: { file: '/abs/parent.sv', start_line: 40, end_line: 60 },
+        },
+        {
+          id: 'top.u_dma.u_inner',
+          module: 'inner',
+          is_blackbox: false,
+          parameters: {},
+          ports: [],
+          overlays: {},
+          source: { file: '/abs/parent.sv', start_line: 50, end_line: 55 },
+        },
+        {
+          id: 'top.u_other',
+          module: 'other',
+          is_blackbox: false,
+          parameters: {},
+          ports: [],
+          overlays: {},
+          source: { file: '/abs/parent.sv', start_line: 100, end_line: 120 },
+        },
+      ],
+      edges: [],
+      overlays_present: [],
+    }
+  }
+
+  it('diagnosticsByNode honours item.instance_path fast path', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    store.applyDiagnostics('rtl-buddy-cdc', [
+      { instance_path: 'top.u_dma', file: '/elsewhere.sv', line: 9,
+        severity: 'warning', code: 'CDC-1', message: 'x' },
+    ])
+    expect(Object.keys(store.diagnosticsByNode)).toEqual(['top.u_dma'])
+    expect(store.diagnosticsByNode['top.u_dma'][0].source).toBe('rtl-buddy-cdc')
+  })
+
+  it('diagnosticsByNode resolves via file+line and prefers the deepest enclosing range', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    store.applyDiagnostics('claude-analysis', [
+      // line 52 is in [1,200], [40,60], and [50,55]. Deepest wins.
+      { file: '/abs/parent.sv', line: 52, col: 1,
+        severity: 'error', code: 'X', message: 'inside inner' },
+    ])
+    expect(Object.keys(store.diagnosticsByNode)).toEqual(['top.u_dma.u_inner'])
+  })
+
+  it('diagnosticsByNode skips items whose file matches no node', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    store.applyDiagnostics('claude-analysis', [
+      { file: '/nope.sv', line: 50, col: 1,
+        severity: 'info', code: 'X', message: 'unanchored' },
+    ])
+    expect(store.diagnosticsByNode).toEqual({})
+    // ...but the source still appears in the flat list.
+    expect(store.diagnosticsFlat).toHaveLength(1)
+  })
+
+  it('diagnosticsByNode skips items whose line falls outside every node range', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    store.applyDiagnostics('claude-analysis', [
+      { file: '/abs/parent.sv', line: 300, col: 1,
+        severity: 'info', code: 'X', message: 'out of range' },
+    ])
+    expect(store.diagnosticsByNode).toEqual({})
+  })
+
+  it('diagnosticsByNode groups multiple items on the same node', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    store.applyDiagnostics('rtl-buddy-cdc', [
+      { file: '/abs/parent.sv', line: 45, col: 1,
+        severity: 'warning', code: 'CDC-1', message: 'a' },
+      { file: '/abs/parent.sv', line: 46, col: 1,
+        severity: 'error', code: 'CDC-2', message: 'b' },
+    ])
+    store.applyDiagnostics('claude-analysis', [
+      { instance_path: 'top.u_dma', file: '/x', line: 1,
+        severity: 'info', code: 'X', message: 'c' },
+    ])
+    expect(store.diagnosticsByNode['top.u_dma']).toHaveLength(3)
+    const sources = store.diagnosticsByNode['top.u_dma'].map((d) => d.source)
+    expect(sources.sort()).toEqual(['claude-analysis', 'rtl-buddy-cdc', 'rtl-buddy-cdc'])
+  })
+
+  it('diagnosticsByNode treats instance_path matching a non-existent node as no match', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    store.applyDiagnostics('rtl-buddy-cdc', [
+      { instance_path: 'top.u_ghost', file: '/abs/parent.sv', line: 9999,
+        severity: 'warning', code: 'X', message: 'stale' },
+    ])
+    expect(store.diagnosticsByNode).toEqual({})
+  })
+
+  it('diagnosticsForNode reflects the new resolver', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    store.applyDiagnostics('claude-analysis', [
+      { file: '/abs/parent.sv', line: 110, col: 1,
+        severity: 'warning', code: 'X', message: 'inside u_other' },
+    ])
+    expect(store.diagnosticsForNode('top.u_other')).toHaveLength(1)
+    expect(store.diagnosticsForNode('top.u_other')[0].message).toBe('inside u_other')
+    expect(store.diagnosticsForNode('top.u_dma')).toEqual([])
+  })
+
+  it('cleared sources (empty items) leave the node empty', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    store.applyDiagnostics('rtl-buddy-cdc', [
+      { file: '/abs/parent.sv', line: 45, col: 1,
+        severity: 'warning', code: 'CDC-1', message: 'a' },
+    ])
+    expect(store.diagnosticsByNode['top.u_dma']).toHaveLength(1)
+    store.applyDiagnostics('rtl-buddy-cdc', [])
+    expect(store.diagnosticsByNode).toEqual({})
+  })
 })

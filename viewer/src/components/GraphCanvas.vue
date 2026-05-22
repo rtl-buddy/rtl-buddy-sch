@@ -37,6 +37,20 @@
       <button type="button" @click="resetView">Reset</button>
     </div>
     <div class="svg-host" ref="svgHostEl"></div>
+    <!-- Diagnostics badges overlaid on the canvas. Position-only
+         pass; the badge component itself owns hover-expand UX. The
+         layer is pointer-events: none so it doesn't steal pan
+         drags; each badge re-enables pointer events on itself. -->
+    <div class="badge-layer" aria-hidden="false">
+      <NodeBadge
+        v-for="b in nodeBadges"
+        :key="b.nodeId"
+        :node-id="b.nodeId"
+        :items="b.items"
+        :style="{ left: b.x + 'px', top: b.y + 'px' }"
+        @select="onBadgeSelect(b.nodeId)"
+      />
+    </div>
   </main>
 </template>
 
@@ -56,6 +70,7 @@ import { layoutGraph, layoutDot } from '../layout/viz.js'
 import { buildBlockFlowDot } from '../layout/blockFlow.js'
 import { applyOverlays } from '../overlays/index.js'
 import { useHub } from '../composables/useHub.js'
+import NodeBadge from './NodeBadge.vue'
 
 const store = useViewerStore()
 const hub = useHub()
@@ -63,6 +78,12 @@ const svgHostEl = ref(null)
 const canvasEl = ref(null)
 const transform = ref({ x: 0, y: 0, scale: 1 })
 let _svgEl = null
+// Bumped after every renderSvg run. ``_svgEl`` is a let-binding,
+// not a ref, so reactive consumers (the NodeBadge position
+// computed) need a separate signal to know the underlying SVG
+// elements have just been replaced wholesale and any previously
+// cached bboxes are stale.
+const svgVersion = ref(0)
 
 const graph = computed(() => store.displayGraph)
 const flowTabTitle = computed(() =>
@@ -169,6 +190,9 @@ async function renderSvg() {
   }
   applyOverlays(_svgEl, graph.value, store.enabledOverlays)
   applySelectionHighlight(store.selection)
+  // Signal to the badge-position computed that the underlying SVG
+  // has just been re-rendered — previously cached bboxes are stale.
+  svgVersion.value += 1
   // Defer to next frame so flex layout has settled and the host
   // rect is its final size before we compute the fit scale.
   requestAnimationFrame(fitToWindow)
@@ -283,6 +307,62 @@ function zoomToElement(el) {
   }
   applyTransform()
 }
+
+// ---------------------------------------------------------------
+// Diagnostics badge layer
+// ---------------------------------------------------------------
+//
+// One badge per node that has at least one diagnostic mapped to
+// it by the store (file+line → node, with ``instance_path`` fast
+// path). Position is computed in screen-space against the current
+// canvas transform; depends on:
+//
+//   - store.diagnosticsByNode  (what to show)
+//   - transform.value          (pan + zoom)
+//   - svgVersion               (force recompute after re-render)
+//
+// Skips badges whose anchor falls outside the visible host rect —
+// off-screen DOM elements aren't free, and a 6×6 dot at (-50, 200)
+// just spends layout budget for nothing the user can see.
+
+function onBadgeSelect(nodeId) {
+  store.select(nodeId)
+}
+
+const nodeBadges = computed(() => {
+  // Touching svgVersion here ties the computed to renderSvg's
+  // bump so a fresh layout re-queries the bboxes.
+  // eslint-disable-next-line no-unused-expressions
+  svgVersion.value
+  if (!_svgEl || !svgHostEl.value) return []
+  const byNode = store.diagnosticsByNode
+  const out = []
+  const rect = svgHostEl.value.getBoundingClientRect()
+  const { x: tx, y: ty, scale } = transform.value
+  for (const [nodeId, items] of Object.entries(byNode)) {
+    if (!items || items.length === 0) continue
+    const el = _svgEl.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`)
+    if (!el) continue
+    let bb
+    try {
+      bb = el.getBBox()
+    } catch {
+      continue
+    }
+    if (!bb || !bb.width || !bb.height) continue
+    // Anchor at the top-right corner of the bbox in screen-space.
+    const x = (bb.x + bb.width) * scale + tx
+    const y = bb.y * scale + ty
+    // Cull when the anchor lands fully outside the visible host.
+    // Allow a 24px margin so a badge anchored just at the edge
+    // still pops with its translate(-50%,-50%) pivot intact.
+    if (x < -24 || y < -24 || x > rect.width + 24 || y > rect.height + 24) {
+      continue
+    }
+    out.push({ nodeId, items, x, y })
+  }
+  return out
+})
 
 function nodeFromEvent(e) {
   // ``g.cluster`` is the cluster-tree wrapper; ``g.node`` the leaf
@@ -753,6 +833,23 @@ onBeforeUnmount(() => {
   cursor: grab;
 }
 .svg-host:active { cursor: grabbing; }
+
+/* Diagnostics badge overlay. Positioned at the same origin as the
+   .svg-host (both fill .graph-canvas, which is the positioning
+   parent). The layer itself is transparent to mouse events so it
+   doesn't intercept pan drags — each <NodeBadge> child re-enables
+   pointer events on itself. */
+.badge-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Keep the layer above the SVG but below the floating toolbars
+     (.canvas-tabs / .graph-toolbar both run z-index 10). */
+  z-index: 5;
+}
+.badge-layer > * {
+  pointer-events: auto;
+}
 .svg-host > svg {
   width: 100%;
   height: 100%;
