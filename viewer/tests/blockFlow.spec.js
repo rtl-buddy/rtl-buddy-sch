@@ -95,12 +95,25 @@ describe('buildBlockFlowDot', () => {
     expect(dot).not.toContain('"_in_clk"')
   })
 
-  it('falls back to a placeholder digraph when scope has no children', () => {
+  it('renders a leaf scope as a single box with its declared ports', () => {
+    // u_a is a leaf in this fixture (no children). Previously the
+    // block-flow view bailed out with "X has no children" — but
+    // hier-view still shows ports for leaves, so block-flow now
+    // matches: render the scope as a single HTML-table box with
+    // its inputs / outputs labelled.
     const dot = buildBlockFlowDot(makeGraph(), 'top.u_a')
-    // u_a is a leaf in this fixture — render a placeholder so
-    // viz.js doesn't choke on an empty digraph body.
-    expect(dot).toMatch(/digraph block_flow_empty/)
-    expect(dot).toMatch(/has no children/)
+    expect(dot).toMatch(/digraph block_flow_leaf/)
+    // u_a's ports include d_in (input) and q (output); clk is also
+    // there and we keep it (matches hier-view).
+    expect(dot).toContain('"top.u_a"')
+    expect(dot).toContain('>d_in<')
+    expect(dot).toContain('>q<')
+    expect(dot).toContain('>clk<')
+    // Port cells retain the click identity so right-click open-source
+    // still works for leaves.
+    expect(dot).toContain('bf-in:top.u_a:d_in')
+    expect(dot).toContain('bf-out:top.u_a:q')
+    expect(dot).toContain('bf-ctr:top.u_a')
   })
 
   it('falls back to a placeholder when scope id is unknown', () => {
