@@ -190,6 +190,38 @@ function applySelectionHighlight(selectedId) {
   }
 }
 
+// Block-flow edges are emitted with port-decorated endpoints
+// (``"top.u_a":q:e -> "top.u_b":d_in:w``). renderSvg splits each
+// edge's <title> on ``->`` and stamps ``data-edge-from`` /
+// ``data-edge-to`` with the raw decorated strings, so we can find
+// every edge incident on a given port by prefix-matching
+// ``<nodeId>:<portName>:`` against both sides. The CSS rule on
+// ``[data-rb-edge-highlighted]`` paints the matching edge path in
+// amber so the user can trace the connection visually after
+// clicking a port cell.
+function clearEdgeHighlight() {
+  if (!_svgEl) return
+  for (const el of _svgEl.querySelectorAll('[data-rb-edge-highlighted]')) {
+    el.removeAttribute('data-rb-edge-highlighted')
+  }
+}
+
+function highlightEdgesForPort(nodeId, portName) {
+  if (!_svgEl || !nodeId || !portName) return
+  // The decorated form is ``<nodeId>:<portName>:<compass>`` — add
+  // the trailing colon to the prefix so we don't accidentally
+  // match an unrelated port whose name starts with ``portName``
+  // (e.g. ``d_in`` shouldn't match ``d_in_ready``).
+  const prefix = `${nodeId}:${portName}:`
+  for (const edge of _svgEl.querySelectorAll('g.edge[data-edge-from], g.edge[data-edge-to]')) {
+    const from = edge.getAttribute('data-edge-from') || ''
+    const to = edge.getAttribute('data-edge-to') || ''
+    if (from.startsWith(prefix) || to.startsWith(prefix)) {
+      edge.setAttribute('data-rb-edge-highlighted', 'true')
+    }
+  }
+}
+
 watch(graph, renderSvg)
 // Tab switch + scope drill-down trigger a full re-layout. Both
 // produce a different DOT, so the SVG must be rebuilt.
@@ -358,12 +390,16 @@ function onClick(e) {
   // focus, button = navigate. Descending into a block is owned by
   // NodeDetail's "Descend" button (which routes through
   // store.descend(id), view-mode-aware).
-  //   - port cell  → pan view to the peer (driver / sink)
+  //   - port cell  → pan view to the peer + highlight the
+  //                  connecting edge(s) for that port
   //   - centre     → select the block (populates NodeDetail)
   // ``HREF`` on the HTML-table cell makes viz.js wrap the cell in
   // an ``<a>`` with a relative href — without preventDefault the
   // browser would try to navigate to ``bf-in:...``.
   const bfHit = blockFlowHitFromEvent(e)
+  // Reset any previous port-edge highlight on every click so it
+  // doesn't accumulate as the user clicks around.
+  clearEdgeHighlight()
   if (bfHit) {
     e.preventDefault()
     if (bfHit.kind === 'block_center') {
@@ -372,6 +408,7 @@ function onClick(e) {
       if (node) hub.notifyClick(node)
       return
     }
+    highlightEdgesForPort(bfHit.nodeId, bfHit.portName)
     const peerEl = findFlowPeerSvgEl(bfHit)
     if (peerEl) panToElement(peerEl)
     return
@@ -673,6 +710,21 @@ onBeforeUnmount(() => {
 .svg-host :deep(g.cluster),
 .svg-host :deep([data-bf-id]) {
   cursor: pointer;
+}
+
+/* Port-edge highlight. Painted by ``highlightEdgesForPort`` when
+   the user clicks a port cell in block-flow view — marks every
+   edge incident on the clicked port (typically one, occasionally
+   two for inout / fanout) with ``data-rb-edge-highlighted``.
+   Amber so it doesn't collide with the blue selected-node accent
+   or the existing edge palette. */
+.svg-host :deep([data-rb-edge-highlighted]) path {
+  stroke: #f59e0b !important;
+  stroke-width: 2.5 !important;
+}
+.svg-host :deep([data-rb-edge-highlighted]) polygon {
+  fill: #f59e0b !important;
+  stroke: #f59e0b !important;
 }
 
 /* Selected-node accent. Painted by ``applySelectionHighlight``,
