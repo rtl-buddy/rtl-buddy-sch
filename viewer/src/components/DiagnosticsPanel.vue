@@ -35,10 +35,14 @@
 // store by source via `applyDiagnostics`; this panel just walks
 // that map and renders an entry per item.
 //
-// Clicking an item selects the matching node when the producer
-// embeds an `instance_path` (rtl-buddy-cdc does once
-// rtl-buddy-cdc#136 is wired through); otherwise the click is a
-// no-op pending a richer file+line dispatch path on the hub.
+// Clicking an item selects the matching node via the same resolver
+// the on-canvas badge layer uses (`store.nodeIdForDiagnosticItem`):
+//   1. fast path on `item.instance_path` when the producer
+//      attaches it,
+//   2. else file+line range → deepest enclosing instance.
+// `store.select` then triggers the standard pan+zoom+broadcast
+// pipeline, so a sidebar click brings the schematic into view at
+// the same node the badge marks.
 import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
 
@@ -46,9 +50,8 @@ const store = useViewerStore()
 const hasAny = computed(() => Object.keys(store.diagnosticsBySource).length > 0)
 
 function onClick(item) {
-  if (item?.instance_path) {
-    store.select(item.instance_path)
-  }
+  const nodeId = store.nodeIdForDiagnosticItem(item)
+  if (nodeId) store.select(nodeId)
 }
 </script>
 
