@@ -593,6 +593,40 @@ describe('viewer store', () => {
     expect(store.diagnosticsForNode('top.u_dma')).toEqual([])
   })
 
+  it('nodeIdForDiagnosticItem mirrors the diagnosticsByNode resolver', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    // file+line → deepest range
+    expect(
+      store.nodeIdForDiagnosticItem({ file: '/abs/parent.sv', line: 52 }),
+    ).toBe('top.u_dma.u_inner')
+    // instance_path fast path
+    expect(
+      store.nodeIdForDiagnosticItem({
+        instance_path: 'top.u_other',
+        file: '/elsewhere',
+        line: 9,
+      }),
+    ).toBe('top.u_other')
+    // ghost instance_path falls through to file+line — and matches nothing
+    expect(
+      store.nodeIdForDiagnosticItem({
+        instance_path: 'top.u_ghost',
+        file: '/nope.sv',
+        line: 1,
+      }),
+    ).toBeNull()
+    // out-of-range line → no match
+    expect(
+      store.nodeIdForDiagnosticItem({ file: '/abs/parent.sv', line: 999 }),
+    ).toBeNull()
+    // no graph loaded → null without crashing
+    store.$reset()
+    expect(
+      store.nodeIdForDiagnosticItem({ file: '/abs/parent.sv', line: 52 }),
+    ).toBeNull()
+  })
+
   it('cleared sources (empty items) leave the node empty', () => {
     const store = useViewerStore()
     store.loadFromText(JSON.stringify(diagPayload()))

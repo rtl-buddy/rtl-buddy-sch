@@ -238,6 +238,29 @@ export const useViewerStore = defineStore('viewer', {
       return byNode[nodeId] ? byNode[nodeId].slice() : []
     },
     diagnosticsByNode: (state) => _diagnosticsByNode(state),
+    nodeIdForDiagnosticItem: (state) => (item) => {
+      // Used by surfaces that present a clickable diagnostic (the
+      // DiagnosticsPanel sidebar list, future inline hover popovers,
+      // etc.). Mirrors the resolver `diagnosticsByNode` uses — same
+      // priority order, same deepest-range tiebreak — so clicking a
+      // sidebar item lands on the same node its on-canvas badge
+      // anchors to.
+      if (!state.graph || !item) return null
+      const nodesByFile = new Map()
+      const nodeIdSet = new Set()
+      for (const n of state.graph.nodes) {
+        nodeIdSet.add(n.id)
+        const f = n?.source?.file
+        if (!f) continue
+        let arr = nodesByFile.get(f)
+        if (!arr) {
+          arr = []
+          nodesByFile.set(f, arr)
+        }
+        arr.push(n)
+      }
+      return _resolveDiagnosticItemToNodeId(item, nodesByFile, nodeIdSet)
+    },
     diagnosticsFlat: (state) => {
       const out = []
       for (const [source, items] of Object.entries(state.diagnosticsBySource)) {
