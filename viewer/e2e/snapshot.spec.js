@@ -58,10 +58,13 @@ for (const { name } of CASES) {
     test('renders one SVG <g.node> per view.json node', async ({ page }) => {
       const svg = page.locator('svg').first()
       await expect(svg).toBeVisible({ timeout: 30_000 })
-      // viz.js renders one ``g.node`` per input node and one
-      // ``g.edge`` per input edge — pinned by the issue's
-      // acceptance criterion.
-      await expect(page.locator('g.node')).toHaveCount(expectedNodeCount)
+      // viz.js renders one ``g.node`` per input node. The design
+      // top is rendered as ``g.cluster`` (with a labelled frame),
+      // not ``g.node``, so the per-input-node count is the sum of
+      // both with a ``data-node-id`` stamped by GraphCanvas.
+      await expect(
+        page.locator('g.node, g.cluster[data-node-id]'),
+      ).toHaveCount(expectedNodeCount)
       if (expectedEdgeCount > 0) {
         await expect(page.locator('g.edge')).toHaveCount(expectedEdgeCount)
       }
@@ -70,9 +73,11 @@ for (const { name } of CASES) {
     test('every node has a data-node-id matching a view.json id', async ({ page }) => {
       const svg = page.locator('svg').first()
       await expect(svg).toBeVisible({ timeout: 30_000 })
-      const ids = await page.locator('g.node').evaluateAll((els) =>
-        els.map((el) => el.getAttribute('data-node-id')),
-      )
+      const ids = await page
+        .locator('g.node, g.cluster[data-node-id]')
+        .evaluateAll((els) =>
+          els.map((el) => el.getAttribute('data-node-id')),
+        )
       const expected = new Set(payload.nodes.map((n) => n.id))
       for (const id of ids) {
         expect(expected.has(id)).toBe(true)

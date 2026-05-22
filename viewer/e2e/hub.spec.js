@@ -221,10 +221,15 @@ test.describe('Phase 10d hub wiring', () => {
     // The pill should not be 'ready'.
     await expect(page.locator('.hub-status')).not.toHaveAttribute('data-state', 'ready')
 
-    // Click a node that has a link.
+    // Click a node that has a link. The design top is rendered as
+    // ``g.cluster`` rather than ``g.node`` when graphToDot frames it
+    // with a labelled cluster_top; both carry ``data-node-id``.
     const linked = PAYLOAD.nodes.find((n) => n.link)
     if (linked) {
-      await page.locator(`g.node[data-node-id="${linked.id}"]`).first().click()
+      await page
+        .locator(`g.node[data-node-id="${linked.id}"], g.cluster[data-node-id="${linked.id}"]`)
+        .first()
+        .click()
       await expect.poll(async () => {
         return await page.evaluate(() => window.__opened__?.length || 0)
       }, { timeout: 5_000 }).toBeGreaterThan(0)
