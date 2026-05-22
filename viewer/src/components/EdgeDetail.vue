@@ -32,7 +32,24 @@
           </ul>
         </dd>
       </template>
-      <template v-for="(payload, name) in edge.overlays" :key="name">
+      <template v-if="cdcCrossings.length">
+        <dt>CDC crossings</dt>
+        <dd>
+          <table class="cdc-table">
+            <thead>
+              <tr><th>src clock</th><th>→ dst clock</th><th class="num">flops</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(p, idx) in cdcCrossings" :key="idx">
+                <td><code>{{ p.src_clock }}</code></td>
+                <td><code>{{ p.dst_clock }}</code></td>
+                <td class="num">{{ p.flops }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </dd>
+      </template>
+      <template v-for="(payload, name) in otherOverlays" :key="name">
         <dt>overlay: {{ name }}</dt>
         <dd><pre>{{ JSON.stringify(payload, null, 2) }}</pre></dd>
       </template>
@@ -56,6 +73,24 @@ const hasPortPairs = computed(
 const hasOverlays = computed(
   () => edge.value && edge.value.overlays && Object.keys(edge.value.overlays).length > 0,
 )
+// CDC pairs come from the ``clock`` overlay's ``pairs`` array
+// (json_render.py:_clock_edge_contribution). Render them in a
+// dedicated table instead of the generic ``JSON.stringify`` fallback
+// so users can read the src→dst-clock mapping at a glance.
+const cdcCrossings = computed(() => {
+  const ov = edge.value?.overlays?.clock
+  if (!ov || !Array.isArray(ov.pairs)) return []
+  return ov.pairs
+})
+// Suppress the ``clock`` overlay from the generic JSON dump when
+// it's already rendered as the CDC table above — keeps the panel
+// from showing the same data twice.
+const otherOverlays = computed(() => {
+  const all = edge.value?.overlays || {}
+  if (!cdcCrossings.value.length) return all
+  const { clock: _consumed, ...rest } = all
+  return rest
+})
 </script>
 
 <style scoped>

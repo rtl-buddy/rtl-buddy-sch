@@ -24,6 +24,11 @@
           class="server-version"
           :title="`rtl-buddy ${hub.serverVersion.value}`"
         >rtl-buddy <code>{{ shortVersion }}</code></span>
+        <span
+          v-if="bundleHash"
+          class="server-version bundle-hash"
+          :title="`SPA bundle index-${bundleHash}.js`"
+        >spa <code>{{ bundleHash }}</code></span>
         <HubStatus />
       </div>
     </header>
@@ -159,6 +164,22 @@ const shortVersion = computed(() => {
   const m = raw.match(/^[0-9]+\.[0-9]+\.[0-9]+(?:\.[a-z0-9]+)?/i)
   return m ? m[0] : raw
 })
+
+// Extract the SPA bundle hash from the loaded ``index-<hash>.js``
+// filename so the user can confirm which build they're on (handy
+// when an editable-install hub re-stages the bundle but the
+// browser tab might still be on the old one). Empty under the
+// Vite dev server (no hashed asset) or the offline embed flow —
+// both surface as "no chip".
+function readBundleHash() {
+  if (typeof document === 'undefined') return ''
+  for (const s of document.querySelectorAll('script[src]')) {
+    const m = s.src.match(/index-([\w-]+)\.js/)
+    if (m) return m[1]
+  }
+  return ''
+}
+const bundleHash = readBundleHash()
 
 function onPickFile(event) {
   const file = event.target.files && event.target.files[0]

@@ -66,7 +66,7 @@
 // layout step and so click handlers can recover the model node.
 import { computed, onMounted, ref, watch, onBeforeUnmount } from 'vue'
 import { useViewerStore } from '../store.js'
-import { layoutGraph, layoutDot } from '../layout/viz.js'
+import { layoutGraph, layoutDot, clusterIdFor } from '../layout/viz.js'
 import { buildBlockFlowDot } from '../layout/blockFlow.js'
 import { applyOverlays } from '../overlays/index.js'
 import { useHub } from '../composables/useHub.js'
@@ -158,12 +158,32 @@ async function renderSvg() {
   // the cluster-tree layout switch).
   const clusterLookup =
     (graph.value && graph.value.layout && graph.value.layout.cluster_lookup) || null
+  const graphTop = graph.value?.top
+  // For the graphToDot path (no embedded layout), the cluster name
+  // is ``clusterIdFor(instance_path)``; build a reverse map over the
+  // current graph's nodes so any g.cluster whose title matches a
+  // known node gets ``data-node-id`` stamped.
+  let synthClusterLookup = null
+  if (!clusterLookup && graph.value?.nodes) {
+    synthClusterLookup = new Map()
+    for (const n of graph.value.nodes) {
+      synthClusterLookup.set(clusterIdFor(n.id), n.id)
+    }
+  }
   for (const group of _svgEl.querySelectorAll('g.cluster')) {
     const titleEl = group.querySelector('title')
     if (!titleEl) continue
     const clusterId = titleEl.textContent
     if (clusterLookup && clusterLookup[clusterId]) {
       group.setAttribute('data-node-id', clusterLookup[clusterId])
+    } else if (clusterId === 'cluster_top' && graphTop) {
+      // ``graphToDot`` wraps the scope root in ``cluster_top``
+      // regardless of its sanitized id — map that to graph.top.
+      group.setAttribute('data-node-id', graphTop)
+    } else if (synthClusterLookup && synthClusterLookup.has(clusterId)) {
+      // Nested clusters from graphToDot: cluster name encodes the
+      // original instance path via ``clusterIdFor``.
+      group.setAttribute('data-node-id', synthClusterLookup.get(clusterId))
     }
   }
   for (const group of _svgEl.querySelectorAll('g.edge')) {
@@ -724,9 +744,22 @@ function fitToWindow() {
   applyTransform()
 }
 
+function onDoubleClick(e) {
+  // Double-click = descend into the clicked node. Skips edges /
+  // block-flow port cells (those have their own single-click
+  // behaviour we don't want to override). When the node is a leaf
+  // ``store.descend`` is a no-op so the action degrades safely.
+  const nodeHit = nodeFromEvent(e)
+  if (!nodeHit) return
+  e.preventDefault()
+  store.select(nodeHit.id)
+  store.descend(nodeHit.id)
+}
+
 onMounted(() => {
   if (svgHostEl.value) {
     svgHostEl.value.addEventListener('click', onClick)
+    svgHostEl.value.addEventListener('dblclick', onDoubleClick)
     svgHostEl.value.addEventListener('contextmenu', onContextMenu)
     svgHostEl.value.addEventListener('wheel', onWheel, { passive: false })
     svgHostEl.value.addEventListener('mousedown', onMouseDown)
@@ -738,6 +771,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (svgHostEl.value) {
     svgHostEl.value.removeEventListener('click', onClick)
+    svgHostEl.value.removeEventListener('dblclick', onDoubleClick)
     svgHostEl.value.removeEventListener('contextmenu', onContextMenu)
     svgHostEl.value.removeEventListener('wheel', onWheel)
     svgHostEl.value.removeEventListener('mousedown', onMouseDown)
