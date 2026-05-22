@@ -302,6 +302,24 @@ export function buildBlockFlowDot(graph, scopeId) {
     lines.push(`    ${dotId(child.id)} [${attrs.join(', ')}];`)
   }
 
+  // Each edge gets a stable ``id="bf-edge:<src>:<srcPort>:<dst>:<dstPort>"``
+  // attribute so the SPA's port-click highlight can find the edge
+  // directly. Graphviz strips port names from the edge ``<title>``
+  // (keeps only the compass point), so the title is useless as a
+  // lookup key. ``id`` propagates unchanged to the SVG, which is
+  // why we use it instead.
+  //
+  // Boundary edges encode the scope-anchor side with a leading
+  // ``_`` to distinguish from real child IDs:
+  //   _in_<net>  → leading underscore reserved for anchors
+  //   _out_<net>
+  const edgeIdForInternal = (drv, snk) =>
+    `bf-edge:${drv.child.id}:${drv.port.name}:${snk.child.id}:${snk.port.name}`
+  const edgeIdForInput = (net, child, port) =>
+    `bf-edge:_in_${net}::${child.id}:${port.name}`
+  const edgeIdForOutput = (net, child, port) =>
+    `bf-edge:${child.id}:${port.name}:_out_${net}:`
+
   // External signal-flow: scope input -> child sink, child driver -> scope output.
   const seenIn = new Set()
   const seenOut = new Set()
@@ -313,7 +331,8 @@ export function buildBlockFlowDot(graph, scopeId) {
       seenIn.add(key)
       lines.push(
         `    "_in_${net}" -> ${dotId(child.id)}:${port.name}:w ` +
-          `[color="#cbd5e1", penwidth=1.2, arrowsize=0.6, tailport=e];`,
+          `[id="${edgeIdForInput(net, child, port)}", ` +
+          `color="#cbd5e1", penwidth=1.2, arrowsize=0.6, tailport=e];`,
       )
     }
   }
@@ -325,7 +344,8 @@ export function buildBlockFlowDot(graph, scopeId) {
       seenOut.add(key)
       lines.push(
         `    ${dotId(child.id)}:${port.name}:e -> "_out_${net}" ` +
-          `[color="#cbd5e1", penwidth=1.2, arrowsize=0.6, headport=w];`,
+          `[id="${edgeIdForOutput(net, child, port)}", ` +
+          `color="#cbd5e1", penwidth=1.2, arrowsize=0.6, headport=w];`,
       )
     }
   }
@@ -346,7 +366,8 @@ export function buildBlockFlowDot(graph, scopeId) {
         lines.push(
           `    ${dotId(drv.child.id)}:${drv.port.name}:e -> ` +
             `${dotId(snk.child.id)}:${snk.port.name}:w ` +
-            `[label="${dotEscape(net)}", penwidth=1.2, arrowsize=0.7];`,
+            `[id="${edgeIdForInternal(drv, snk)}", ` +
+            `label="${dotEscape(net)}", penwidth=1.2, arrowsize=0.7];`,
         )
       }
     }

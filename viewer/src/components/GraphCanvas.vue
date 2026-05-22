@@ -15,16 +15,20 @@
         @click="store.setViewMode('flow')"
         :title="flowTabTitle"
       >Block Flow</button>
-      <span v-if="store.viewMode === 'flow'" class="flow-scope">
-        scope: <code>{{ store.flowScopeId || '(none)' }}</code>
-        <button
-          v-if="canAscendScope"
-          type="button"
-          class="flow-up"
-          @click="ascendScope"
-          title="Pop one level up — make this scope's parent the new flow scope"
-        >↑</button>
-      </span>
+      <nav v-if="store.viewMode === 'flow' && breadcrumb.length > 0" class="flow-breadcrumb" aria-label="Block-flow scope">
+        <span class="flow-scope-label">scope:</span>
+        <template v-for="(crumb, i) in breadcrumb" :key="crumb.path">
+          <span v-if="i > 0" class="crumb-sep" aria-hidden="true">/</span>
+          <button
+            type="button"
+            class="crumb"
+            :class="{ current: crumb.current }"
+            :disabled="crumb.current"
+            :title="crumb.current ? `Current scope: ${crumb.path}` : `Set scope to ${crumb.path}`"
+            @click="jumpToScope(crumb.path)"
+          >{{ crumb.label }}</button>
+        </template>
+      </nav>
     </div>
     <div class="graph-toolbar">
       <button type="button" @click="zoomIn">+</button>
@@ -72,11 +76,29 @@ const canAscendScope = computed(() => {
   if (!store.graph) return false
   return store.flowScopeId && store.flowScopeId !== store.graph.top
 })
-function ascendScope() {
-  // Flow-view scope is owned by the store now; ``ascend()`` is
-  // view-mode-aware and pops one level when in flow mode.
-  if (!canAscendScope.value) return
-  store.ascend()
+
+// Clickable breadcrumb path for the flow-view scope. Each segment
+// is a button that jumps the scope to that prefix; the trailing
+// (current) segment is rendered disabled. With one segment (the
+// design top) only the top crumb is shown.
+const breadcrumb = computed(() => {
+  if (store.viewMode !== 'flow' || !store.graph || !store.flowScopeId) return []
+  const segments = store.flowScopeId.split('.')
+  return segments.map((label, i) => {
+    const path = segments.slice(0, i + 1).join('.')
+    return { label, path, current: i === segments.length - 1 }
+  })
+})
+
+function jumpToScope(path) {
+  if (!path || !store.graph) return
+  // Top of design → clear the explicit scope so it falls back to
+  // ``graph.top`` via the getter.
+  if (path === store.graph.top) {
+    store.flowScope = null
+  } else {
+    store.flowScope = path
+  }
 }
 
 async function renderSvg() {
@@ -146,9 +168,61 @@ async function renderSvg() {
     }
   }
   applyOverlays(_svgEl, graph.value, store.enabledOverlays)
+  applySelectionHighlight(store.selection)
   // Defer to next frame so flex layout has settled and the host
   // rect is its final size before we compute the fit scale.
   requestAnimationFrame(fitToWindow)
+}
+
+// Mark the SVG element whose ``data-node-id`` matches the current
+// selection so CSS can give it a stroke/fill accent. Walks the
+// node + cluster sets so both hier-view clusters and flow-view
+// HTML-table cells light up correctly. Clears the previous mark
+// before painting a new one.
+function applySelectionHighlight(selectedId) {
+  if (!_svgEl) return
+  for (const el of _svgEl.querySelectorAll('[data-rb-selected]')) {
+    el.removeAttribute('data-rb-selected')
+  }
+  if (!selectedId) return
+  for (const el of _svgEl.querySelectorAll(`[data-node-id="${selectedId}"]`)) {
+    el.setAttribute('data-rb-selected', 'true')
+  }
+}
+
+// Block-flow edges carry a stable ``id="bf-edge:<src>:<srcPort>:
+// <dst>:<dstPort>"`` attribute emitted by blockFlow.js — Graphviz
+// strips port names from the edge ``<title>`` so the title is
+// useless for endpoint lookup, but ``id`` propagates verbatim.
+//
+// To find edges incident on a clicked port, we walk every
+// ``g.edge[id^="bf-edge:"]``, parse the id back into its four
+// components, and match against ``<nodeId>:<portName>`` on either
+// side. Match → stamp ``data-rb-edge-highlighted`` for CSS to
+// paint amber.
+function clearEdgeHighlight() {
+  if (!_svgEl) return
+  for (const el of _svgEl.querySelectorAll('[data-rb-edge-highlighted]')) {
+    el.removeAttribute('data-rb-edge-highlighted')
+  }
+}
+
+function highlightEdgesForPort(nodeId, portName) {
+  if (!_svgEl || !nodeId || !portName) return
+  const want = `${nodeId}:${portName}`
+  for (const edge of _svgEl.querySelectorAll('g.edge[id^="bf-edge:"]')) {
+    // ``bf-edge:<src>:<srcPort>:<dst>:<dstPort>`` — the leading
+    // ``bf-edge:`` is fixed; the rest is `src:srcPort:dst:dstPort`
+    // where src/dst are instance paths (contain ``.``, never ``:``).
+    const rest = edge.id.slice('bf-edge:'.length)
+    const parts = rest.split(':')
+    if (parts.length < 4) continue
+    const src = `${parts[0]}:${parts[1]}`
+    const dst = `${parts[2]}:${parts[3]}`
+    if (src === want || dst === want) {
+      edge.setAttribute('data-rb-edge-highlighted', 'true')
+    }
+  }
 }
 
 watch(graph, renderSvg)
@@ -158,6 +232,7 @@ watch(() => store.viewMode, renderSvg)
 watch(() => store.flowScopeId, () => {
   if (store.viewMode === 'flow') renderSvg()
 })
+watch(() => store.selection, (id) => applySelectionHighlight(id))
 watch(
   () => store.enabledOverlays,
   () => {
@@ -318,12 +393,16 @@ function onClick(e) {
   // focus, button = navigate. Descending into a block is owned by
   // NodeDetail's "Descend" button (which routes through
   // store.descend(id), view-mode-aware).
-  //   - port cell  → pan view to the peer (driver / sink)
+  //   - port cell  → pan view to the peer + highlight the
+  //                  connecting edge(s) for that port
   //   - centre     → select the block (populates NodeDetail)
   // ``HREF`` on the HTML-table cell makes viz.js wrap the cell in
   // an ``<a>`` with a relative href — without preventDefault the
   // browser would try to navigate to ``bf-in:...``.
   const bfHit = blockFlowHitFromEvent(e)
+  // Reset any previous port-edge highlight on every click so it
+  // doesn't accumulate as the user clicks around.
+  clearEdgeHighlight()
   if (bfHit) {
     e.preventDefault()
     if (bfHit.kind === 'block_center') {
@@ -332,8 +411,21 @@ function onClick(e) {
       if (node) hub.notifyClick(node)
       return
     }
-    const peerEl = findFlowPeerSvgEl(bfHit)
-    if (peerEl) panToElement(peerEl)
+    highlightEdgesForPort(bfHit.nodeId, bfHit.portName)
+    // Pan to the centre of the connecting edge — keeps both
+    // endpoints visible in the same shot, which is more useful
+    // than centring on just the peer port. ``getBBox`` on the
+    // edge group covers the path + arrowhead. Fall back to the
+    // peer-port pan when no edge is incident (e.g. an
+    // unconnected port within the current scope, or a port whose
+    // only connection is via the scope-boundary anchor).
+    const edgeEl = _svgEl?.querySelector('g.edge[data-rb-edge-highlighted]')
+    if (edgeEl) {
+      panToElement(edgeEl)
+    } else {
+      const peerEl = findFlowPeerSvgEl(bfHit)
+      if (peerEl) panToElement(peerEl)
+    }
     return
   }
   // Hier-view contract: node selects, edge selects.
@@ -563,24 +655,40 @@ onBeforeUnmount(() => {
   color: #ffffff;
   border-color: #1e293b;
 }
-.flow-scope {
+.flow-breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.15rem;
   font-size: 0.75rem;
-  color: #64748b;
   margin-left: 0.5rem;
+  color: #64748b;
 }
-.flow-scope code {
+.flow-scope-label {
+  margin-right: 0.15rem;
+}
+.crumb-sep {
+  color: #94a3b8;
+  padding: 0 0.05rem;
+}
+.crumb {
+  font: inherit;
   background: #f1f5f9;
-  padding: 0 0.3rem;
+  border: 1px solid transparent;
+  color: #1e293b;
+  padding: 0.05rem 0.35rem;
   border-radius: 3px;
-}
-.flow-up {
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  padding: 0 0.4rem;
   cursor: pointer;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  margin-left: 0.25rem;
+  font-family: ui-monospace, Menlo, monospace;
+}
+.crumb:hover:not(:disabled) {
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+}
+.crumb.current {
+  background: #1e293b;
+  color: #ffffff;
+  cursor: default;
 }
 .graph-toolbar {
   position: absolute;
@@ -617,5 +725,38 @@ onBeforeUnmount(() => {
 .svg-host :deep(g.cluster),
 .svg-host :deep([data-bf-id]) {
   cursor: pointer;
+}
+
+/* Port-edge highlight. Painted by ``highlightEdgesForPort`` when
+   the user clicks a port cell in block-flow view — marks every
+   edge incident on the clicked port (typically one, occasionally
+   two for inout / fanout) with ``data-rb-edge-highlighted``.
+   Amber so it doesn't collide with the blue selected-node accent
+   or the existing edge palette. */
+.svg-host :deep([data-rb-edge-highlighted]) path {
+  stroke: #f59e0b !important;
+  stroke-width: 2.5 !important;
+}
+.svg-host :deep([data-rb-edge-highlighted]) polygon {
+  fill: #f59e0b !important;
+  stroke: #f59e0b !important;
+}
+
+/* Selected-node accent. Painted by ``applySelectionHighlight``,
+   which stamps ``data-rb-selected`` on the SVG group whose
+   ``data-node-id`` matches the store's selection. Covers both
+   hier-view ``g.node`` polygons + flow-view HTML-table outer
+   tables. The thicker stroke is more visible across the wide
+   range of node fill colours overlays may apply. */
+.svg-host :deep([data-rb-selected]) > polygon,
+.svg-host :deep([data-rb-selected]) > path {
+  stroke: #2563eb;
+  stroke-width: 3 !important;
+}
+/* For HTML-table labels (block-flow boxes), the outer table is a
+   nested polygon — accent that one too. */
+.svg-host :deep([data-rb-selected] polygon:first-of-type) {
+  stroke: #2563eb;
+  stroke-width: 3 !important;
 }
 </style>
