@@ -185,14 +185,22 @@ export function buildBlockFlowDot(graph, scopeId) {
   lines.push('  edge [fontname="Courier,monospace"];')
   lines.push('')
   lines.push('  subgraph cluster_flow_scope {')
+  // Title shape mirrors the child boxes (instance name on top,
+  // module type below) — but when the two would be identical
+  // (typical for the design top, where ``instance_name`` is null
+  // and the fallback collapses to ``module``), emit one line to
+  // avoid the redundant "X / X" stack.
+  //
   // ``\l`` is the DOT left-aligned-newline marker. ``dotEscape``
   // doubles backslashes (correct for literal text but wrong for
-  // record metachars), so we escape the user-supplied identifiers
-  // FIRST and concatenate the ``\l`` afterwards — preserves the
-  // single-backslash form Graphviz expects.
-  const title =
-    `${dotEscape(scope.instance_name || scope.module)}\\l` +
-    `${dotEscape(scope.module)}\\l`
+  // record metachars), so escape the identifiers FIRST and
+  // concatenate ``\l`` afterwards.
+  const instName = scope.instance_name || ''
+  const titleLines =
+    instName && instName !== scope.module
+      ? [instName, scope.module]
+      : [scope.module]
+  const title = titleLines.map((l) => `${dotEscape(l)}\\l`).join('')
   lines.push(`    label="${title}";`)
   lines.push('    labelloc="t";')
   lines.push('    labeljust="l";')

@@ -113,16 +113,48 @@ describe('buildBlockFlowDot', () => {
     expect(dot).toMatch(/no scope selected/)
   })
 
-  it('emits the scope title with single-backslash \\l markers', () => {
+  it('emits the scope title with single-backslash \\l markers (not double-escaped)', () => {
     // Regression: ``dotEscape`` doubles backslashes. Wrapping the
     // whole title (including ``\l``) in dotEscape turned every
     // ``\l`` into ``\\l``, which Graphviz reads as a literal
     // backslash + l — the user saw "top\ltop\l" rendered in the
-    // SVG instead of two stacked lines.
+    // SVG instead of stacked lines.
     const dot = buildBlockFlowDot(makeGraph(), 'top')
-    // Look for the cluster's title line. ``label="…"`` with single
-    // backslashes — must NOT contain ``\\l``.
-    expect(dot).toMatch(/label="top\\ltop\\l"/)
+    // The cluster's ``label=…`` attribute must use single
+    // backslashes — never the doubled form.
     expect(dot).not.toMatch(/label="[^"]*\\\\l/)
+  })
+
+  it('collapses the title to one line when instance_name is null', () => {
+    // The design top in view.json has ``instance_name: null``; the
+    // fallback collapses to ``module`` and the two-line stack would
+    // be the same string twice. Emit one line instead.
+    const dot = buildBlockFlowDot(makeGraph(), 'top')
+    expect(dot).toMatch(/label="top\\l"/)
+    // No two-line repeat:
+    expect(dot).not.toMatch(/label="top\\ltop\\l"/)
+  })
+
+  it('emits two lines when instance_name differs from module', () => {
+    const g = makeGraph()
+    // Pretend the user descended into u_a; render with u_a as scope.
+    const dot = buildBlockFlowDot(g, 'top.u_a')
+    // u_a is a leaf in the fixture, so the canvas is the
+    // placeholder — but the scope's title resolution happens
+    // first, before the "no children" branch. Switch to a fixture
+    // where u_a has a child.
+    g.nodes.push({
+      id: 'top.u_a.sub',
+      module: 'subm',
+      instance_name: 'sub',
+      is_blackbox: false,
+      parameters: {},
+      ports: [],
+      overlays: {},
+    })
+    const dot2 = buildBlockFlowDot(g, 'top.u_a')
+    // u_a's view.json entry has ``instance_name: 'u_a'`` and
+    // ``module: 'a_mod'`` (per makeGraph fixture).
+    expect(dot2).toMatch(/label="u_a\\la_mod\\l"/)
   })
 })
