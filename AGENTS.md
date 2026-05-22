@@ -154,6 +154,40 @@ layouts — the `inner_dir_template` field encodes both. When bumping
 the version, verify both platforms unpack correctly (CI is Linux;
 test macOS locally) before merging.
 
+### Editable install / live SPA rebuild
+
+`rb hub start --serve-viewer` (in the sibling `rtl_buddy` repo)
+loads the Vue SPA from `src/rtl_buddy_view/_viewer_bundle/` via
+`importlib.resources`. For a **wheel install**, that directory is
+baked in by `prebuild_viewer.py` at package time — users get a
+served SPA without ever touching npm.
+
+For an **editable install** (`uv pip install -e .` from this repo,
+or a sibling checkout that `rtl_buddy` imports against), Python
+resolves to *this* source tree at runtime — so the served SPA is
+whatever is staged in `_viewer_bundle/` *right now*. Two
+consequences:
+
+1. `_viewer_bundle/` is **gitignored**. A `git pull` updates
+   `viewer/src/**` but does **not** update the staged bundle —
+   the hub will keep serving the old SPA until you re-stage.
+2. After any pull that touches `viewer/`, or any local edit you
+   want the hub to pick up, run:
+
+```bash
+npm --prefix viewer run build                            # Vite → viewer/dist/
+uv run python scripts/prebuild_viewer.py --skip-npm      # stage → _viewer_bundle/
+```
+
+`--skip-npm` is fine when you just ran `npm run build` yourself;
+omit it to let `prebuild_viewer.py` do the full `npm ci && npm run
+build` from scratch. The stage step is idempotent.
+
+Symptom of forgetting this step: a hard-refreshed viewer at
+`http://127.0.0.1:<port>/` shows behaviour from a previous commit
+even though `git log` says the fix is in. The browser cache is not
+the culprit — the bundle on disk is stale.
+
 ## Adding a renderer
 
 Renderers live under `src/rtl_buddy_view/render/` and follow a fixed
