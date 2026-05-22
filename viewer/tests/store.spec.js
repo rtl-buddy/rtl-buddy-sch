@@ -198,4 +198,179 @@ describe('viewer store', () => {
     await store.bootstrap()
     expect(store.status).toBe('idle')
   })
+
+  // ---------------------------------------------------------------------------
+  // Model picker (rtl-buddy-view#72 Part 2 / rtl_buddy#174)
+  // ---------------------------------------------------------------------------
+
+  function mockFetch(responses) {
+    // ``responses`` is a map of URL → response factory. Each factory
+    // returns an object shaped like ``Response`` (ok, status, text,
+    // json). Unmocked URLs return 404.
+    return async (url) => {
+      const factory = responses[url] || responses['*']
+      if (!factory) {
+        return {
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: async () => '',
+          json: async () => ({}),
+        }
+      }
+      return factory(url)
+    }
+  }
+
+  it('loadAvailableModels populates list + active from /models', async () => {
+    const originalFetch = window.fetch
+    window.fetch = mockFetch({
+      '/models': async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          models: [
+            { name: 'alpha', models_file: '/p/models.yaml', has_cdc: true },
+            { name: 'beta', models_file: '/p/models.yaml', has_cdc: false },
+          ],
+          active: 'alpha',
+        }),
+      }),
+    })
+    try {
+      const store = useViewerStore()
+      await store.loadAvailableModels()
+      expect(store.availableModels.map((m) => m.name)).toEqual(['alpha', 'beta'])
+      expect(store.activeModel).toBe('alpha')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('loadAvailableModels treats 404 as standalone mode (clears list)', async () => {
+    const originalFetch = window.fetch
+    window.fetch = async () => ({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      json: async () => ({}),
+    })
+    try {
+      const store = useViewerStore()
+      // Seed something so we can confirm it gets cleared.
+      store.availableModels = [{ name: 'stale' }]
+      store.activeModel = 'stale'
+      await store.loadAvailableModels()
+      expect(store.availableModels).toEqual([])
+      expect(store.activeModel).toBeNull()
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('switchModel fetches /view.json?model= and flips activeModel', async () => {
+    const originalFetch = window.fetch
+    const payload = minimalPayload()
+    window.fetch = mockFetch({
+      '/view.json?model=demo': async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify(payload),
+      }),
+    })
+    try {
+      const store = useViewerStore()
+      await store.switchModel('demo', { updateUrl: false })
+      expect(store.status).toBe('ready')
+      expect(store.activeModel).toBe('demo')
+      expect(store.graph.top).toBe('top')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('switchModel does not flip activeModel on load failure', async () => {
+    const originalFetch = window.fetch
+    window.fetch = async () => ({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => 'boom',
+    })
+    try {
+      const store = useViewerStore()
+      store.activeModel = 'previous'
+      await store.switchModel('broken', { updateUrl: false })
+      // status flipped to error, activeModel preserved so the next
+      // view_changed echo isn't masked.
+      expect(store.status).toBe('error')
+      expect(store.activeModel).toBe('previous')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('applyViewChanged is a no-op when payload model == activeModel (self-echo dedupe)', async () => {
+    const originalFetch = window.fetch
+    let fetched = 0
+    window.fetch = async () => {
+      fetched += 1
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify(minimalPayload()),
+      }
+    }
+    try {
+      const store = useViewerStore()
+      store.activeModel = 'demo'
+      await store.applyViewChanged({ model: 'demo', models_file: '/x', view_url: '/y' })
+      expect(fetched).toBe(0)
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('applyViewChanged triggers a refetch when payload model differs', async () => {
+    const originalFetch = window.fetch
+    const calls = []
+    window.fetch = async (url) => {
+      calls.push(url)
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify(minimalPayload()),
+      }
+    }
+    try {
+      const store = useViewerStore()
+      store.activeModel = 'demo'
+      await store.applyViewChanged({ model: 'other', models_file: '/x', view_url: '/y' })
+      expect(calls).toContain('/view.json?model=other')
+      expect(store.activeModel).toBe('other')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('applyViewChanged ignores malformed payloads', async () => {
+    const originalFetch = window.fetch
+    let fetched = 0
+    window.fetch = async () => {
+      fetched += 1
+      return { ok: true, status: 200, text: async () => '{}' }
+    }
+    try {
+      const store = useViewerStore()
+      await store.applyViewChanged(null)
+      await store.applyViewChanged({})
+      await store.applyViewChanged({ model: 42 })
+      expect(fetched).toBe(0)
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
 })

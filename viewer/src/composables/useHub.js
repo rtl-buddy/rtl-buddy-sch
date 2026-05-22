@@ -248,6 +248,16 @@ function applyEnvelope(env) {
       break
     }
 
+    case 'view_changed': {
+      // Hub-driven model switch (rtl_buddy#174). Forwarded to the
+      // store, which dedupes against ``activeModel`` so a switch we
+      // initiated ourselves doesn't trigger a duplicate refetch
+      // (the hub broadcasts to every WS peer including the one
+      // whose HTTP request caused the change — see #174 close-out).
+      _store?.applyViewChanged(env.payload || {})
+      break
+    }
+
     default:
       // Unknown types are silently dropped (protocol §11).
       break
