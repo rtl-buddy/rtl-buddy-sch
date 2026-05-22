@@ -148,7 +148,9 @@ automatically.
 | `wave_set_cursor`         | hub → wave         | `{ "t_fs": "12500000" }`                         | `{ "ok": true }`                                              | Maps onto WCP `set_cursor`.                                                                    |
 | `view_pan_to`             | hub → view         | `{ "instance_path": "top.u_fifo" }`              | `{ "ok": true }`                                              | Pan/center the viewer on the named instance.                                                   |
 | `resolve_view_to_wave`    | any → hub          | `{ "instance_path": "top.u_fifo.u_wr_ptr" }`     | `{ "wave_scope": "tb.dut.u_fifo.u_wr_ptr" }`                  | Pure mapping; uses `tb_prefix` and aliases.                                                    |
+| `resolve_wave_to_view`    | any → hub          | `{ "wave_scope": "tb.dut.u_fifo.u_wr_ptr" }`     | `{ "instance_path": "top.u_fifo.u_wr_ptr" }`                  | Reverse of `resolve_view_to_wave`. Strips `tb_prefix`, then prepends the design top; `unresolvable` when the trimmed path is not in `view.json`. |
 | `resolve_signal_to_view`  | any → hub          | `{ "signal": "wr_ptr_q", "wave_scope": "tb.dut.u_fifo" }` | `{ "instance_path": ["top.u_fifo.u_wr_ptr"], "port": "q" }` | Returns a list of driver instance paths; `port` is the driven port on each (§7).               |
+| `state_snapshot`          | any → hub          | `{}`                                              | `{ "active_model": "...", "selection": {...} \| null, "cursor_time": {...} \| null, "wave_scope": {...} \| null, "peers": [...], "diagnostics_sources": [...] }` | Returns the hub's cached view of the world (last selection / cursor / scope by origin, registered peers, active model, sources with cached diagnostics bundles). All four state fields are nullable for a freshly-started hub. |
 
 ### Lifecycle
 
@@ -623,9 +625,21 @@ hub connected" indicator and a button to start one (which spawns
 Surfer is closed. The hub detects the TCP disconnect; subsequent
 `wave_*` requests respond with `error{code: "not_connected"}`. When
 surfer reconnects, it sends a fresh `hello`; the hub broadcasts
-`welcome` to all clients listing the now-registered clients. No state
-is replayed — the viewer keeps its current selection; the user's next
-interaction re-syncs.
+`welcome` to all clients listing the now-registered clients, and
+**replays its cached state to the just-welcomed peer**: the last
+`selection_changed` / `cursor_time_changed` / `scope_changed` events
+(each carrying the original `origin` that produced them), plus every
+cached `diagnostics_set` bundle. The replay is unicast to the
+welcoming peer — not broadcast — so existing peers don't see
+duplicated state. Peers that don't care about a particular replayed
+type (a fresh surfer ignoring a cached `scope_changed` from a stale
+session, say) silently drop it.
+
+The same replay fires for any client that hello's after the cache
+has been populated: a new browser tab joining, an `rb hub send`
+one-shot, an nvim restart. A peer dropping in mid-session
+immediately knows what the user is looking at without scraping
+events.
 
 ### 8.6 Resolution failure
 
