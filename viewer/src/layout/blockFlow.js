@@ -100,7 +100,11 @@ export function buildBlockFlowDot(graph, scopeId) {
   if (!scope) return _emptyDigraph(`scope ${scopeId} not in graph`)
   const children = directChildrenOf(graph, scopeId)
   if (children.length === 0) {
-    return _emptyDigraph(`${scopeId} has no children`)
+    // Leaf module — no children to expand, but still useful to show
+    // the module + its declared ports (matches hier-view's behaviour
+    // for leaves). Lifts the user out of the "module X has no
+    // children" dead-end placeholder when they descend into a leaf.
+    return _renderLeafScope(scope)
   }
 
   // Index ports by net name across all children, partitioned by
@@ -185,7 +189,22 @@ export function buildBlockFlowDot(graph, scopeId) {
   lines.push('  edge [fontname="Courier,monospace"];')
   lines.push('')
   lines.push('  subgraph cluster_flow_scope {')
-  const title = dotEscape(`${scope.instance_name || scope.module}\\l${scope.module}\\l`)
+  // Title shape mirrors the child boxes (instance name on top,
+  // module type below) — but when the two would be identical
+  // (typical for the design top, where ``instance_name`` is null
+  // and the fallback collapses to ``module``), emit one line to
+  // avoid the redundant "X / X" stack.
+  //
+  // ``\l`` is the DOT left-aligned-newline marker. ``dotEscape``
+  // doubles backslashes (correct for literal text but wrong for
+  // record metachars), so escape the identifiers FIRST and
+  // concatenate ``\l`` afterwards.
+  const instName = scope.instance_name || ''
+  const titleLines =
+    instName && instName !== scope.module
+      ? [instName, scope.module]
+      : [scope.module]
+  const title = titleLines.map((l) => `${dotEscape(l)}\\l`).join('')
   lines.push(`    label="${title}";`)
   lines.push('    labelloc="t";')
   lines.push('    labeljust="l";')
@@ -348,4 +367,77 @@ function _emptyDigraph(reason) {
     `  "_empty" [shape=plaintext, label="${dotEscape(reason)}"];`,
     '}',
   ].join('\n')
+}
+
+// Render a leaf scope (no children) as a single HTML-table box
+// listing all its declared ports — same shape as the child boxes
+// in the multi-child case so the eye doesn't have to relearn the
+// convention. Skips the cluster frame + boundary anchors (nothing
+// to wire to). Ports retain their click identity (``bf-in:`` /
+// ``bf-out:`` HREFs) so right-click open-source works for leaves
+// too. Clock/reset ports are included here — hier-view shows all
+// ports for a leaf, so we match that.
+function _renderLeafScope(scope) {
+  const PORT_FONT_SIZE = 9
+  const BG = '#f5f5f5'
+  const inPorts = []
+  const outPorts = []
+  for (const port of scope.ports || []) {
+    if (isInputDir(port.dir)) inPorts.push(port.name)
+    else if (isOutputDir(port.dir)) outPorts.push(port.name)
+  }
+  inPorts.sort()
+  outPorts.sort()
+
+  const inst = scope.instance_name || scope.module
+  const showTwoLines = scope.instance_name && scope.instance_name !== scope.module
+  const middle = showTwoLines
+    ? `<B>${htmlEscape(inst)}</B><BR/>${htmlEscape(scope.module)}`
+    : `<B>${htmlEscape(scope.module)}</B>`
+
+  const rowCount = Math.max(inPorts.length, outPorts.length, 1)
+  const rows = []
+  for (let i = 0; i < rowCount; i++) {
+    const tds = []
+    if (i < inPorts.length) {
+      const p = inPorts[i]
+      const cellId = `bf-in:${htmlEscape(scope.id)}:${htmlEscape(p)}`
+      tds.push(
+        `<TD HREF="${cellId}" TITLE="${cellId}" PORT="${htmlEscape(p)}" ALIGN="LEFT">` +
+          `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)}</FONT></TD>`,
+      )
+    } else {
+      tds.push('<TD></TD>')
+    }
+    if (i === 0) {
+      const cellId = `bf-ctr:${htmlEscape(scope.id)}`
+      tds.push(
+        `<TD HREF="${cellId}" TITLE="${cellId}" ROWSPAN="${rowCount}" ALIGN="CENTER">${middle}</TD>`,
+      )
+    }
+    if (i < outPorts.length) {
+      const p = outPorts[i]
+      const cellId = `bf-out:${htmlEscape(scope.id)}:${htmlEscape(p)}`
+      tds.push(
+        `<TD HREF="${cellId}" TITLE="${cellId}" PORT="${htmlEscape(p)}" ALIGN="RIGHT">` +
+          `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)}</FONT></TD>`,
+      )
+    } else {
+      tds.push('<TD></TD>')
+    }
+    rows.push(`<TR>${tds.join('')}</TR>`)
+  }
+  const label =
+    `<<TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0"` +
+    ` CELLPADDING="4" BGCOLOR="${BG}">${rows.join('')}</TABLE>>`
+
+  const lines = [
+    'digraph block_flow_leaf {',
+    '  rankdir="LR";',
+    '  fontname="Courier,monospace";',
+    '  node [shape=plaintext, fontname="Courier,monospace"];',
+    `  ${dotId(scope.id)} [label=${label}];`,
+    '}',
+  ]
+  return lines.join('\n')
 }
