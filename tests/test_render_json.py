@@ -420,7 +420,14 @@ def test_clock_crossing_marks_edge() -> None:
     )
     payload = _render(root, domain_map=cm)
     edge = next(e for e in payload["edges"] if e["to"] == "top.u_dst")
-    assert edge["overlays"]["clock"] == {"crossing": True}
+    # The clock overlay now carries the deduped (src_clock, dst_clock)
+    # pairs alongside the crossing flag so the SPA's EdgeDetail panel
+    # can surface the specific clocks without re-reading the domain
+    # map. One flop in this fixture → flops=1.
+    assert edge["overlays"]["clock"] == {
+        "crossing": True,
+        "pairs": [{"src_clock": "clk_a", "dst_clock": "clk_b", "flops": 1}],
+    }
 
 
 def test_no_overlays_yields_empty_overlays_dict() -> None:
