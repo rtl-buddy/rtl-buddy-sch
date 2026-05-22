@@ -1,6 +1,8 @@
 <template>
   <div
+    ref="rootEl"
     class="node-badge"
+    :class="`popup-open-${placement}`"
     :data-severity="worstSeverity"
     :data-test="`node-badge-${nodeId}`"
     role="button"
@@ -8,6 +10,8 @@
     @click="$emit('select')"
     @keydown.enter="$emit('select')"
     @keydown.space.prevent="$emit('select')"
+    @mouseenter="updatePlacement"
+    @focus="updatePlacement"
   >
     <span class="dot" :title="badgeTitle"></span>
     <span v-if="items.length > 1" class="count">{{ items.length }}</span>
@@ -40,13 +44,52 @@
 // (GraphCanvas) re-computes coords whenever the canvas transform or
 // the diagnostics map changes.
 
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 const props = defineProps({
   nodeId: { type: String, required: true },
   items: { type: Array, required: true },
 })
 defineEmits(['select'])
+
+// Popup placement. The default is bottom-right (``br``) but we
+// flip to ``bl`` / ``tr`` / ``tl`` when the badge is near the
+// containing ``.graph-canvas``'s right / bottom edges so the
+// expanded card stays inside the viewport instead of getting
+// clipped by ``.graph-canvas { overflow: hidden }``.
+const rootEl = ref(null)
+const placement = ref('br')
+
+// Rough popup envelope — kept in step with the CSS min-width and
+// the upper-bound message density. Used as a "is there enough
+// room?" threshold rather than an exact size, so a small drift
+// here is harmless.
+const POPUP_MIN_WIDTH_PX = 18 * 16
+const POPUP_TYPICAL_HEIGHT_PX = 10 * 16
+
+function updatePlacement() {
+  if (!rootEl.value) return
+  const badge = rootEl.value.getBoundingClientRect()
+  const canvas = rootEl.value.closest('.graph-canvas')
+  if (!canvas) return
+  const cv = canvas.getBoundingClientRect()
+  // How much room each direction relative to the visible canvas.
+  // Right/down measured from the badge's near edge so the popup
+  // can flow away from the badge in the chosen direction.
+  const roomRight = cv.right - badge.right
+  const roomLeft = badge.left - cv.left
+  const roomDown = cv.bottom - badge.bottom
+  const roomUp = badge.top - cv.top
+  // Prefer the default (right/down) unless the popup wouldn't fit;
+  // flip only when the other side actually has more room. Keeps the
+  // common case stable so the user's eye doesn't have to track a
+  // popup that bounces between sides as nodes are clicked.
+  const horiz =
+    roomRight < POPUP_MIN_WIDTH_PX && roomLeft > roomRight ? 'l' : 'r'
+  const vert =
+    roomDown < POPUP_TYPICAL_HEIGHT_PX && roomUp > roomDown ? 't' : 'b'
+  placement.value = vert + horiz
+}
 
 // Severity rank: error > warning > info > hint. Pick the worst the
 // items contain so the collapsed dot conveys the highest-priority
@@ -115,12 +158,8 @@ const badgeTitle = computed(() => {
 }
 .popup {
   position: absolute;
-  /* Default placement: just below + right of the dot. Hidden until
-     hover/focus. Smart-flipping near viewport edges is a polish
-     follow-up; the dot itself is small enough that the popup almost
-     always finds room downstream. */
-  top: 1rem;
-  left: 0.5rem;
+  /* Coordinates are set per placement variant below; here we just
+     pin the box style + transition + hidden-by-default state. */
   min-width: 18rem;
   max-width: 28rem;
   background: #ffffff;
@@ -134,6 +173,13 @@ const badgeTitle = computed(() => {
   pointer-events: none;
   transition: opacity 0.12s ease-out;
 }
+/* Four placement variants — chosen by ``updatePlacement`` based on
+   how much room each direction has within ``.graph-canvas``.
+   Default ``br`` (bottom-right) stays the same as the v1 layout. */
+.popup-open-br .popup { top: 1rem;   left: 0.5rem;  right: auto;  bottom: auto; }
+.popup-open-bl .popup { top: 1rem;   right: 0.5rem; left: auto;   bottom: auto; }
+.popup-open-tr .popup { bottom: 1rem; left: 0.5rem; right: auto;  top: auto;    }
+.popup-open-tl .popup { bottom: 1rem; right: 0.5rem; left: auto;  top: auto;    }
 .node-badge:hover .popup,
 .node-badge:focus-within .popup,
 .node-badge:focus .popup {
