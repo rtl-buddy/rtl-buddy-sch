@@ -190,15 +190,16 @@ function applySelectionHighlight(selectedId) {
   }
 }
 
-// Block-flow edges are emitted with port-decorated endpoints
-// (``"top.u_a":q:e -> "top.u_b":d_in:w``). renderSvg splits each
-// edge's <title> on ``->`` and stamps ``data-edge-from`` /
-// ``data-edge-to`` with the raw decorated strings, so we can find
-// every edge incident on a given port by prefix-matching
-// ``<nodeId>:<portName>:`` against both sides. The CSS rule on
-// ``[data-rb-edge-highlighted]`` paints the matching edge path in
-// amber so the user can trace the connection visually after
-// clicking a port cell.
+// Block-flow edges carry a stable ``id="bf-edge:<src>:<srcPort>:
+// <dst>:<dstPort>"`` attribute emitted by blockFlow.js — Graphviz
+// strips port names from the edge ``<title>`` so the title is
+// useless for endpoint lookup, but ``id`` propagates verbatim.
+//
+// To find edges incident on a clicked port, we walk every
+// ``g.edge[id^="bf-edge:"]``, parse the id back into its four
+// components, and match against ``<nodeId>:<portName>`` on either
+// side. Match → stamp ``data-rb-edge-highlighted`` for CSS to
+// paint amber.
 function clearEdgeHighlight() {
   if (!_svgEl) return
   for (const el of _svgEl.querySelectorAll('[data-rb-edge-highlighted]')) {
@@ -208,15 +209,17 @@ function clearEdgeHighlight() {
 
 function highlightEdgesForPort(nodeId, portName) {
   if (!_svgEl || !nodeId || !portName) return
-  // The decorated form is ``<nodeId>:<portName>:<compass>`` — add
-  // the trailing colon to the prefix so we don't accidentally
-  // match an unrelated port whose name starts with ``portName``
-  // (e.g. ``d_in`` shouldn't match ``d_in_ready``).
-  const prefix = `${nodeId}:${portName}:`
-  for (const edge of _svgEl.querySelectorAll('g.edge[data-edge-from], g.edge[data-edge-to]')) {
-    const from = edge.getAttribute('data-edge-from') || ''
-    const to = edge.getAttribute('data-edge-to') || ''
-    if (from.startsWith(prefix) || to.startsWith(prefix)) {
+  const want = `${nodeId}:${portName}`
+  for (const edge of _svgEl.querySelectorAll('g.edge[id^="bf-edge:"]')) {
+    // ``bf-edge:<src>:<srcPort>:<dst>:<dstPort>`` — the leading
+    // ``bf-edge:`` is fixed; the rest is `src:srcPort:dst:dstPort`
+    // where src/dst are instance paths (contain ``.``, never ``:``).
+    const rest = edge.id.slice('bf-edge:'.length)
+    const parts = rest.split(':')
+    if (parts.length < 4) continue
+    const src = `${parts[0]}:${parts[1]}`
+    const dst = `${parts[2]}:${parts[3]}`
+    if (src === want || dst === want) {
       edge.setAttribute('data-rb-edge-highlighted', 'true')
     }
   }

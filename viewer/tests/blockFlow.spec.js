@@ -66,7 +66,7 @@ describe('buildBlockFlowDot', () => {
     // u_a drives ``inter_net`` on port ``q``; u_b consumes it on
     // ``d_in`` → internal edge between the named record ports.
     expect(dot).toMatch(
-      /"top\.u_a":q:e\s*->\s*"top\.u_b":d_in:w\s*\[label="inter_net"/,
+      /"top\.u_a":q:e\s*->\s*"top\.u_b":d_in:w\s*\[id="bf-edge:top\.u_a:q:top\.u_b:d_in"/,
     )
   })
 
