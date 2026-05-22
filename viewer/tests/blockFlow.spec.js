@@ -112,4 +112,17 @@ describe('buildBlockFlowDot', () => {
     const dot = buildBlockFlowDot(makeGraph(), null)
     expect(dot).toMatch(/no scope selected/)
   })
+
+  it('emits the scope title with single-backslash \\l markers', () => {
+    // Regression: ``dotEscape`` doubles backslashes. Wrapping the
+    // whole title (including ``\l``) in dotEscape turned every
+    // ``\l`` into ``\\l``, which Graphviz reads as a literal
+    // backslash + l — the user saw "top\ltop\l" rendered in the
+    // SVG instead of two stacked lines.
+    const dot = buildBlockFlowDot(makeGraph(), 'top')
+    // Look for the cluster's title line. ``label="…"`` with single
+    // backslashes — must NOT contain ``\\l``.
+    expect(dot).toMatch(/label="top\\ltop\\l"/)
+    expect(dot).not.toMatch(/label="[^"]*\\\\l/)
+  })
 })

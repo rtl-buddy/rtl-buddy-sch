@@ -185,7 +185,14 @@ export function buildBlockFlowDot(graph, scopeId) {
   lines.push('  edge [fontname="Courier,monospace"];')
   lines.push('')
   lines.push('  subgraph cluster_flow_scope {')
-  const title = dotEscape(`${scope.instance_name || scope.module}\\l${scope.module}\\l`)
+  // ``\l`` is the DOT left-aligned-newline marker. ``dotEscape``
+  // doubles backslashes (correct for literal text but wrong for
+  // record metachars), so we escape the user-supplied identifiers
+  // FIRST and concatenate the ``\l`` afterwards — preserves the
+  // single-backslash form Graphviz expects.
+  const title =
+    `${dotEscape(scope.instance_name || scope.module)}\\l` +
+    `${dotEscape(scope.module)}\\l`
   lines.push(`    label="${title}";`)
   lines.push('    labelloc="t";')
   lines.push('    labeljust="l";')
