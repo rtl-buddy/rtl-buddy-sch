@@ -15,16 +15,20 @@
         @click="store.setViewMode('flow')"
         :title="flowTabTitle"
       >Block Flow</button>
-      <span v-if="store.viewMode === 'flow'" class="flow-scope">
-        scope: <code>{{ store.flowScopeId || '(none)' }}</code>
-        <button
-          v-if="canAscendScope"
-          type="button"
-          class="flow-up"
-          @click="ascendScope"
-          title="Pop one level up — make this scope's parent the new flow scope"
-        >↑</button>
-      </span>
+      <nav v-if="store.viewMode === 'flow' && breadcrumb.length > 0" class="flow-breadcrumb" aria-label="Block-flow scope">
+        <span class="flow-scope-label">scope:</span>
+        <template v-for="(crumb, i) in breadcrumb" :key="crumb.path">
+          <span v-if="i > 0" class="crumb-sep" aria-hidden="true">/</span>
+          <button
+            type="button"
+            class="crumb"
+            :class="{ current: crumb.current }"
+            :disabled="crumb.current"
+            :title="crumb.current ? `Current scope: ${crumb.path}` : `Set scope to ${crumb.path}`"
+            @click="jumpToScope(crumb.path)"
+          >{{ crumb.label }}</button>
+        </template>
+      </nav>
     </div>
     <div class="graph-toolbar">
       <button type="button" @click="zoomIn">+</button>
@@ -72,11 +76,29 @@ const canAscendScope = computed(() => {
   if (!store.graph) return false
   return store.flowScopeId && store.flowScopeId !== store.graph.top
 })
-function ascendScope() {
-  // Flow-view scope is owned by the store now; ``ascend()`` is
-  // view-mode-aware and pops one level when in flow mode.
-  if (!canAscendScope.value) return
-  store.ascend()
+
+// Clickable breadcrumb path for the flow-view scope. Each segment
+// is a button that jumps the scope to that prefix; the trailing
+// (current) segment is rendered disabled. With one segment (the
+// design top) only the top crumb is shown.
+const breadcrumb = computed(() => {
+  if (store.viewMode !== 'flow' || !store.graph || !store.flowScopeId) return []
+  const segments = store.flowScopeId.split('.')
+  return segments.map((label, i) => {
+    const path = segments.slice(0, i + 1).join('.')
+    return { label, path, current: i === segments.length - 1 }
+  })
+})
+
+function jumpToScope(path) {
+  if (!path || !store.graph) return
+  // Top of design → clear the explicit scope so it falls back to
+  // ``graph.top`` via the getter.
+  if (path === store.graph.top) {
+    store.flowScope = null
+  } else {
+    store.flowScope = path
+  }
 }
 
 async function renderSvg() {
@@ -146,9 +168,26 @@ async function renderSvg() {
     }
   }
   applyOverlays(_svgEl, graph.value, store.enabledOverlays)
+  applySelectionHighlight(store.selection)
   // Defer to next frame so flex layout has settled and the host
   // rect is its final size before we compute the fit scale.
   requestAnimationFrame(fitToWindow)
+}
+
+// Mark the SVG element whose ``data-node-id`` matches the current
+// selection so CSS can give it a stroke/fill accent. Walks the
+// node + cluster sets so both hier-view clusters and flow-view
+// HTML-table cells light up correctly. Clears the previous mark
+// before painting a new one.
+function applySelectionHighlight(selectedId) {
+  if (!_svgEl) return
+  for (const el of _svgEl.querySelectorAll('[data-rb-selected]')) {
+    el.removeAttribute('data-rb-selected')
+  }
+  if (!selectedId) return
+  for (const el of _svgEl.querySelectorAll(`[data-node-id="${selectedId}"]`)) {
+    el.setAttribute('data-rb-selected', 'true')
+  }
 }
 
 watch(graph, renderSvg)
@@ -158,6 +197,7 @@ watch(() => store.viewMode, renderSvg)
 watch(() => store.flowScopeId, () => {
   if (store.viewMode === 'flow') renderSvg()
 })
+watch(() => store.selection, (id) => applySelectionHighlight(id))
 watch(
   () => store.enabledOverlays,
   () => {
@@ -563,24 +603,40 @@ onBeforeUnmount(() => {
   color: #ffffff;
   border-color: #1e293b;
 }
-.flow-scope {
+.flow-breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.15rem;
   font-size: 0.75rem;
-  color: #64748b;
   margin-left: 0.5rem;
+  color: #64748b;
 }
-.flow-scope code {
+.flow-scope-label {
+  margin-right: 0.15rem;
+}
+.crumb-sep {
+  color: #94a3b8;
+  padding: 0 0.05rem;
+}
+.crumb {
+  font: inherit;
   background: #f1f5f9;
-  padding: 0 0.3rem;
+  border: 1px solid transparent;
+  color: #1e293b;
+  padding: 0.05rem 0.35rem;
   border-radius: 3px;
-}
-.flow-up {
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  padding: 0 0.4rem;
   cursor: pointer;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  margin-left: 0.25rem;
+  font-family: ui-monospace, Menlo, monospace;
+}
+.crumb:hover:not(:disabled) {
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+}
+.crumb.current {
+  background: #1e293b;
+  color: #ffffff;
+  cursor: default;
 }
 .graph-toolbar {
   position: absolute;
@@ -617,5 +673,23 @@ onBeforeUnmount(() => {
 .svg-host :deep(g.cluster),
 .svg-host :deep([data-bf-id]) {
   cursor: pointer;
+}
+
+/* Selected-node accent. Painted by ``applySelectionHighlight``,
+   which stamps ``data-rb-selected`` on the SVG group whose
+   ``data-node-id`` matches the store's selection. Covers both
+   hier-view ``g.node`` polygons + flow-view HTML-table outer
+   tables. The thicker stroke is more visible across the wide
+   range of node fill colours overlays may apply. */
+.svg-host :deep([data-rb-selected]) > polygon,
+.svg-host :deep([data-rb-selected]) > path {
+  stroke: #2563eb;
+  stroke-width: 3 !important;
+}
+/* For HTML-table labels (block-flow boxes), the outer table is a
+   nested polygon — accent that one too. */
+.svg-host :deep([data-rb-selected] polygon:first-of-type) {
+  stroke: #2563eb;
+  stroke-width: 3 !important;
 }
 </style>

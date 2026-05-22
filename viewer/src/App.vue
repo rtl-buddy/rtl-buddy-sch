@@ -19,19 +19,65 @@
       <div class="header-status">
         <span class="design-name" v-if="store.graph">{{ store.graph.top }}</span>
         <ModelPicker />
+        <span
+          v-if="hub.serverVersion.value"
+          class="server-version"
+          :title="`rtl-buddy ${hub.serverVersion.value}`"
+        >rtl-buddy <code>{{ shortVersion }}</code></span>
         <HubStatus />
       </div>
     </header>
-    <div class="app-body" v-if="store.status === 'ready' && store.activeTab === 'hierarchy'">
+    <!-- Keep the body mounted across status transitions so a model
+         switch (status='ready' → 'loading' → 'ready') doesn't tear
+         down the canvas + sidebar mid-flight. The loading overlay
+         renders on top instead, giving the user clear "something is
+         happening" feedback while preserving the previous view as a
+         visual anchor. -->
+    <div
+      class="app-body"
+      v-if="store.graph && (store.status !== 'ready' || store.activeTab === 'hierarchy')"
+    >
       <aside class="sidebar">
-        <OverlayPanel />
-        <NodeDetail v-if="!store.selectedEdgeObj" />
-        <EdgeDetail v-if="store.selectedEdgeObj" />
-        <DiagnosticsPanel />
+        <CollapsiblePanel title="Overlays" persist-key="overlays">
+          <OverlayPanel />
+        </CollapsiblePanel>
+        <CollapsiblePanel
+          v-if="!store.selectedEdgeObj"
+          title="Node detail"
+          persist-key="node-detail"
+          :badge="store.selection ? '●' : null"
+        >
+          <NodeDetail />
+        </CollapsiblePanel>
+        <CollapsiblePanel
+          v-else
+          title="Edge detail"
+          persist-key="edge-detail"
+          :badge="'●'"
+        >
+          <EdgeDetail />
+        </CollapsiblePanel>
+        <CollapsiblePanel
+          title="Diagnostics"
+          persist-key="diagnostics"
+          :badge="diagnosticsCount || null"
+          :default-collapsed="!diagnosticsCount"
+        >
+          <DiagnosticsPanel />
+        </CollapsiblePanel>
       </aside>
-      <GraphCanvas />
+      <div class="canvas-wrap">
+        <GraphCanvas />
+        <div v-if="store.status === 'loading'" class="loading-overlay">
+          <div class="spinner" aria-hidden="true"></div>
+          <span>Loading…</span>
+        </div>
+      </div>
     </div>
-    <div class="app-body axi-tab" v-else-if="store.status === 'ready' && store.activeTab === 'axi-perf'">
+    <div
+      class="app-body axi-tab"
+      v-else-if="store.status === 'ready' && store.activeTab === 'axi-perf'"
+    >
       <AxiPerfView />
     </div>
     <div class="empty-state" v-else-if="store.status === 'idle'">
@@ -40,9 +86,19 @@
         Drop a <code>view.json</code> file here, or pass
         <code>?view=path/to/view.json</code> in the URL.
       </p>
+      <p class="empty-hint">
+        Or start the hub:
+        <code>rb hub start --serve-viewer --model &lt;model_name&gt;</code><br />
+        then open <code>http://127.0.0.1:&lt;http_port&gt;/</code>.
+        The model picker in the header lets you switch between models
+        without restarting.
+      </p>
       <input type="file" accept=".json,application/json" @change="onPickFile" />
     </div>
-    <div class="loading" v-else-if="store.status === 'loading'">Loading…</div>
+    <div class="loading" v-else-if="store.status === 'loading'">
+      <div class="spinner" aria-hidden="true"></div>
+      <span>Loading…</span>
+    </div>
     <div class="error" v-else-if="store.status === 'error'">
       <h2>Could not load this view</h2>
       <pre>{{ store.error }}</pre>
@@ -59,7 +115,7 @@
 // Drag-and-drop is wired at the document level so users can drop
 // onto any part of the viewer without targeting a specific zone.
 
-import { onMounted, onBeforeUnmount } from 'vue'
+import { computed, onMounted, onBeforeUnmount } from 'vue'
 import { useViewerStore } from './store.js'
 import GraphCanvas from './components/GraphCanvas.vue'
 import OverlayPanel from './components/OverlayPanel.vue'
@@ -70,17 +126,35 @@ import HubStatus from './components/HubStatus.vue'
 import ModelPicker from './components/ModelPicker.vue'
 import ToastHost from './components/ToastHost.vue'
 import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
-import { initHub } from './composables/useHub.js'
-
-import { computed } from 'vue'
+import CollapsiblePanel from './components/CollapsiblePanel.vue'
+import { initHub, useHub } from './composables/useHub.js'
 
 const store = useViewerStore()
+const hub = useHub()
 
 const hasAxiPerf = computed(
   () =>
     Array.isArray(store.graph?.overlays_present) &&
     store.graph.overlays_present.includes('axi-perf'),
 )
+
+const diagnosticsCount = computed(() => {
+  const by = store.diagnosticsBySource || {}
+  let n = 0
+  for (const items of Object.values(by)) {
+    if (Array.isArray(items)) n += items.length
+  }
+  return n
+})
+
+// Truncate the long ``rtl-buddy`` build string to its leading
+// semver portion for the header chip; full version lives in the
+// tooltip.
+const shortVersion = computed(() => {
+  const raw = hub.serverVersion.value || ''
+  const m = raw.match(/^[0-9]+\.[0-9]+\.[0-9]+(?:\.[a-z0-9]+)?/i)
+  return m ? m[0] : raw
+})
 
 function onPickFile(event) {
   const file = event.target.files && event.target.files[0]
@@ -150,23 +224,83 @@ body, html, .app { margin: 0; height: 100%; }
 }
 .header-status { display: flex; gap: 1rem; align-items: center; }
 .design-name { font-family: ui-monospace, Menlo, monospace; color: #475569; }
+.server-version {
+  font-size: 0.72rem;
+  color: #64748b;
+  white-space: nowrap;
+}
+.server-version code {
+  font-family: ui-monospace, Menlo, monospace;
+  background: #f1f5f9;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  margin-left: 0.25rem;
+}
 .app-body { display: flex; height: calc(100vh - 48px); }
-.app-body.axi-tab { padding: 0; }
+.app-body.axi-tab { display: block; overflow: auto; background: #ffffff; }
 .sidebar {
   width: 280px;
   border-right: 1px solid #e5e7eb;
-  padding: 0.5rem;
+  padding: 0;
   overflow: auto;
   background: #ffffff;
+}
+.canvas-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+}
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  background: rgba(248, 250, 252, 0.78);
+  backdrop-filter: blur(2px);
+  font-size: 0.85rem;
+  color: #475569;
+  z-index: 20;
+  pointer-events: all;
+}
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #cbd5e1;
+  border-top-color: #1e293b;
+  border-radius: 50%;
+  animation: rb-spin 0.8s linear infinite;
+}
+@keyframes rb-spin {
+  to { transform: rotate(360deg); }
 }
 .empty-state, .loading, .error {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.6rem;
   height: calc(100vh - 48px);
   text-align: center;
   padding: 2rem;
+}
+.empty-state .empty-hint {
+  font-size: 0.85rem;
+  color: #475569;
+  max-width: 60ch;
+  line-height: 1.5;
+  background: #f1f5f9;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+}
+.empty-state code, .empty-hint code {
+  font-family: ui-monospace, Menlo, monospace;
+  background: #e2e8f0;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.85em;
 }
 .error pre {
   max-width: 60ch;

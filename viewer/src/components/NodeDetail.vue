@@ -1,6 +1,10 @@
 <template>
   <section class="node-detail" v-if="node">
-    <h3>{{ node.id }}</h3>
+    <h3 :title="node.id">
+      <span v-for="(segment, i) in pathSegments" :key="i">
+        <span v-if="i > 0" class="sep">.</span>{{ segment }}<wbr />
+      </span>
+    </h3>
     <div class="nav-actions">
       <button
         type="button"
@@ -20,6 +24,17 @@
         :disabled="!store.rootInstancePath"
         title="Back to design top"
       >Top</button>
+      <button
+        v-if="hasOpenable"
+        type="button"
+        class="open-source"
+        @click="openInEditor"
+        :title="openTitle"
+      >Open in editor</button>
+    </div>
+    <div v-if="hasOpenable" class="open-target-row" :title="openTitle">
+      <code class="open-target">{{ openTargetText }}</code>
+      <span class="open-via" :data-mode="openVia">{{ openViaLabel }}</span>
     </div>
     <dl>
       <dt>Module</dt><dd>{{ node.module }}</dd>
@@ -35,35 +50,24 @@
           </ul>
         </dd>
       </template>
-      <template v-if="node.ports && node.ports.length">
-        <dt>Ports</dt>
+      <template v-for="group in portGroups" :key="group.dir">
+        <dt>Ports — {{ group.label }} ({{ group.ports.length }})</dt>
         <dd>
-          <ul>
-            <li v-for="port in node.ports" :key="port.name">
-              <code>
-                <span class="port-name">{{ port.name }}</span>
-                <span v-if="port.dir" class="port-dir">({{ port.dir }})</span>
-                <span v-if="port.expr"> ← {{ port.expr }}</span>
-              </code>
-            </li>
-          </ul>
+          <table class="ports-table">
+            <tbody>
+              <tr v-for="port in group.ports" :key="port.name">
+                <td class="port-name-cell"><code>{{ port.name }}</code></td>
+                <td class="port-expr-cell">
+                  <code v-if="port.expr" class="port-expr">← {{ port.expr }}</code>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </dd>
       </template>
       <template v-for="(payload, name) in node.overlays" :key="name">
         <dt>overlay: {{ name }}</dt>
         <dd><pre>{{ JSON.stringify(payload, null, 2) }}</pre></dd>
-      </template>
-      <template v-if="hasOpenable">
-        <dt>Open</dt>
-        <dd>
-          <button
-            type="button"
-            class="open-source"
-            @click="openInEditor"
-            :title="openTitle"
-          >Open in editor</button>
-          <code class="open-target">{{ openTargetText }}</code>
-        </dd>
       </template>
     </dl>
   </section>
@@ -87,9 +91,38 @@ import { useHub } from '../composables/useHub.js'
 const store = useViewerStore()
 const hub = useHub()
 const node = computed(() => store.selectedNode)
+const pathSegments = computed(() => (node.value?.id || '').split('.'))
 const hasParameters = computed(
   () => node.value && node.value.parameters && Object.keys(node.value.parameters).length > 0,
 )
+// Group ports by direction so the panel reads like a port list in
+// an SV declaration — inputs first, then outputs, then inout /
+// other. Each section shows the count alongside the header.
+const PORT_DIR_ORDER = ['input', 'output', 'inout']
+const PORT_DIR_LABEL = { input: 'inputs', output: 'outputs', inout: 'inout' }
+const portGroups = computed(() => {
+  if (!node.value || !Array.isArray(node.value.ports) || node.value.ports.length === 0) {
+    return []
+  }
+  const groups = new Map()
+  for (const port of node.value.ports) {
+    const dir = port.dir || 'unknown'
+    if (!groups.has(dir)) groups.set(dir, [])
+    groups.get(dir).push(port)
+  }
+  const out = []
+  for (const dir of PORT_DIR_ORDER) {
+    if (groups.has(dir)) {
+      out.push({ dir, label: PORT_DIR_LABEL[dir], ports: groups.get(dir) })
+      groups.delete(dir)
+    }
+  }
+  // Any remaining (unknown direction) at the end.
+  for (const [dir, ports] of groups) {
+    out.push({ dir, label: dir, ports })
+  }
+  return out
+})
 // Openable when the node has either a structured ``source`` block
 // (preferred — hub path uses (file, line, col)) or just a raw
 // ``link`` URI (offline fallback through the OS).
@@ -104,6 +137,10 @@ const openTargetText = computed(() => {
   }
   return (node.value && node.value.link) || ''
 })
+const openVia = computed(() => (hub.state.value === 'ready' ? 'hub' : 'os'))
+const openViaLabel = computed(() =>
+  openVia.value === 'hub' ? '(via hub)' : '(via OS)',
+)
 const openTitle = computed(() =>
   hub.state.value === 'ready'
     ? 'Request hub to open this in your editor'
@@ -120,8 +157,14 @@ function openInEditor() {
   font-family: ui-monospace, Menlo, monospace;
   font-size: 0.85rem;
   margin: 0 0 0.5rem;
-  word-break: break-all;
+  /* Long instance paths (top.u_a.u_b.…) get soft-wrap points at
+     each dot via <wbr/>, so the heading wraps where it makes
+     visual sense instead of mid-segment. */
+  word-break: normal;
+  overflow-wrap: break-word;
+  line-height: 1.3;
 }
+.node-detail h3 .sep { color: #94a3b8; }
 .node-detail dt {
   font-size: 0.75rem;
   text-transform: uppercase;
@@ -138,7 +181,12 @@ function openInEditor() {
   font-size: 0.75rem;
 }
 .empty { color: #64748b; font-size: 0.85rem; }
-.nav-actions { display: flex; gap: 0.25rem; margin-bottom: 0.5rem; }
+.nav-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 0.25rem;
+}
 .nav-actions button {
   border: 1px solid #cbd5e1;
   background: #ffffff;
@@ -152,17 +200,63 @@ function openInEditor() {
   background: #f1f5f9;
   cursor: not-allowed;
 }
-.blackbox { color: #b45309; }
-.port-name { color: #1e293b; }
-.port-dir { color: #64748b; font-size: 0.75rem; margin-left: 0.25rem; }
-.open-source {
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  padding: 0.15rem 0.5rem;
-  cursor: pointer;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  margin-right: 0.4rem;
+/* Open-in-editor sits next to the navigation buttons (always at
+   the top of the panel) so it doesn't migrate as the per-node
+   data section grows/shrinks. The file:line hint lives on its
+   own row immediately under so long paths can wrap without
+   pushing the buttons around. */
+.nav-actions .open-source {
+  margin-left: auto;
 }
-.open-target { font-size: 0.75rem; color: #64748b; word-break: break-all; }
+.open-target-row {
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.open-target {
+  font-size: 0.7rem;
+  color: #64748b;
+  word-break: break-all;
+}
+/* "(via hub)" / "(via OS)" tag tells the user how the next click
+   will be routed — green when the hub is connected and will
+   handle the request inline, grey when we'll fall back to a
+   ``rtlbuddy://`` URI dispatched through the OS. */
+.open-via {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+}
+.open-via[data-mode='hub'] {
+  background: #dcfce7;
+  color: #166534;
+}
+.open-via[data-mode='os'] {
+  background: #f1f5f9;
+  color: #64748b;
+}
+.blackbox { color: #b45309; }
+.ports-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+.ports-table td {
+  vertical-align: top;
+  padding: 0.05rem 0.25rem 0.05rem 0;
+}
+.port-name-cell {
+  width: 1%;
+  white-space: nowrap;
+  color: #1e293b;
+}
+.port-expr-cell {
+  color: #475569;
+  word-break: break-all;
+}
+.port-expr { color: #475569; }
 </style>

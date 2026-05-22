@@ -8,7 +8,7 @@
       @click="open = !open"
     >
       <span class="dot" :data-state="hub.state.value" aria-hidden="true"></span>
-      hub: {{ hub.state.value }}
+      hub: {{ displayState }}
     </button>
     <div v-if="open" class="hub-popover" role="dialog" aria-label="Hub details">
       <header>
@@ -87,6 +87,19 @@ const peerRows = computed(() => {
     connected: list.includes(role.origin),
   }))
 })
+
+// User-friendly labels for the protocol-level state names. Keep
+// the raw value in ``data-state`` for CSS theming, but the chip
+// itself reads ``connected`` / ``connecting`` / ``offline``.
+const STATE_LABEL = {
+  ready: 'connected',
+  connecting: 'connecting…',
+  disconnected: 'offline',
+  error: 'error',
+}
+const displayState = computed(
+  () => STATE_LABEL[hub.state.value] || hub.state.value,
+)
 
 const hint = computed(() => {
   switch (hub.state.value) {
