@@ -217,9 +217,8 @@ describe('viewer store', () => {
     expect(store.flowScopeId).toBe('top')
   })
 
-  it('descend in flow mode sets flowScope, not rootInstancePath', () => {
+  it('descend updates both rootInstancePath and flowScope so the two view modes stay in sync', () => {
     const store = useViewerStore()
-    // Build a graph where ``top.u_a`` has a child so descend isn't a no-op.
     const p = minimalPayload()
     p.nodes.push({
       id: 'top.u_a.sub',
@@ -230,57 +229,59 @@ describe('viewer store', () => {
       overlays: {},
     })
     store.loadFromText(JSON.stringify(p))
+    // The active view mode doesn't matter — descend now mirrors the
+    // scope across both fields. Test both starting modes to pin
+    // that down.
     store.setViewMode('flow')
     store.select('top.u_a')
     store.descend('top.u_a')
     expect(store.flowScope).toBe('top.u_a')
     expect(store.flowScopeId).toBe('top.u_a')
-    expect(store.rootInstancePath).toBeNull()
-  })
+    expect(store.rootInstancePath).toBe('top.u_a')
 
-  it('descend in hier mode sets rootInstancePath, not flowScope', () => {
-    const store = useViewerStore()
-    const p = minimalPayload()
-    p.nodes.push({
-      id: 'top.u_a.sub',
-      module: 's',
-      is_blackbox: false,
-      parameters: {},
-      ports: [],
-      overlays: {},
-    })
-    store.loadFromText(JSON.stringify(p))
+    store.goToTop()
     store.setViewMode('hier')
     store.select('top.u_a')
     store.descend('top.u_a')
     expect(store.rootInstancePath).toBe('top.u_a')
-    expect(store.flowScope).toBeNull()
-  })
-
-  it('ascend in flow mode pops the flowScope by one segment', () => {
-    const store = useViewerStore()
-    store.loadFromText(JSON.stringify(minimalPayload()))
-    store.setViewMode('flow')
-    store.flowScope = 'top.u_a.sub'
-    store.ascend()
     expect(store.flowScope).toBe('top.u_a')
-    store.ascend()
-    expect(store.flowScope).toBe('top')
-    store.ascend()
-    // ``top`` is a single segment with no parent → cleared.
-    expect(store.flowScope).toBeNull()
   })
 
-  it('goToTop in flow mode clears only flowScope', () => {
+  it('ascend pops both scope fields and follows the selection up', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(minimalPayload()))
+    store.rootInstancePath = 'top.u_a.sub'
+    store.flowScope = 'top.u_a.sub'
+    store.selection = 'top.u_a.sub'
+
+    store.ascend()
+    expect(store.rootInstancePath).toBe('top.u_a')
+    expect(store.flowScope).toBe('top.u_a')
+    expect(store.selection).toBe('top.u_a')
+
+    store.ascend()
+    expect(store.rootInstancePath).toBe('top')
+    expect(store.flowScope).toBe('top')
+    expect(store.selection).toBe('top')
+
+    store.ascend()
+    // ``top`` is a single segment with no parent → cleared on both.
+    expect(store.rootInstancePath).toBeNull()
+    expect(store.flowScope).toBeNull()
+    expect(store.selection).toBeNull()
+  })
+
+  it('goToTop clears both scope fields and the selection regardless of view mode', () => {
     const store = useViewerStore()
     store.loadFromText(JSON.stringify(minimalPayload()))
     store.setViewMode('flow')
     store.flowScope = 'top.u_a.sub'
-    store.rootInstancePath = 'top.u_a' // would also be cleared in hier mode
+    store.rootInstancePath = 'top.u_a'
+    store.selection = 'top.u_a.sub'
     store.goToTop()
     expect(store.flowScope).toBeNull()
-    // rootInstancePath untouched in flow mode.
-    expect(store.rootInstancePath).toBe('top.u_a')
+    expect(store.rootInstancePath).toBeNull()
+    expect(store.selection).toBeNull()
   })
 
   // ---------------------------------------------------------------------------

@@ -158,12 +158,19 @@ async function renderSvg() {
   // the cluster-tree layout switch).
   const clusterLookup =
     (graph.value && graph.value.layout && graph.value.layout.cluster_lookup) || null
+  const graphTop = graph.value?.top
   for (const group of _svgEl.querySelectorAll('g.cluster')) {
     const titleEl = group.querySelector('title')
     if (!titleEl) continue
     const clusterId = titleEl.textContent
     if (clusterLookup && clusterLookup[clusterId]) {
       group.setAttribute('data-node-id', clusterLookup[clusterId])
+    } else if (clusterId === 'cluster_top' && graphTop) {
+      // ``graphToDot`` (the in-JS fallback for graphs without an
+      // embedded layout) wraps the root in a single
+      // ``subgraph cluster_top``. No cluster_lookup is emitted in
+      // that path, so map cluster_top → graph.top directly here.
+      group.setAttribute('data-node-id', graphTop)
     }
   }
   for (const group of _svgEl.querySelectorAll('g.edge')) {
@@ -724,9 +731,22 @@ function fitToWindow() {
   applyTransform()
 }
 
+function onDoubleClick(e) {
+  // Double-click = descend into the clicked node. Skips edges /
+  // block-flow port cells (those have their own single-click
+  // behaviour we don't want to override). When the node is a leaf
+  // ``store.descend`` is a no-op so the action degrades safely.
+  const nodeHit = nodeFromEvent(e)
+  if (!nodeHit) return
+  e.preventDefault()
+  store.select(nodeHit.id)
+  store.descend(nodeHit.id)
+}
+
 onMounted(() => {
   if (svgHostEl.value) {
     svgHostEl.value.addEventListener('click', onClick)
+    svgHostEl.value.addEventListener('dblclick', onDoubleClick)
     svgHostEl.value.addEventListener('contextmenu', onContextMenu)
     svgHostEl.value.addEventListener('wheel', onWheel, { passive: false })
     svgHostEl.value.addEventListener('mousedown', onMouseDown)
@@ -738,6 +758,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (svgHostEl.value) {
     svgHostEl.value.removeEventListener('click', onClick)
+    svgHostEl.value.removeEventListener('dblclick', onDoubleClick)
     svgHostEl.value.removeEventListener('contextmenu', onContextMenu)
     svgHostEl.value.removeEventListener('wheel', onWheel)
     svgHostEl.value.removeEventListener('mousedown', onMouseDown)

@@ -221,10 +221,18 @@ test.describe('Phase 10d hub wiring', () => {
     // The pill should not be 'ready'.
     await expect(page.locator('.hub-status')).not.toHaveAttribute('data-state', 'ready')
 
-    // Click a node that has a link.
-    const linked = PAYLOAD.nodes.find((n) => n.link)
+    // Click a node that has a link. Skip the design top — graphToDot
+    // wraps it as a ``cluster_top`` that encloses every child, so a
+    // click on the cluster's interior gets intercepted by whichever
+    // child node sits under the pointer instead of dispatching the
+    // root's link. Any non-root linked node still exercises the
+    // dispatch path identically.
+    const linked = PAYLOAD.nodes.find((n) => n.link && n.id !== PAYLOAD.top)
     if (linked) {
-      await page.locator(`g.node[data-node-id="${linked.id}"]`).first().click()
+      await page
+        .locator(`g.node[data-node-id="${linked.id}"]`)
+        .first()
+        .click()
       await expect.poll(async () => {
         return await page.evaluate(() => window.__opened__?.length || 0)
       }, { timeout: 5_000 }).toBeGreaterThan(0)
