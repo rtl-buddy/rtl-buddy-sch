@@ -322,6 +322,15 @@ export const useViewerStore = defineStore('viewer', {
       this.error = null
       this.selection = null
       this.selectedEdge = null
+      // Scope state is per-graph. Carrying ``rootInstancePath`` /
+      // ``flowScope`` across a model switch (or any view.json
+      // reload) leaves the canvas filtering for a path that doesn't
+      // exist in the new graph — the hier view drops the breadcrumb
+      // and renders empty, and the flow view shows
+      // ``scope X not in graph``. Reset both so the new model
+      // boots at its own top.
+      this.rootInstancePath = null
+      this.flowScope = null
       // Default: every overlay the producer emitted is enabled, so
       // the user sees the full overlay decoration on first open.
       this.enabledOverlays = new Set(graph.overlays_present)
