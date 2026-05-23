@@ -8,6 +8,25 @@
           · {{ interconnects.length }} interconnect{{ interconnects.length === 1 ? '' : 's' }}
         </span>
       </div>
+      <div class="header-actions">
+        <button
+          type="button"
+          class="open-marimo-btn"
+          :disabled="store.axiNotebookLaunching"
+          @click="onOpenInMarimo"
+        >
+          <span v-if="store.axiNotebookLaunching">Launching…</span>
+          <span v-else>Open in marimo ↗</span>
+        </button>
+      </div>
+      <div
+        v-if="store.axiNotebookError"
+        class="open-marimo-err"
+        role="alert"
+        @click="store.axiNotebookError = null"
+      >
+        {{ store.axiNotebookError }} (click to dismiss)
+      </div>
     </header>
 
     <div class="view-body">
@@ -271,6 +290,52 @@ function fmtBps(bps) {
   }
   return `${v.toFixed(2)} ${units[i]}`
 }
+
+// "Open in marimo" — v1 prompts the user for test + suite_dir
+// because the SPA doesn't yet know which test produced the
+// currently-displayed axi-perf data. Remembers the previous answers
+// in localStorage so the second click in a session is a single
+// "Enter to confirm". Auto-detection from the loaded view.json is
+// Phase 2.5.
+const LS_TEST = 'rtl-buddy.axi-notebook.test'
+const LS_SUITE = 'rtl-buddy.axi-notebook.suite_dir'
+
+async function onOpenInMarimo() {
+  let defaultTest = ''
+  let defaultSuite = ''
+  try {
+    defaultTest = window.localStorage.getItem(LS_TEST) || ''
+    defaultSuite = window.localStorage.getItem(LS_SUITE) || ''
+  } catch {
+    /* localStorage unavailable (private mode) — fall back to empty */
+  }
+
+  const test = window.prompt(
+    'Test name (from tests.yaml):',
+    defaultTest,
+  )
+  if (!test) return
+  const suiteDir = window.prompt(
+    'Suite dir (relative to project root, e.g. verif/demo_axi_2x2):',
+    defaultSuite,
+  )
+  if (!suiteDir) return
+
+  try {
+    window.localStorage.setItem(LS_TEST, test)
+    window.localStorage.setItem(LS_SUITE, suiteDir)
+  } catch {
+    /* best-effort persist */
+  }
+
+  try {
+    await store.openAxiNotebook({ test, suiteDir })
+  } catch {
+    // Error is already surfaced via store.axiNotebookError + the
+    // template's role="alert" div; nothing to do here. Swallow so
+    // the unhandled-rejection warning doesn't spam the console.
+  }
+}
 </script>
 
 <style scoped>
@@ -302,6 +367,35 @@ function fmtBps(bps) {
 .header-stats {
   color: #475569;
   font-size: 0.75rem;
+}
+.header-actions {
+  margin-left: auto;
+}
+.open-marimo-btn {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid #4f46e5;
+  background: #4f46e5;
+  color: #ffffff;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.open-marimo-btn:hover:not(:disabled) {
+  background: #4338ca;
+  border-color: #4338ca;
+}
+.open-marimo-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.open-marimo-err {
+  flex-basis: 100%;
+  font-size: 0.75rem;
+  color: #b91c1c;
+  background: #fee2e2;
+  padding: 0.4rem 0.65rem;
+  border-radius: 4px;
+  cursor: pointer;
 }
 .view-body {
   flex: 1;
