@@ -640,3 +640,61 @@ describe('viewer store', () => {
     expect(store.diagnosticsByNode).toEqual({})
   })
 })
+
+describe('viewer store — disambiguation picker (rtl-buddy-view#55)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('presentSelectionCandidates sets selection to [0] and stashes the list', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates(['top.u_a', 'top.u_b', 'top.u_c'])
+    expect(store.selection).toBe('top.u_a')
+    expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b', 'top.u_c'])
+  })
+
+  it('presentSelectionCandidates with a single path skips the picker', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates(['top.u_only'])
+    expect(store.selection).toBe('top.u_only')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('chooseSelectionCandidate locks the pick and clears the picker', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates(['top.u_a', 'top.u_b'])
+    store.chooseSelectionCandidate('top.u_b')
+    expect(store.selection).toBe('top.u_b')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('dismissSelectionCandidates clears the picker without touching selection', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates(['top.u_a', 'top.u_b'])
+    store.dismissSelectionCandidates()
+    expect(store.selection).toBe('top.u_a')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('applyHubSelection (single match) invalidates any pending picker', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates(['top.u_a', 'top.u_b'])
+    // A fresh, unambiguous selection arriving from the hub means the
+    // resolver already disambiguated — don't keep a stale list around.
+    store.applyHubSelection('top.elsewhere')
+    expect(store.selection).toBe('top.elsewhere')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('rejects malformed inputs without crashing or mutating state', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates([])
+    expect(store.selection).toBeNull()
+    expect(store.selectionCandidates).toBeNull()
+    store.presentSelectionCandidates([null, undefined, ''])
+    expect(store.selection).toBeNull()
+    expect(store.selectionCandidates).toBeNull()
+    store.chooseSelectionCandidate('')
+    expect(store.selection).toBeNull()
+  })
+})
