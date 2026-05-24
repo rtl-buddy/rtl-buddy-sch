@@ -51,6 +51,11 @@
         @select="onBadgeSelect(b.nodeId)"
       />
     </div>
+    <!-- Disambiguation picker (rtl-buddy-view#55). Self-hides when
+         store.selectionCandidates is null / length <= 1, so we mount
+         unconditionally inside the canvas where it sits near the
+         schematic toolbar without disturbing the canvas layout. -->
+    <SelectionCandidates />
   </main>
 </template>
 
@@ -72,6 +77,7 @@ import { applyOverlays } from '../overlays/index.js'
 import { useHub } from '../composables/useHub.js'
 import { registerSvgProvider, unregisterSvgProvider } from '../capture.js'
 import NodeBadge from './NodeBadge.vue'
+import SelectionCandidates from './SelectionCandidates.vue'
 
 const store = useViewerStore()
 const hub = useHub()

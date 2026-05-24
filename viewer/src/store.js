@@ -170,6 +170,12 @@ export const useViewerStore = defineStore('viewer', {
     // ``GET /models`` at boot and ``view_changed`` events at runtime.
     // ``null`` when running standalone.
     activeModel: null,
+    // Candidate instance paths when a hub ``selection_changed`` event
+    // resolves to more than one match (rtl-buddy-view#55). ``null``
+    // means no picker is showing. The first entry is also written to
+    // ``selection`` so the canvas pans/zooms to the smallest-range
+    // match — the picker just lets the user override that default.
+    selectionCandidates: null,
   }),
   getters: {
     nodesById: (state) => {
@@ -565,6 +571,45 @@ export const useViewerStore = defineStore('viewer', {
       if (typeof id !== 'string' || id.length === 0) return
       this.selection = id
       this.selectedEdge = null
+      // Any non-ambiguous selection invalidates a pending picker; a
+      // single match means the hub already disambiguated and we
+      // shouldn't keep an old candidate list floating.
+      this.selectionCandidates = null
+    },
+
+    presentSelectionCandidates(paths) {
+      // Multi-match hub ``selection_changed`` — apply the smallest-
+      // range default ([0]) immediately so the canvas reacts in the
+      // common case, and stash the full list so the SelectionCandidates
+      // popover can offer alternatives. The composable owns the
+      // auto-dismiss timer.
+      if (!Array.isArray(paths) || paths.length === 0) return
+      const filtered = paths.filter(
+        (p) => typeof p === 'string' && p.length > 0,
+      )
+      if (filtered.length === 0) return
+      this.selection = filtered[0]
+      this.selectedEdge = null
+      // Single match → no picker. Acts as the array-collapsing case
+      // for callers that don't pre-check (useHub does pre-check, but
+      // tests / future callers may not).
+      this.selectionCandidates = filtered.length > 1 ? filtered.slice() : null
+    },
+
+    chooseSelectionCandidate(path) {
+      // User picked one of the multi-match candidates from the popover.
+      // Lock the selection and dismiss the picker. The hub broadcast
+      // is the composable's job (useHub.chooseSelectionCandidate sends
+      // ``selection_changed`` from origin=view); the store just owns
+      // the local-side state transition.
+      if (typeof path !== 'string' || path.length === 0) return
+      this.selection = path
+      this.selectedEdge = null
+      this.selectionCandidates = null
+    },
+
+    dismissSelectionCandidates() {
+      this.selectionCandidates = null
     },
 
     applyHubScope(payload) {

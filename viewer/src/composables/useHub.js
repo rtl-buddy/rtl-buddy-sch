@@ -31,6 +31,13 @@ const CLIENT_VERSION = '0.1.0'
 const RECONNECT_INITIAL_MS = 500
 const RECONNECT_MAX_MS = 15000
 const RECONNECT_FACTOR = 1.8
+// How long the disambiguation popover stays visible after a multi-
+// match ``selection_changed`` lands. The smallest-range default
+// (``instance_path[0]``) is applied immediately so the canvas reacts;
+// the picker just gives the user a window to override before it
+// auto-dismisses. 4s is short enough not to clutter the toolbar but
+// long enough to read a handful of paths and click one.
+const SELECTION_PICKER_AUTODISMISS_MS = 4000
 
 const state = ref('disconnected')
 const peers = ref([])
@@ -54,6 +61,17 @@ let _initialised = false
 // existing view registration. Set when a prior hello got an
 // "already registered" error so the retry takes over.
 let _pendingTakeover = false
+// Auto-dismiss timer for the disambiguation popover. Lives on the
+// composable singleton (not in the component) so a Vue remount mid-
+// timeout doesn't strand the picker open.
+let _pickerDismissTimer = null
+
+function clearPickerDismissTimer() {
+  if (_pickerDismissTimer) {
+    clearTimeout(_pickerDismissTimer)
+    _pickerDismissTimer = null
+  }
+}
 
 function makeId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -162,6 +180,20 @@ function applyEnvelope(env) {
     case 'selection_changed': {
       if (env.origin === 'view') break
       const ip = env.payload?.instance_path
+      if (Array.isArray(ip) && ip.length > 1) {
+        // Multi-match: smallest-range default ([0]) is applied
+        // immediately so the canvas reacts in the common case, but
+        // we also surface the picker so the user can override if
+        // the resolver's tie-break picked the wrong sibling
+        // (rtl-buddy-view#55).
+        _store?.presentSelectionCandidates(ip)
+        clearPickerDismissTimer()
+        _pickerDismissTimer = setTimeout(() => {
+          _store?.dismissSelectionCandidates()
+          _pickerDismissTimer = null
+        }, SELECTION_PICKER_AUTODISMISS_MS)
+        break
+      }
       const id = Array.isArray(ip) ? ip[0] : ip
       if (typeof id === 'string' && id.length > 0) {
         _store?.applyHubSelection(id)
@@ -465,6 +497,37 @@ export function useHub() {
     disconnect,
     superseded,
     /**
+     * Lock the user's pick from the multi-match disambiguation popover
+     * (rtl-buddy-view#55). Updates the store (selection + clears the
+     * candidate list) AND broadcasts a ``selection_changed`` envelope
+     * from origin=view so the other peers (nvim, wave) lock onto the
+     * same path. Cancels the auto-dismiss timer so a fast double-pick
+     * doesn't get clobbered by a still-pending timeout.
+     */
+    chooseSelectionCandidate(path) {
+      if (typeof path !== 'string' || path.length === 0) return
+      clearPickerDismissTimer()
+      _store?.chooseSelectionCandidate(path)
+      sendEnvelope({
+        v: PROTOCOL_VERSION,
+        id: makeId(),
+        origin: 'view',
+        kind: 'event',
+        type: 'selection_changed',
+        payload: { instance_path: path },
+      })
+    },
+    /**
+     * Dismiss the disambiguation popover without changing the
+     * selection. Used by the close button on the popover, and on
+     * unmount so a dangling timer doesn't keep firing into a
+     * detached store.
+     */
+    dismissSelectionCandidates() {
+      clearPickerDismissTimer()
+      _store?.dismissSelectionCandidates()
+    },
+    /**
      * Reconnect to the hub, optionally asking it to evict any
      * existing registration in the view slot. ``takeover=true`` is
      * what the "Take back" button passes when a previous tab
@@ -489,6 +552,7 @@ export const _testing = {
   applyEnvelope,
   reset() {
     clearReconnectTimer()
+    clearPickerDismissTimer()
     if (_socket) {
       try { _socket.close() } catch { /* ignore */ }
       _socket = null
@@ -506,6 +570,9 @@ export const _testing = {
     _pendingTakeover = false
     _wsFactory = (url) => new WebSocket(url)
   },
+  // Expose the constant so tests / docs can reference the canonical
+  // auto-dismiss window without duplicating the number.
+  SELECTION_PICKER_AUTODISMISS_MS,
   setStore(store) { _store = store },
   setWsFactory(factory) { _wsFactory = factory },
   getSocket() { return _socket },

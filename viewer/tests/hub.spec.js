@@ -5,7 +5,7 @@
 // suite at viewer/e2e/hub.spec.js is the end-to-end coverage that
 // actually drives a mock /ws server.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useViewerStore } from '../src/store.js'
@@ -60,6 +60,10 @@ describe('useHub envelope dispatch', () => {
       applyDiagnostics: (s, items) => store.applyDiagnostics(s, items),
       applyHubError: (e) => store.applyHubError(e),
       applyViewChanged: (p) => store.applyViewChanged(p),
+      presentSelectionCandidates: (paths) =>
+        store.presentSelectionCandidates(paths),
+      chooseSelectionCandidate: (path) => store.chooseSelectionCandidate(path),
+      dismissSelectionCandidates: () => store.dismissSelectionCandidates(),
     })
   })
   afterEach(() => {
@@ -86,11 +90,45 @@ describe('useHub envelope dispatch', () => {
     expect(store.hubCursorTimeFs).toBe('1234567890')
   })
 
-  it('selection_changed picks the first element of an array instance_path', () => {
+  it('selection_changed with a single-string instance_path applies it', () => {
     _testing.applyEnvelope(
-      env('selection_changed', 'event', { instance_path: ['top.u_fifo', 'top.u_dut'] }, 'wave'),
+      env('selection_changed', 'event', { instance_path: 'top.u_fifo' }, 'wave'),
     )
     expect(store.selection).toBe('top.u_fifo')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('selection_changed picks [0] and surfaces the picker for multi-match arrays', () => {
+    _testing.applyEnvelope(
+      env(
+        'selection_changed',
+        'event',
+        { instance_path: ['top.u_fifo', 'top.u_dut', 'top.u_other'] },
+        'wave',
+      ),
+    )
+    // Smallest-range default still applied immediately so the canvas
+    // pans/zooms to ``[0]`` in the common case.
+    expect(store.selection).toBe('top.u_fifo')
+    // Full list surfaces so SelectionCandidates.vue can render the
+    // picker.
+    expect(store.selectionCandidates).toEqual([
+      'top.u_fifo',
+      'top.u_dut',
+      'top.u_other',
+    ])
+  })
+
+  it('selection_changed with a single-element array does not open the picker', () => {
+    // The hub only ever serialises ``instance_path`` as an array when
+    // there are multiple matches, but a future producer might emit a
+    // one-element array — that should still apply the selection without
+    // popping the disambiguation UI.
+    _testing.applyEnvelope(
+      env('selection_changed', 'event', { instance_path: ['top.u_only'] }, 'wave'),
+    )
+    expect(store.selection).toBe('top.u_only')
+    expect(store.selectionCandidates).toBeNull()
   })
 
   it('selection_changed from view origin does not loop back', () => {
@@ -311,6 +349,121 @@ describe('useHub.notifyClick', () => {
       expect(opened).toEqual(['rtlbuddy:///x.sv?line=1'])
     } finally {
       window.open = realOpen
+    }
+  })
+})
+
+describe('useHub disambiguation picker (rtl-buddy-view#55)', () => {
+  let store
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    store = useViewerStore()
+    _testing.reset()
+    _testing.setStore({
+      applyHubCursorTime: (t) => store.applyHubCursorTime(t),
+      applyHubSelection: (id) => store.applyHubSelection(id),
+      applyHubScope: (p) => store.applyHubScope(p),
+      applyDiagnostics: (s, items) => store.applyDiagnostics(s, items),
+      applyHubError: (e) => store.applyHubError(e),
+      presentSelectionCandidates: (paths) =>
+        store.presentSelectionCandidates(paths),
+      chooseSelectionCandidate: (path) => store.chooseSelectionCandidate(path),
+      dismissSelectionCandidates: () => store.dismissSelectionCandidates(),
+    })
+  })
+  afterEach(() => { _testing.reset() })
+
+  it('chooseSelectionCandidate locks the pick AND broadcasts to the hub', () => {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({ store })
+    sock.open()
+    sock.receive(env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }))
+
+    // Multi-match arrives → picker opens with [0] selected.
+    sock.receive(
+      env(
+        'selection_changed',
+        'event',
+        { instance_path: ['top.u_a', 'top.u_b'] },
+        'wave',
+      ),
+    )
+    expect(store.selection).toBe('top.u_a')
+    expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
+
+    const sentBefore = sock.sent.length
+    const hub = useHub()
+    hub.chooseSelectionCandidate('top.u_b')
+
+    // Store locked in on the override and the picker dismissed.
+    expect(store.selection).toBe('top.u_b')
+    expect(store.selectionCandidates).toBeNull()
+
+    // Wire broadcast: one ``selection_changed`` envelope from origin=view
+    // so peers (nvim, wave) lock onto the same path.
+    const fresh = sock.sent.slice(sentBefore).map((s) => JSON.parse(s))
+    const broadcast = fresh.find((e) => e.type === 'selection_changed')
+    expect(broadcast).toBeDefined()
+    expect(broadcast.origin).toBe('view')
+    expect(broadcast.payload.instance_path).toBe('top.u_b')
+  })
+
+  it('a fresh single-match selection_changed dismisses the picker', () => {
+    _testing.applyEnvelope(
+      env(
+        'selection_changed',
+        'event',
+        { instance_path: ['top.u_a', 'top.u_b'] },
+        'wave',
+      ),
+    )
+    expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
+
+    _testing.applyEnvelope(
+      env('selection_changed', 'event', { instance_path: 'top.other' }, 'wave'),
+    )
+    expect(store.selection).toBe('top.other')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('dismissSelectionCandidates clears the picker without touching selection', () => {
+    _testing.applyEnvelope(
+      env(
+        'selection_changed',
+        'event',
+        { instance_path: ['top.u_a', 'top.u_b'] },
+        'wave',
+      ),
+    )
+    expect(store.selection).toBe('top.u_a')
+    expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
+
+    const hub = useHub()
+    hub.dismissSelectionCandidates()
+    expect(store.selectionCandidates).toBeNull()
+    expect(store.selection).toBe('top.u_a')
+  })
+
+  it('the auto-dismiss timer clears the picker after the canonical window', async () => {
+    vi.useFakeTimers()
+    try {
+      _testing.applyEnvelope(
+        env(
+          'selection_changed',
+          'event',
+          { instance_path: ['top.u_a', 'top.u_b'] },
+          'wave',
+        ),
+      )
+      expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
+      // The selection (smallest-range default) survives the dismiss —
+      // only the picker chip goes away.
+      vi.advanceTimersByTime(_testing.SELECTION_PICKER_AUTODISMISS_MS + 1)
+      expect(store.selectionCandidates).toBeNull()
+      expect(store.selection).toBe('top.u_a')
+    } finally {
+      vi.useRealTimers()
     }
   })
 })
