@@ -291,41 +291,54 @@ function fmtBps(bps) {
   return `${v.toFixed(2)} ${units[i]}`
 }
 
-// "Open in marimo" — v1 prompts the user for test + suite_dir
-// because the SPA doesn't yet know which test produced the
-// currently-displayed axi-perf data. Remembers the previous answers
-// in localStorage so the second click in a session is a single
-// "Enter to confirm". Auto-detection from the loaded view.json is
-// Phase 2.5.
+// "Open in marimo" — auto-fills test + suite_dir from view.json's
+// top-level ``axi_perf`` block when the producer recorded them
+// (rtl-buddy-view since Phase 2.5; emits the block whenever
+// ``--overlay axi-perf=PATH`` is supplied). Falls back to prompting
+// when the block is missing or the producer couldn't derive the
+// canonical artefact-layout fields — previous answers persist to
+// localStorage in that fallback path.
 const LS_TEST = 'rtl-buddy.axi-notebook.test'
 const LS_SUITE = 'rtl-buddy.axi-notebook.suite_dir'
 
-async function onOpenInMarimo() {
-  let defaultTest = ''
-  let defaultSuite = ''
-  try {
-    defaultTest = window.localStorage.getItem(LS_TEST) || ''
-    defaultSuite = window.localStorage.getItem(LS_SUITE) || ''
-  } catch {
-    /* localStorage unavailable (private mode) — fall back to empty */
+function autoDetectedNotebookParams() {
+  const g = store.graph
+  const block = g && g.axi_perf
+  if (block && typeof block.test === 'string' && typeof block.suite_dir === 'string') {
+    return { test: block.test, suiteDir: block.suite_dir }
   }
+  return null
+}
 
-  const test = window.prompt(
-    'Test name (from tests.yaml):',
-    defaultTest,
-  )
-  if (!test) return
-  const suiteDir = window.prompt(
-    'Suite dir (relative to project root, e.g. verif/demo_axi_2x2):',
-    defaultSuite,
-  )
-  if (!suiteDir) return
+async function onOpenInMarimo() {
+  const auto = autoDetectedNotebookParams()
+  let test = auto ? auto.test : null
+  let suiteDir = auto ? auto.suiteDir : null
 
-  try {
-    window.localStorage.setItem(LS_TEST, test)
-    window.localStorage.setItem(LS_SUITE, suiteDir)
-  } catch {
-    /* best-effort persist */
+  if (!auto) {
+    let defaultTest = ''
+    let defaultSuite = ''
+    try {
+      defaultTest = window.localStorage.getItem(LS_TEST) || ''
+      defaultSuite = window.localStorage.getItem(LS_SUITE) || ''
+    } catch {
+      /* localStorage unavailable (private mode) — fall back to empty */
+    }
+
+    test = window.prompt('Test name (from tests.yaml):', defaultTest)
+    if (!test) return
+    suiteDir = window.prompt(
+      'Suite dir (relative to project root, e.g. verif/demo_axi_2x2):',
+      defaultSuite,
+    )
+    if (!suiteDir) return
+
+    try {
+      window.localStorage.setItem(LS_TEST, test)
+      window.localStorage.setItem(LS_SUITE, suiteDir)
+    } catch {
+      /* best-effort persist */
+    }
   }
 
   try {
