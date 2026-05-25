@@ -87,13 +87,40 @@ def _render(root: HierNode, **kwargs) -> dict:
 def test_envelope_required_keys_present() -> None:
     root = _node("top", "top")
     payload = _render(root)
-    assert payload["schema_version"] == "1.0"
+    assert payload["schema_version"] == "1.1"
     assert payload["top"] == "top"
+    # dut_top / tb_top default to null when the caller (the test
+    # harness) doesn't supply them — covers direct json_render.render
+    # invocations that don't know the CLI surface.
+    assert payload["dut_top"] is None
+    assert payload["tb_top"] is None
     assert payload["tool"]["name"] == "rtl-buddy-view"
     assert isinstance(payload["tool"]["version"], str)
     assert payload["nodes"]
     assert payload["edges"] == []
     assert payload["overlays_present"] == []
+
+
+def test_envelope_records_dut_top_and_tb_top_when_supplied() -> None:
+    """When the CLI passes through --top / --tb-top values, the
+    renderer surfaces them at the envelope level for downstream
+    consumers (SPA DUT-boundary rendering, hub wave↔view mapping).
+    Either may be null independently of the other."""
+    root = _node("tb_top", "tb_top")
+    payload = _render(root, dut_top="dut", tb_top="tb_top")
+    assert payload["top"] == "tb_top"
+    assert payload["dut_top"] == "dut"
+    assert payload["tb_top"] == "tb_top"
+
+    # --top alone
+    dut_only = _render(_node("dut", "dut"), dut_top="dut")
+    assert dut_only["dut_top"] == "dut"
+    assert dut_only["tb_top"] is None
+
+    # --tb-top alone
+    tb_only = _render(_node("tb_top", "tb_top"), tb_top="tb_top")
+    assert tb_only["dut_top"] is None
+    assert tb_only["tb_top"] == "tb_top"
 
 
 def test_output_is_deterministic() -> None:

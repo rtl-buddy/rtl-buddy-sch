@@ -553,13 +553,20 @@ export function useHub() {
           type: 'selection_changed',
           payload: { instance_path: node.id },
         })
-        return
       }
-      // Offline fallback: dispatch the source URI directly so a
-      // click is never a no-op when the hub isn't around.
-      if (node && node.link && typeof window !== 'undefined') {
-        try { window.open(node.link, '_blank') } catch { /* ignore */ }
-      }
+      // Hub offline: no-op. A left-click is a *selection* gesture
+      // — the SPA store already records the selection via
+      // ``store.select(...)`` in GraphCanvas.onClick, and that's all
+      // a click should do. The previous offline fallback opened the
+      // node's rtlbuddy:// URI via ``window.open`` so that
+      // standalone users got "something" on click, but the OS rarely
+      // has a handler registered for ``rtlbuddy://``, so the result
+      // was a blank tab on every single click — particularly bad
+      // when trying to double-click to descend (the first click of
+      // the dblclick opens a tab before the second click registers).
+      // Right-click (``requestOpenSource`` below) still falls back
+      // to ``window.open`` because there the user explicitly asked
+      // for "open source".
     },
     /**
      * Ask the hub to open a node's source location in the user's

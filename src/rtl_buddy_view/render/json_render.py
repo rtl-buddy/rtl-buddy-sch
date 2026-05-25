@@ -54,7 +54,7 @@ from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 from rtl_buddy_view.wave_annotations import WaveMap
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 def render(
@@ -69,6 +69,8 @@ def render(
     with_legend: bool = False,
     embed_layout: bool = True,
     module_table: ModuleTable | None = None,
+    dut_top: str | None = None,
+    tb_top: str | None = None,
 ) -> None:
     """Render ``node`` and its subtree as ``view.json`` v1.
 
@@ -89,6 +91,17 @@ def render(
     marimo" button (Phase 2 of the marimo umbrella) reads this
     block to skip the test/suite_dir prompts. Absent when no
     axi-perf overlay was supplied.
+
+    ``dut_top`` / ``tb_top`` (v1.1) record the module names supplied
+    via ``--top`` and ``--tb-top`` respectively, even when only one
+    was passed. They're additive descriptive fields — the rendered
+    root is always whatever ``node`` is — so the SPA can draw a DUT
+    boundary box at every instance whose ``module == dut_top`` and
+    the hub can choose the wave↔view coordinate mapping (identity
+    when ``tb_top`` is set, ``tb_prefix`` strip otherwise) without
+    re-reading config. ``None`` for both is valid (the field is
+    omitted as ``null``) — covers direct ``json_render.render``
+    callers that don't know the CLI surface.
     """
     payload = _build_payload(
         node,
@@ -100,6 +113,8 @@ def render(
         with_legend=with_legend,
         embed_layout=embed_layout,
         module_table=module_table,
+        dut_top=dut_top,
+        tb_top=tb_top,
     )
     json.dump(payload, out, indent=2, sort_keys=False)
     out.write("\n")
@@ -116,6 +131,8 @@ def _build_payload(
     with_legend: bool = False,
     embed_layout: bool = True,
     module_table: ModuleTable | None = None,
+    dut_top: str | None = None,
+    tb_top: str | None = None,
 ) -> dict:
     nodes = sorted(
         (
@@ -132,6 +149,8 @@ def _build_payload(
     payload: dict = {
         "schema_version": SCHEMA_VERSION,
         "top": node.module_name,
+        "dut_top": dut_top,
+        "tb_top": tb_top,
         "tool": {"name": "rtl-buddy-view", "version": _version()},
         "nodes": nodes,
         "edges": edges,

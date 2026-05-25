@@ -84,4 +84,36 @@ describe('parseViewJson', () => {
     p.overlays_present = 'clock,reset'
     expect(() => parseViewJson(p)).toThrow(/overlays_present must be an array/)
   })
+
+  // --- v1.1 (issue #99) — dut_top / tb_top -----------------------------
+
+  it('tolerates omitted dut_top / tb_top (v1.0 payload shape)', () => {
+    const p = minimalPayload()
+    // Neither field set; round-trip succeeds.
+    expect(() => parseViewJson(p)).not.toThrow()
+  })
+
+  it('round-trips dut_top + tb_top when supplied as strings', () => {
+    const p = minimalPayload()
+    p.schema_version = '1.1'
+    p.dut_top = 'dut'
+    p.tb_top = 'tb_top'
+    expect(parseViewJson(p)).toBe(p)
+  })
+
+  it('accepts dut_top / tb_top set to null', () => {
+    const p = minimalPayload()
+    p.dut_top = null
+    p.tb_top = null
+    expect(() => parseViewJson(p)).not.toThrow()
+  })
+
+  it('rejects dut_top / tb_top of the wrong type', () => {
+    const p1 = minimalPayload()
+    p1.dut_top = 42
+    expect(() => parseViewJson(p1)).toThrow(/dut_top must be a string or null/)
+    const p2 = minimalPayload()
+    p2.tb_top = []
+    expect(() => parseViewJson(p2)).toThrow(/tb_top must be a string or null/)
+  })
 })

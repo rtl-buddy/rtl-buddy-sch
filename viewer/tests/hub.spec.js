@@ -458,18 +458,31 @@ describe('useHub.notifyClick', () => {
     expect(sent.payload.instance_path).toBe('top.u_fifo')
   })
 
-  it('falls back to opening node.link when not connected', () => {
+  it('is a no-op (does NOT open node.link) when not connected', () => {
+    // Single-click is a *selection* gesture; opening a tab on every
+    // click broke the dblclick-to-descend flow whenever the OS
+    // didn't have a handler for rtlbuddy:// (very common — most
+    // standalone deployments). The store's select happens in
+    // GraphCanvas.onClick separately; this composable just no-ops
+    // when offline. Right-click (``requestOpenSource``) still
+    // falls back to window.open — that's an explicit "open source".
     const opened = []
     const realOpen = window.open
     window.open = (url) => { opened.push(url) }
     try {
       const hub = useHub()
-      // state is 'disconnected' by default after reset.
       hub.notifyClick({ id: 'top.u_x', link: 'rtlbuddy:///x.sv?line=1' })
-      expect(opened).toEqual(['rtlbuddy:///x.sv?line=1'])
+      expect(opened).toEqual([])
     } finally {
       window.open = realOpen
     }
+  })
+
+  it('still records lastClick when offline so the SPA can react locally', () => {
+    const hub = useHub()
+    const node = { id: 'top.u_y', link: 'rtlbuddy:///y.sv' }
+    hub.notifyClick(node)
+    expect(hub.lastClick.value).toStrictEqual(node)
   })
 })
 

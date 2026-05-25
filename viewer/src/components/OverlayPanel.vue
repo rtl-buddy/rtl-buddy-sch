@@ -22,6 +22,12 @@
             ></span>
             {{ item.label }}
           </li>
+          <li
+            v-if="tbScopeNoteFor(entry.name)"
+            class="legend-note"
+          >
+            {{ tbScopeNoteFor(entry.name) }}
+          </li>
         </ul>
       </li>
     </ul>
@@ -62,6 +68,22 @@ function legendFor(name) {
   const overlay = getOverlay(name)
   if (!overlay || typeof overlay.legend !== 'function') return []
   return overlay.legend(store.graph) || []
+}
+
+// Phase 6d (#99): in TB view, the DUT-side clock/reset domain maps
+// produced by rtl-buddy-cdc don't speak the testbench's scope —
+// SDC is the design's timing contract, not the simulation harness's
+// stimulus. So the DUT subtree keeps its full overlay tint while
+// every TB scope above renders unannotated. Surface that as a small
+// footnote on each affected overlay's legend rather than leaving a
+// silent gap; users see a legend entry that explains why the TB
+// blocks aren't coloured. Returns an empty string (falsy) for
+// overlays that aren't affected or when the view is DUT-rooted.
+function tbScopeNoteFor(name) {
+  if (store.renderedViewMode !== 'tb') return ''
+  if (name === 'clock') return '(no clock map above DUT)'
+  if (name === 'reset') return '(no reset map above DUT)'
+  return ''
 }
 
 // Structural-style legend — entries that aren't overlay-toggleable
@@ -135,6 +157,16 @@ function swatchStyle(item) {
   color: #475569;
 }
 .legend li { display: flex; align-items: center; gap: 0.5rem; padding: 0.1rem 0; }
+/* Phase 6d (#99): TB-scope explanatory footnote on the clock/reset
+   legends. Italic, smaller, indented so it reads as a side comment
+   rather than a swatched legend entry. */
+.legend-note {
+  font-style: italic;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  margin-top: 0.15rem;
+  padding-left: 1.25rem;
+}
 .swatch {
   width: 16px;
   height: 12px;

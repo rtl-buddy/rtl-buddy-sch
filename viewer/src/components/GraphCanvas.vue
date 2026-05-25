@@ -215,6 +215,7 @@ async function renderSvg() {
       anchor.setAttribute('data-bf-id', href)
     }
   }
+  applyDutBoundary(_svgEl, graph.value)
   applyOverlays(_svgEl, graph.value, store.enabledOverlays, overlayContext())
   applySelectionHighlight(store.selection)
   // Signal to the badge-position computed that the underlying SVG
@@ -223,6 +224,103 @@ async function renderSvg() {
   // Defer to next frame so flex layout has settled and the host
   // rect is its final size before we compute the fit scale.
   requestAnimationFrame(fitToWindow)
+}
+
+// Draw a dashed boundary + "DUT" label around every SVG group whose
+// model matches the active view's ``dut_top`` (view.json v1.1 / #99).
+//
+// Implementation: rather than restyle Graphviz's cluster polygon
+// (which sits flush against the children — visually cramped),
+// inject a dedicated ``<rect data-rb-dut-frame>`` sized to the
+// polygon's bbox PLUS a few pixels of padding, and a sibling
+// ``<text data-rb-dut-label>`` anchored at the rect's top-left
+// corner. Both elements carry ``pointer-events: none`` so they
+// stay out of the hit-test path — clicks still land on the
+// underlying cluster / leaf as before.
+//
+// Idempotent: any previously injected frame/label is removed before
+// the new pass, so a model/scope switch can't leave stale
+// decorations stacking up.
+const DUT_FRAME_PADDING = 10
+function applyDutBoundary(svgRoot, graph) {
+  if (!svgRoot) return
+  for (const el of svgRoot.querySelectorAll('[data-rb-dut-anchor]')) {
+    el.removeAttribute('data-rb-dut-anchor')
+  }
+  for (const el of svgRoot.querySelectorAll(
+    '[data-rb-dut-frame], [data-rb-dut-label]',
+  )) {
+    el.remove()
+  }
+  const dutTop = graph?.dut_top
+  if (typeof dutTop !== 'string' || !dutTop) return
+  const ns = 'http://www.w3.org/2000/svg'
+  for (const node of graph.nodes) {
+    if (!node || node.module !== dutTop) continue
+    // Match every SVG element tagged with this instance path —
+    // both ``g.node`` (leaf DUT) and ``g.cluster`` (container DUT)
+    // get decorated so the visual stays consistent across the
+    // hier-view's flat / cluster / bridge branches.
+    const groups = svgRoot.querySelectorAll(
+      `[data-node-id="${cssEscape(node.id)}"]`,
+    )
+    for (const group of groups) {
+      group.setAttribute('data-rb-dut-anchor', 'true')
+      const shape = group.querySelector('polygon, ellipse, rect, path')
+      if (!shape || typeof shape.getBBox !== 'function') continue
+      let bb
+      try {
+        bb = shape.getBBox()
+      } catch {
+        continue
+      }
+      if (!bb || !bb.width || !bb.height) continue
+
+      const pad = DUT_FRAME_PADDING
+      const frame = document.createElementNS(ns, 'rect')
+      frame.setAttribute('data-rb-dut-frame', 'true')
+      frame.setAttribute('x', String(bb.x - pad))
+      frame.setAttribute('y', String(bb.y - pad))
+      frame.setAttribute('width', String(bb.width + 2 * pad))
+      frame.setAttribute('height', String(bb.height + 2 * pad))
+      frame.setAttribute('rx', '6')
+      frame.setAttribute('ry', '6')
+      frame.setAttribute('fill', 'none')
+      frame.setAttribute('stroke', '#475569')
+      frame.setAttribute('stroke-width', '2')
+      frame.setAttribute('stroke-dasharray', '6,4')
+      frame.setAttribute('pointer-events', 'none')
+      // Insert as the FIRST child of the group so the dashed rect
+      // sits behind Graphviz's polygon + the children — the user
+      // sees the original cluster frame intact, with the dashed
+      // outer rect floating around it as a separator.
+      group.insertBefore(frame, group.firstChild)
+
+      const label = document.createElementNS(ns, 'text')
+      label.setAttribute('data-rb-dut-label', 'true')
+      // Anchor at the padded rect's top-left, slightly inset so the
+      // letters don't kiss the dashed stroke.
+      label.setAttribute('x', String(bb.x - pad + 6))
+      label.setAttribute('y', String(bb.y - pad - 4))
+      label.setAttribute('fill', '#475569')
+      label.setAttribute('font-size', '10')
+      label.setAttribute('font-family', 'ui-monospace, Menlo, monospace')
+      label.setAttribute('font-weight', '700')
+      label.setAttribute('letter-spacing', '0.05em')
+      label.setAttribute('pointer-events', 'none')
+      label.textContent = 'DUT'
+      group.appendChild(label)
+    }
+  }
+}
+
+// CSS.escape is widely available but not on every JSDOM build; fall
+// back to a conservative escaper for selector use. Mirrors the same
+// helper in overlays/clock.js — kept local so this file stands on
+// its own for the boundary-renderer unit test.
+function cssEscape(s) {
+  if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(s)
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`)
 }
 
 // Mark the SVG element whose ``data-node-id`` matches the current
