@@ -50,6 +50,10 @@ from rtl_buddy_view.reset_annotations import (
     ResetAnnotationsError,
     ResetDomainMap,
 )
+from rtl_buddy_view.wave_annotations import (
+    WaveAnnotationsError,
+    WaveMap,
+)
 
 app = typer.Typer(
     help="RTL hierarchy and connectivity visualization.",
@@ -173,6 +177,7 @@ def main(
             AnnotationsError,
             ResetAnnotationsError,
             AxiPerfAnnotationsError,
+            WaveAnnotationsError,
         ) as e:
             # Loader exceptions carry the overlay's own prefix in
             # their message; we just qualify with the overlay name
@@ -205,6 +210,7 @@ def main(
     domain_map: DomainMap | None = annotations.get("clock")  # type: ignore[assignment]
     reset_map: ResetDomainMap | None = annotations.get("reset")  # type: ignore[assignment]
     axi_perf_map: AxiPerfMap | None = annotations.get("axi-perf")  # type: ignore[assignment]
+    wave_map: WaveMap | None = annotations.get("wave")  # type: ignore[assignment]
     # Carry the original axi-perf.json path through to the JSON
     # renderer so view.json can carry a top-level `axi_perf.source`
     # field — the SPA's "Open in marimo" button reads it to skip the
@@ -225,6 +231,7 @@ def main(
             domain_map,
             reset_map,
             axi_perf_map,
+            wave_map,
             clock_legend,
             axi_perf_source=axi_perf_source,
         )
@@ -237,6 +244,7 @@ def main(
                 domain_map,
                 reset_map,
                 axi_perf_map,
+                wave_map,
                 clock_legend,
                 axi_perf_source=axi_perf_source,
             )
@@ -302,7 +310,12 @@ def _collect_overlays(
             )
             raise typer.Exit(code=2)
         path = Path(raw_path)
-        if not path.exists():
+        # The ``wave`` overlay's path argument carries an optional
+        # ``:<time_spec>`` suffix (``foo.vcd:12500ns``), so the
+        # literal path string won't exist as a file. Defer the
+        # existence check to the wave loader, which strips the time
+        # suffix before opening the VCD.
+        if name != "wave" and not path.exists():
             typer.echo(
                 f"overlay {name}: file not found: {path}",
                 err=True,
@@ -320,6 +333,7 @@ def _render(
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
     axi_perf_map: AxiPerfMap | None,
+    wave_map: WaveMap | None,
     clock_legend: bool,
     *,
     axi_perf_source: Path | None = None,
@@ -344,6 +358,7 @@ def _render(
             domain_map=domain_map,
             reset_map=reset_map,
             axi_perf_map=axi_perf_map,
+            wave_map=wave_map,
             axi_perf_source=axi_perf_source,
             with_legend=clock_legend,
         )

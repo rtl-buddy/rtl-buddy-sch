@@ -1,0 +1,37 @@
+$date Phase 8 wave overlay fixture $end
+$version manual $end
+$timescale 1 ns $end
+$scope module tb $end
+$scope module dut $end
+$var wire 1 ! clk $end
+$var wire 1 " rst_n $end
+$var wire 8 # q [7:0] $end
+$scope module u_ff $end
+$var wire 1 ! clk $end
+$var wire 1 " rst_n $end
+$var wire 8 # q [7:0] $end
+$upscope $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+$dumpvars
+0!
+0"
+b00000000 #
+$end
+#5
+1"
+#10
+1!
+b00000001 #
+#20
+0!
+#30
+1!
+b00000010 #
+#40
+0!
+#50
+1!
+b00000011 #

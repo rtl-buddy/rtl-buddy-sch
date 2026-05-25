@@ -46,6 +46,7 @@ from rtl_buddy_view.extractor import Port, PortConnection, SourceLocation
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.reset_annotations import ResetDomainMap
+from rtl_buddy_view.wave_annotations import WaveMap
 
 SCHEMA_VERSION = "1.0"
 
@@ -57,6 +58,7 @@ def render(
     domain_map: DomainMap | None = None,
     reset_map: ResetDomainMap | None = None,
     axi_perf_map: AxiPerfMap | None = None,
+    wave_map: WaveMap | None = None,
     axi_perf_source: Path | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
@@ -86,6 +88,7 @@ def render(
         domain_map,
         reset_map,
         axi_perf_map,
+        wave_map,
         axi_perf_source=axi_perf_source,
         with_legend=with_legend,
         embed_layout=embed_layout,
@@ -99,20 +102,24 @@ def _build_payload(
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
     axi_perf_map: AxiPerfMap | None,
+    wave_map: WaveMap | None = None,
     *,
     axi_perf_source: Path | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
 ) -> dict:
     nodes = sorted(
-        (_node_dict(n, domain_map, reset_map, axi_perf_map) for n in _walk(node)),
+        (
+            _node_dict(n, domain_map, reset_map, axi_perf_map, wave_map)
+            for n in _walk(node)
+        ),
         key=lambda d: d["id"],
     )
     edges = sorted(
         _walk_edges(node, domain_map, reset_map, axi_perf_map),
         key=lambda d: (d["from"], d["to"]),
     )
-    overlays_present = _overlays_present(domain_map, reset_map, axi_perf_map)
+    overlays_present = _overlays_present(domain_map, reset_map, axi_perf_map, wave_map)
     payload: dict = {
         "schema_version": SCHEMA_VERSION,
         "top": node.module_name,
@@ -121,6 +128,16 @@ def _build_payload(
         "edges": edges,
         "overlays_present": overlays_present,
     }
+    # Top-level overlay_meta surfaces overlay-wide knobs the viewer
+    # uses for the legend (e.g. "@ 12500000 fs" annotation next to the
+    # wave toggle). Only emit the wave block when a non-empty payload
+    # exists; consistent with the graceful-degradation contract the
+    # clock + reset overlays follow.
+    if wave_map is not None and not wave_map.is_empty:
+        payload.setdefault("overlay_meta", {})["wave"] = {
+            "t_fs": str(wave_map.t_fs),
+            "source_file": wave_map.source_file,
+        }
     if axi_perf_source is not None:
         payload["axi_perf"] = _axi_perf_source_block(axi_perf_source)
     if embed_layout:
@@ -218,6 +235,7 @@ def _overlays_present(
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
     axi_perf_map: AxiPerfMap | None,
+    wave_map: WaveMap | None = None,
 ) -> list[str]:
     """Sorted list of overlay names whose payloads contributed to this view.
 
@@ -245,6 +263,8 @@ def _overlays_present(
         axi_perf_map.bundles or axi_perf_map.interconnects
     ):
         present.append("axi-perf")
+    if wave_map is not None and not wave_map.is_empty:
+        present.append("wave")
     return sorted(present)
 
 
@@ -266,6 +286,7 @@ def _node_dict(
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
     axi_perf_map: AxiPerfMap | None,
+    wave_map: WaveMap | None = None,
 ) -> dict:
     """One ``view.json`` v1 node entry.
 
@@ -283,7 +304,7 @@ def _node_dict(
         "ports": _ports_for_node(node),
         "source": _source_block(node),
         "link": _link_for(node),
-        "overlays": _node_overlays(node, domain_map, reset_map, axi_perf_map),
+        "overlays": _node_overlays(node, domain_map, reset_map, axi_perf_map, wave_map),
     }
     return out
 
@@ -446,6 +467,7 @@ def _node_overlays(
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
     axi_perf_map: AxiPerfMap | None,
+    wave_map: WaveMap | None = None,
 ) -> dict:
     """Per-overlay contributions for ``node``.
 
@@ -471,7 +493,56 @@ def _node_overlays(
         axi_perf_block = _axi_perf_node_contribution(node, axi_perf_map)
         if axi_perf_block:
             overlays["axi-perf"] = axi_perf_block
+    if wave_map is not None and not wave_map.is_empty:
+        wave_block = _wave_node_contribution(node, wave_map)
+        if wave_block:
+            overlays["wave"] = wave_block
     return overlays
+
+
+def _wave_node_contribution(node: HierNode, wave_map: WaveMap) -> dict:
+    """Per-node wave snapshot: ``{t_fs, ports: [{name, value}, ...]}``.
+
+    Walks the node's declared port list and looks each one up in the
+    wave-map by hierarchy-suffix matching. Ports the VCD didn't carry
+    are silently omitted — the viewer's wave overlay shows ``??`` for
+    missing entries (or just no badge), matching the graceful-fallback
+    requirement from #21.
+    """
+    ports = node.module.ports if node.module is not None else ()
+    if not ports:
+        return {}
+    rows: list[dict[str, str]] = []
+    for port in ports:
+        value = wave_map.find_for_port(node.instance_path, port.name)
+        if value is None:
+            continue
+        rows.append({"name": port.name, "value": _format_sv_literal(value)})
+    if not rows:
+        return {}
+    # Deterministic order: alphabetical by port name. Matches the
+    # SPA's wave.js renderer's sort discipline so screenshots are
+    # stable.
+    rows.sort(key=lambda r: r["name"])
+    return {"t_fs": str(wave_map.t_fs), "ports": rows}
+
+
+def _format_sv_literal(value: str) -> str:
+    """Convert the VCD-reader's raw bit string into an SV literal.
+
+    Scalars stay as-is (a single character: ``0`` / ``1`` / ``x`` /
+    ``z``). Multi-bit vectors come back as ``WIDTH'b<bits>`` so the
+    viewer-side wave.js renderer can hex-format or pass through
+    unchanged. Real / string values (prefix ``r`` / ``s``) pass
+    through verbatim — the viewer chooses how to render them.
+    """
+    if not value:
+        return value
+    if value[0] in ("r", "s"):
+        return value
+    if len(value) == 1:
+        return f"1'b{value}"
+    return f"{len(value)}'b{value}"
 
 
 def _axi_perf_node_contribution(node: HierNode, axi_perf_map: AxiPerfMap) -> dict:

@@ -170,7 +170,7 @@ def test_no_externals_no_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
     warn = io.StringIO()
     registry = default_registry(warn_stream=warn)
 
-    assert registry.names() == ("axi-perf", "clock", "reset")
+    assert registry.names() == ("axi-perf", "clock", "reset", "wave")
     assert warn.getvalue() == ""
 
 
