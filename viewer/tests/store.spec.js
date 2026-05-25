@@ -700,6 +700,55 @@ describe('viewer store', () => {
     expect(store.hubSignalSelected).toBeNull()
   })
 
+  it('applyWaveValues auto-enables the wave overlay on first non-empty payload', () => {
+    // The producer's view.json doesn't have to list "wave" in
+    // overlays_present for the live cascade to paint — receiving
+    // values is itself the signal that the user wants badges
+    // visible. Without this, the wave overlay starts disabled and
+    // wave.js's apply() clears badges on every render pass.
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    expect(store.enabledOverlays.has('wave')).toBe(false)
+    store.applyWaveValues({
+      t_fs: '100',
+      values: [{ wave_scope: 'tb', signal: 'q', value: "1'b1" }],
+    })
+    expect(store.enabledOverlays.has('wave')).toBe(true)
+  })
+
+  it('applyWaveValues with empty values does NOT auto-enable the overlay', () => {
+    // An empty values batch is a no-op (the producer may emit it
+    // when the cursor moves into a region with no tracked vars).
+    // We auto-enable on real data, not on the bare cursor wiggle.
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    store.applyWaveValues({ t_fs: '1', values: [] })
+    expect(store.enabledOverlays.has('wave')).toBe(false)
+  })
+
+  it('setOverlayEnabled flips a name + reassigns the Set so consumers re-render', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    const before = store.enabledOverlays
+    store.setOverlayEnabled('clock', false)
+    expect(store.enabledOverlays.has('clock')).toBe(false)
+    // Set identity must change so Vue's reactive watcher fires.
+    expect(store.enabledOverlays).not.toBe(before)
+    store.setOverlayEnabled('clock', true)
+    expect(store.enabledOverlays.has('clock')).toBe(true)
+  })
+
+  it('setOverlayEnabled rejects malformed names without crashing', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    const before = store.enabledOverlays
+    store.setOverlayEnabled('', true)
+    store.setOverlayEnabled(null, true)
+    store.setOverlayEnabled(undefined, false)
+    // No-op: Set identity unchanged.
+    expect(store.enabledOverlays).toBe(before)
+  })
+
   describe('openAxiNotebook', () => {
     let origFetch
     let origOpen

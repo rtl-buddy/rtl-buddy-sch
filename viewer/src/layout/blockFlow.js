@@ -275,7 +275,8 @@ export function buildBlockFlowDot(graph, scopeId) {
       if (i === 0) {
         const cellId = `bf-ctr:${htmlEscape(child.id)}`
         tds.push(
-          `<TD HREF="${cellId}" TITLE="${cellId}" ROWSPAN="${rowCount}" ALIGN="CENTER">` +
+          `<TD HREF="${cellId}" TITLE="${cellId}" ROWSPAN="${rowCount}" ` +
+            `ALIGN="CENTER" WIDTH="160">` +
             `<B>${htmlEscape(inst)}</B><BR/>${htmlEscape(child.module)}</TD>`,
         )
       }
@@ -294,7 +295,7 @@ export function buildBlockFlowDot(graph, scopeId) {
     }
     const label =
       `<<TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0"` +
-      ` CELLPADDING="4" BGCOLOR="${BG}">${rows.join('')}</TABLE>>`
+      ` CELLPADDING="6" BGCOLOR="${BG}">${rows.join('')}</TABLE>>`
     const attrs = [`label=${label}`, `group="cluster_flow_scope"`]
     if (child.is_blackbox) {
       attrs.push('style="dashed"')
@@ -432,8 +433,15 @@ function _renderLeafScope(scope) {
     }
     if (i === 0) {
       const cellId = `bf-ctr:${htmlEscape(scope.id)}`
+      // WIDTH gives the middle column breathing room for long
+      // module / instance names. Without it Graphviz auto-sizes to
+      // the FONT-rendered width, which underestimates kerning on
+      // some host fonts and collides with the output-port column.
+      // 160 pt (~2 inches) fits ``test_module_3``-class names with
+      // margin; longer names auto-grow on top.
       tds.push(
-        `<TD HREF="${cellId}" TITLE="${cellId}" ROWSPAN="${rowCount}" ALIGN="CENTER">${middle}</TD>`,
+        `<TD HREF="${cellId}" TITLE="${cellId}" ROWSPAN="${rowCount}" ` +
+          `ALIGN="CENTER" WIDTH="160">${middle}</TD>`,
       )
     }
     if (i < outPorts.length) {
@@ -450,7 +458,7 @@ function _renderLeafScope(scope) {
   }
   const label =
     `<<TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0"` +
-    ` CELLPADDING="4" BGCOLOR="${BG}">${rows.join('')}</TABLE>>`
+    ` CELLPADDING="6" BGCOLOR="${BG}">${rows.join('')}</TABLE>>`
 
   const lines = [
     'digraph block_flow_leaf {',

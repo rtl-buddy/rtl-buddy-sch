@@ -274,6 +274,58 @@ describe('built-in overlays', () => {
     expect(resolvePortValues(node, live).get('q')).toBe("1'b1")
   })
 
+  it('resolvePortValues walks node-path prefixes to match testbench-wrapped scopes', () => {
+    // The bridge broadcasts wave_values_changed keyed by the
+    // VCD/FST's hierarchy (``tb_top.clk``). The viewer's node.id is
+    // design-relative (``test_module_3``). The wave overlay must
+    // walk node-path prefixes shedding one segment at a time so the
+    // join terminates at the bare suffix (``clk``) — without this,
+    // the live cascade never paints badges on a typical testbench.
+    const node = {
+      id: 'test_module_3',
+      ports: [{ name: 'clk' }, { name: 'rst' }, { name: 'z' }],
+      overlays: {},
+    }
+    const live = {
+      'tb_top.clk': '1',
+      'tb_top.rst': '0',
+      'tb_top.z':   '1010',
+    }
+    const out = resolvePortValues(node, live)
+    expect(out.get('clk')).toBe('1')
+    expect(out.get('rst')).toBe('0')
+    expect(out.get('z')).toBe('1010')
+  })
+
+  it('resolvePortValues prefers shortest matching path on ambiguous suffix', () => {
+    // Two cache keys end with ``.q``. The shorter (closer to leaf)
+    // wins — the design subtree usually sits below the testbench
+    // wrapper, so shorter == more-specific by construction.
+    const node = {
+      id: 'design_top',
+      ports: [{ name: 'q' }],
+      overlays: {},
+    }
+    const live = {
+      'tb.dut.q':            'A',
+      'tb.dut.u_inner.q':    'B',
+    }
+    expect(resolvePortValues(node, live).get('q')).toBe('A')
+  })
+
+  it('resolvePortValues walks prefixes for nested instances', () => {
+    // node.id ``counter.u_ff``, VCD path ``tb.dut.u_ff.q``. The
+    // walker drops ``counter`` (no match for ``counter.u_ff.q``),
+    // then finds ``u_ff.q`` as a suffix of ``tb.dut.u_ff.q``.
+    const node = {
+      id: 'counter.u_ff',
+      ports: [{ name: 'q' }],
+      overlays: {},
+    }
+    const live = { 'tb.dut.u_ff.q': '1' }
+    expect(resolvePortValues(node, live).get('q')).toBe('1')
+  })
+
   it('wave overlay applies port-value badges and clears them on toggle-off', () => {
     const overlay = getOverlay('wave')
     const graph = {
@@ -285,30 +337,31 @@ describe('built-in overlays', () => {
         },
       ],
     }
-    // Stub the SVG group: querySelector finds the polygon shape on
-    // first hit and the badge on second hit. Track DOM mutations so
-    // we can assert what the overlay wrote.
-    const removed = []
-    let badge = null
+    // Stub the SVG group. The new wave overlay's paintBadge does
+    // querySelectorAll('.rb-wave-badge') to clear stale badges, then
+    // queries svgRoot for ``[data-bf-id="bf-in:..."]`` cells; in the
+    // hier-view fallback path it queries the group for the polygon
+    // shape and appends a single stacked text. Track every appended
+    // child so we can assert.
+    const appended = []
     const shape = {
       getBBox: () => ({ x: 0, y: 0, width: 50, height: 30 }),
     }
     const group = {
-      _selectorHits: 0,
       attrs: {},
       setAttribute(name, val) { this.attrs[name] = val },
       removeAttribute(name) { delete this.attrs[name] },
       querySelector(sel) {
-        if (sel.includes('rb-wave-badge')) return badge
+        if (sel.includes('rb-wave-badge')) return null
         return shape
       },
-      appendChild(node) { badge = node },
+      querySelectorAll() { return appended.slice() },
+      appendChild(node) { appended.push(node) },
     }
-    const document_ns = []
     const origCreate = global.document?.createElementNS
     global.document = {
-      createElementNS(_ns, name) {
-        const el = {
+      createElementNS(_ns, _name) {
+        return {
           children: [],
           attrs: {},
           textContent: '',
@@ -323,26 +376,33 @@ describe('built-in overlays', () => {
             if (i >= 0) this.children.splice(i, 1)
             this.firstChild = this.children[0] || null
           },
+          remove() { /* clearBadge → remove() */ },
         }
-        document_ns.push(name)
-        return el
       },
     }
-    const svgRoot = { querySelector: () => group }
+    // svgRoot has no block-flow cells → paintBadge falls through to
+    // the stacked-hier-view path.
+    const svgRoot = {
+      querySelector(sel) {
+        if (sel.startsWith('[data-bf-id')) return null
+        return group
+      },
+    }
 
     overlay.apply(svgRoot, graph, true, { waveValuesByKey: {} })
-    expect(badge).not.toBeNull()
+    expect(appended.length).toBe(1)
+    const badge = appended[0]
     expect(badge.attrs.class).toBe('rb-wave-badge')
     expect(badge.children.length).toBe(1)
     expect(badge.children[0].textContent).toBe("q=1'b1")
 
-    // Toggle off: badge is removed via group.querySelector → badge,
-    // then badge has no .remove() in our stub; the overlay calls
-    // existing.remove(). Provide it.
-    badge.remove = function () { removed.push(this); badge = null }
+    // Toggle off: clearBadge calls querySelectorAll → returns the
+    // currently-appended badges, then ``remove()`` is invoked. Track
+    // the calls so we can assert the badge was cleared.
+    let removed = 0
+    badge.remove = () => { removed += 1 }
     overlay.apply(svgRoot, graph, false, { waveValuesByKey: {} })
-    expect(removed.length).toBe(1)
-    expect(badge).toBeNull()
+    expect(removed).toBe(1)
 
     global.document.createElementNS = origCreate
   })
@@ -359,6 +419,7 @@ describe('built-in overlays', () => {
       setAttribute(k, v) { this.attrs[k] = v },
       removeAttribute(k) { delete this.attrs[k] },
       querySelector() { return null },  // no shape → no badge painted
+      querySelectorAll() { return [] },  // no stale badges to clear
       appendChild() {},
     }
     overlay.apply(

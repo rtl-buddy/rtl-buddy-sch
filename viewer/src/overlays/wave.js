@@ -49,26 +49,28 @@ export function resolvePortValues(node, waveValuesByKey) {
     }
   }
   if (waveValuesByKey && typeof waveValuesByKey === 'object') {
+    const cacheKeys = Object.keys(waveValuesByKey)
     // Each port may explicitly carry its (wave_scope, signal) pair
-    // (overrides the instance-path convention). Otherwise fall back
-    // to ``${node.id}.${port.name}``.
+    // (overrides the instance-path convention). Otherwise we walk
+    // hierarchy-path prefixes leaf→root looking for a suffix match
+    // in the live cache — mirrors ``WaveMap.find_for_port`` in the
+    // Python wave_annotations producer. Without this the live path
+    // breaks the moment the VCD/FST wraps the design under a
+    // testbench (``tb.dut.*`` keys vs. ``design_top.*`` node ids).
     const ports = Array.isArray(node?.ports) ? node.ports : []
     for (const port of ports) {
       if (!port || typeof port.name !== 'string') continue
-      let key
       const overrideScope = port.wave_scope
       const overrideSig = port.signal
+      let live
       if (
         typeof overrideScope === 'string' && overrideScope.length > 0 &&
         typeof overrideSig === 'string' && overrideSig.length > 0
       ) {
-        key = `${overrideScope}.${overrideSig}`
-      } else if (typeof node.id === 'string' && node.id.length > 0) {
-        key = `${node.id}.${port.name}`
+        live = waveValuesByKey[`${overrideScope}.${overrideSig}`]
       } else {
-        continue
+        live = findBySuffix(cacheKeys, waveValuesByKey, node.id, port.name)
       }
-      const live = waveValuesByKey[key]
       if (typeof live === 'string') out.set(port.name, live)
     }
     // Producer may also surface explicit (wave_scope, signal) pairs
@@ -90,73 +92,138 @@ export function resolvePortValues(node, waveValuesByKey) {
 }
 
 function clearBadge(group) {
-  const existing = group.querySelector(`.${BADGE_CLASS}`)
-  if (existing) existing.remove()
+  // Multiple badges can exist on a single group when each port has
+  // its own per-cell badge (block-flow view). Clear them all so the
+  // next paint starts from a clean slate.
+  for (const el of Array.from(group.querySelectorAll(`.${BADGE_CLASS}`))) {
+    el.remove()
+  }
 }
 
-function paintBadge(group, values) {
-  if (values.size === 0) {
-    clearBadge(group)
-    return
+// Hierarchy-suffix match between a node + port and the live wave-
+// values cache. Walks ``node.id`` left→right shedding one segment
+// at a time so a port on ``counter.u_ff`` matches a VCD signal at
+// ``tb.dut.u_ff.q`` (drop ``counter`` → suffix ``u_ff.q`` → bare
+// ``q``). Same shape as the Python ``WaveMap.find_for_port`` so
+// offline + live both terminate at the same key.
+function findBySuffix(cacheKeys, cache, nodeId, portName) {
+  const segments = typeof nodeId === 'string' && nodeId.length > 0
+    ? nodeId.split('.')
+    : []
+  for (let start = 0; start <= segments.length; start++) {
+    const tail = segments.slice(start)
+    const suffix = tail.length > 0
+      ? `${tail.join('.')}.${portName}`
+      : portName
+    if (typeof cache[suffix] === 'string') return cache[suffix]
+    // Find shortest cache key ending with ``.suffix`` (closest to leaf).
+    const dotSuffix = `.${suffix}`
+    let best = null
+    for (const k of cacheKeys) {
+      if (k.endsWith(dotSuffix) && (best === null || k.length < best.length)) {
+        best = k
+      }
+    }
+    if (best !== null) return cache[best]
   }
-  // Compute anchor point: top-right of the first <polygon>/<rect>/
-  // <ellipse>/<path> inside the group. Cluster groups expose their
-  // bounding rect via the same shape selector — we deliberately do
-  // NOT skip clusters here (a clustered subtree's ports are still
-  // worth labelling), but the rendered badge is anchored to the
-  // cluster's own bbox, not nested children.
+  return undefined
+}
+
+function paintBadge(svgRoot, group, nodeId, values) {
+  // Always start from a clean slate — older badges from a different
+  // value set could be stale (per-port badges are layout-sensitive).
+  clearBadge(group)
+  if (values.size === 0) return
+
+  const NS = 'http://www.w3.org/2000/svg'
+  // Block-flow view: viz.js renders each port as its own HTML-table
+  // cell wrapped in an <a xlink:href="bf-in:<id>:<port>"> (or
+  // ``bf-out:…``). GraphCanvas stamps that as ``data-bf-id``.
+  // Anchor the badge BESIDE the specific port cell so the label
+  // sits next to the pin it describes — much more readable than
+  // one stacked list inside the parent cluster.
+  let perPortCount = 0
+  for (const [name, value] of values) {
+    const cell =
+      svgRoot.querySelector(
+        `[data-bf-id="bf-in:${cssEscape(nodeId)}:${cssEscape(name)}"]`,
+      ) ||
+      svgRoot.querySelector(
+        `[data-bf-id="bf-out:${cssEscape(nodeId)}:${cssEscape(name)}"]`,
+      )
+    if (!cell) continue
+    let bbox
+    try {
+      bbox = cell.getBBox()
+    } catch {
+      continue
+    }
+    if (!bbox || !isFinite(bbox.x) || !isFinite(bbox.y)) continue
+    const isInput = cell.getAttribute('data-bf-id')?.startsWith('bf-in:')
+    const text = document.createElementNS(NS, 'text')
+    text.setAttribute('class', BADGE_CLASS)
+    text.setAttribute('font-family', 'ui-monospace, Menlo, Consolas, monospace')
+    text.setAttribute('font-size', '9')
+    text.setAttribute('fill', '#0f172a')
+    text.setAttribute('pointer-events', 'none')
+    // Inputs sit on the LEFT edge of the design; their label-text
+    // should hang OUTSIDE the box to the left of the cell. Outputs
+    // sit on the RIGHT edge; label hangs outside to the right.
+    const gap = 4
+    if (isInput) {
+      text.setAttribute('x', String(bbox.x - gap))
+      text.setAttribute('text-anchor', 'end')
+    } else {
+      text.setAttribute('x', String(bbox.x + bbox.width + gap))
+      text.setAttribute('text-anchor', 'start')
+    }
+    // Vertically centre on the cell.
+    text.setAttribute('y', String(bbox.y + bbox.height / 2))
+    text.setAttribute('dominant-baseline', 'middle')
+    text.textContent = `= ${value}`
+    group.appendChild(text)
+    perPortCount += 1
+  }
+  if (perPortCount > 0) return
+
+  // Hier-view fallback: no per-port cells, so paint one stacked
+  // badge inside the node group's bbox top-left.
   const shape = group.querySelector('polygon, ellipse, rect, path')
-  if (!shape) {
-    clearBadge(group)
-    return
-  }
+  if (!shape) return
   let bbox
   try {
     bbox = shape.getBBox()
   } catch {
-    clearBadge(group)
     return
   }
-  if (!bbox || !isFinite(bbox.x) || !isFinite(bbox.y)) {
-    clearBadge(group)
-    return
-  }
-
-  const NS = 'http://www.w3.org/2000/svg'
-  // Reuse the existing badge element when possible so a 60 Hz scrub
-  // doesn't churn DOM nodes — we just rewrite the children.
-  let badge = group.querySelector(`.${BADGE_CLASS}`)
-  if (!badge) {
-    badge = document.createElementNS(NS, 'text')
-    badge.setAttribute('class', BADGE_CLASS)
-    badge.setAttribute('font-family', 'ui-monospace, Menlo, Consolas, monospace')
-    badge.setAttribute('font-size', '10')
-    badge.setAttribute('fill', '#0f172a')
-    badge.setAttribute('pointer-events', 'none')
-    group.appendChild(badge)
-  }
-  // Anchor at the top-right corner, push slightly outside the
-  // shape so it doesn't crowd a port pin label.
-  badge.setAttribute('x', String(bbox.x + bbox.width + 4))
-  badge.setAttribute('y', String(bbox.y))
+  if (!bbox || !isFinite(bbox.x) || !isFinite(bbox.y)) return
+  const inset = 4
+  const anchorX = bbox.x + inset
+  const anchorY = bbox.y + inset
+  const badge = document.createElementNS(NS, 'text')
+  badge.setAttribute('class', BADGE_CLASS)
+  badge.setAttribute('font-family', 'ui-monospace, Menlo, Consolas, monospace')
+  badge.setAttribute('font-size', '10')
+  badge.setAttribute('fill', '#0f172a')
+  badge.setAttribute('pointer-events', 'none')
+  badge.setAttribute('x', String(anchorX))
+  badge.setAttribute('y', String(anchorY))
   badge.setAttribute('text-anchor', 'start')
-  // Clear existing children — we're rewriting the whole list.
-  while (badge.firstChild) badge.removeChild(badge.firstChild)
   // Deterministic order: alphabetical by port name. Matches the
   // sort discipline the dot/json renderers already enforce on
   // overlay output, so screenshots are stable run-to-run.
-  const lines = []
-  for (const [name, value] of values) lines.push([name, value])
+  const lines = Array.from(values.entries())
   lines.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
   let dy = '0.8em'
   for (const [name, value] of lines) {
     const tspan = document.createElementNS(NS, 'tspan')
-    tspan.setAttribute('x', String(bbox.x + bbox.width + 4))
+    tspan.setAttribute('x', String(anchorX))
     tspan.setAttribute('dy', dy)
     tspan.textContent = `${name}=${value}`
     badge.appendChild(tspan)
     dy = '1.1em'
   }
+  group.appendChild(badge)
 }
 
 export const waveOverlay = {
@@ -190,7 +257,7 @@ export const waveOverlay = {
         continue
       }
       const values = resolvePortValues(node, waveValuesByKey)
-      paintBadge(group, values)
+      paintBadge(svgRoot, group, node.id, values)
       // Selected-signal highlight: tag the node group when one of
       // its ports matches the last signal_selected event. CSS picks
       // it up via ``[data-wave-selected]``.

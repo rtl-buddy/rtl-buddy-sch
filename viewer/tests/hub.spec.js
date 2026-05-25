@@ -62,6 +62,8 @@ describe('useHub envelope dispatch', () => {
       applyViewChanged: (p) => store.applyViewChanged(p),
       applyWaveValues: (p) => store.applyWaveValues(p),
       applySignalSelected: (p) => store.applySignalSelected(p),
+      setOverlayEnabled: (name, enabled) =>
+        store.setOverlayEnabled(name, enabled),
       presentSelectionCandidates: (paths) =>
         store.presentSelectionCandidates(paths),
       chooseSelectionCandidate: (path) => store.chooseSelectionCandidate(path),
@@ -383,6 +385,30 @@ describe('useHub envelope dispatch', () => {
       env('signal_selected', 'event', { wave_scope: 'tb.dut', signal: 'other' }, 'view'),
     )
     expect(store.hubSignalSelected.signal).toBe('q')
+  })
+
+  it('view_overlay_set request flips the named overlay + replies ok', () => {
+    // Remote control: any peer can ask the SPA to toggle an
+    // overlay layer. Lets agents / CLI / nvim flag overlays the
+    // user should look at without needing to click the panel.
+    _testing.applyEnvelope({
+      v: 1,
+      id: '00000000-0000-4000-8000-00000000abcd',
+      origin: 'cli',
+      kind: 'request',
+      type: 'view_overlay_set',
+      payload: { name: 'clock', enabled: false },
+    })
+    expect(store.enabledOverlays.has('clock')).toBe(false)
+    _testing.applyEnvelope({
+      v: 1,
+      id: '00000000-0000-4000-8000-00000000abce',
+      origin: 'cli',
+      kind: 'request',
+      type: 'view_overlay_set',
+      payload: { name: 'clock', enabled: true },
+    })
+    expect(store.enabledOverlays.has('clock')).toBe(true)
   })
 
   it('unknown types are silently ignored (protocol §11)', () => {
