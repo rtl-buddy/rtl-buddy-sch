@@ -200,6 +200,14 @@ export const useViewerStore = defineStore('viewer', {
     // user can retry.
     axiNotebookLaunching: false,
     axiNotebookError: null,
+    // Time window pushed by a marimo brush selection (Phase 3 of
+    // axi-profiler#16). ``{t_start_fs, t_end_fs}`` or null. Driven
+    // by the event-sync composable's ``time-window`` topic; the SPA
+    // surfaces it as an AxiPerfView header chip but never filters
+    // its aggregate stats — those are pre-computed, the chip is
+    // purely informational ("the notebook is currently focused on
+    // this window").
+    axiPerfTimeWindow: null,
   }),
   getters: {
     nodesById: (state) => {
@@ -616,6 +624,21 @@ export const useViewerStore = defineStore('viewer', {
     },
     selectAxiBundle(name) {
       this.selectedAxiBundle = name || null
+    },
+    applyAxiPerfTimeWindow(payload) {
+      if (!payload || typeof payload !== 'object') {
+        this.axiPerfTimeWindow = null
+        return
+      }
+      const { t_start_fs, t_end_fs } = payload
+      if (!Number.isFinite(t_start_fs) || !Number.isFinite(t_end_fs)) {
+        this.axiPerfTimeWindow = null
+        return
+      }
+      this.axiPerfTimeWindow = { t_start_fs, t_end_fs }
+    },
+    clearAxiPerfTimeWindow() {
+      this.axiPerfTimeWindow = null
     },
     toggleOverlay(name) {
       if (this.enabledOverlays.has(name)) {
