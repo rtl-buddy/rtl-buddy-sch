@@ -51,6 +51,16 @@
       <strong>Superseded</strong> — another tab took over this hub.
       <button type="button" @click="takeBack">Take back</button>
     </div>
+    <div
+      v-else-if="isReconnecting"
+      class="reconnecting-banner"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="banner-dot" aria-hidden="true"></span>
+      <strong>Hub disconnected</strong> — reconnecting… Wave-value badges
+      are frozen at their last-known values.
+    </div>
   </div>
 </template>
 
@@ -99,6 +109,20 @@ const STATE_LABEL = {
 }
 const displayState = computed(
   () => STATE_LABEL[hub.state.value] || hub.state.value,
+)
+
+// Reconnecting banner predicate. The hub composable latches
+// ``wasEverReady`` the first time it sees a welcome — distinguishing
+// "first connect in progress" (no banner; we haven't been online
+// yet) from "lost the hub mid-session" (show banner so the user
+// knows the wave-value badges they're looking at are frozen at the
+// last-known sample). Suppressed when ``superseded`` is set so the
+// two banners don't fight for the same slot.
+const isReconnecting = computed(
+  () =>
+    hub.wasEverReady.value &&
+    !hub.superseded.value &&
+    (hub.state.value === 'disconnected' || hub.state.value === 'connecting'),
 )
 
 const hint = computed(() => {
@@ -272,5 +296,29 @@ function takeBack() {
   cursor: pointer;
   border-radius: 4px;
   font-size: 0.75rem;
+}
+.reconnecting-banner {
+  margin-top: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.reconnecting-banner .banner-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: #d97706;
+  animation: rb-banner-pulse 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes rb-banner-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1;    }
 }
 </style>
