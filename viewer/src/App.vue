@@ -137,6 +137,7 @@ import ToastHost from './components/ToastHost.vue'
 import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
 import CollapsiblePanel from './components/CollapsiblePanel.vue'
 import { initHub, useHub } from './composables/useHub.js'
+import { initEventSync } from './composables/useEventSync.js'
 
 const store = useViewerStore()
 const hub = useHub()
@@ -202,6 +203,9 @@ onMounted(() => {
   // Phase 10d: kick the hub composable. Same-origin /ws — the hub
   // injects window.__RTL_BUDDY_HUB__ when it serves the bundle.
   initHub({ store })
+  // Phase 3 (axi-profiler#16): bidirectional state sync with the
+  // marimo notebook over /api/events/sync.
+  initEventSync({ store })
 })
 onBeforeUnmount(() => {
   document.removeEventListener('dragover', onDragOver)

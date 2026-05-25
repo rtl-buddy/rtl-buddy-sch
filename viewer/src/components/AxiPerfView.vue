@@ -27,6 +27,23 @@
       >
         {{ store.axiNotebookError }} (click to dismiss)
       </div>
+      <div
+        v-if="store.axiPerfTimeWindow"
+        class="time-window-chip"
+        aria-label="notebook time window"
+      >
+        <span>
+          notebook window:
+          {{ fmtFs(store.axiPerfTimeWindow.t_start_fs) }} —
+          {{ fmtFs(store.axiPerfTimeWindow.t_end_fs) }}
+        </span>
+        <button
+          type="button"
+          class="time-window-clear"
+          @click="store.clearAxiPerfTimeWindow()"
+          title="clear"
+        >×</button>
+      </div>
     </header>
 
     <div class="view-body">
@@ -37,7 +54,7 @@
             v-for="b in bundles"
             :key="b.bundleKey"
             :class="{ selected: b.bundleKey === store.selectedAxiBundle }"
-            @click="store.selectAxiBundle(b.bundleKey)"
+            @click="onSelectBundle(b.bundleKey)"
           >
             <div class="bundle-name">{{ b.name }}</div>
             <div class="bundle-meta">
@@ -58,7 +75,7 @@
             v-for="ic in interconnects"
             :key="ic.node_path"
             :class="{ selected: ic.node_path === store.selectedAxiBundle }"
-            @click="store.selectAxiBundle(ic.node_path)"
+            @click="onSelectBundle(ic.node_path)"
           >
             <div class="bundle-name">{{ ic.node_path }}</div>
             <div class="bundle-meta">
@@ -148,10 +165,35 @@ import {
 } from 'chart.js'
 
 import { useViewerStore } from '../store.js'
+import { useEventSync } from '../composables/useEventSync.js'
 
 ChartJS.register(BarElement, CategoryScale, LinearScale, Title, Tooltip, Legend)
 
 const store = useViewerStore()
+const eventSync = useEventSync()
+
+function onSelectBundle(name) {
+  store.selectAxiBundle(name)
+  // Best-effort publish — broker may not be connected (no hub
+  // running, or marimo not yet spawned). Auto-detected notebook
+  // metadata mirrors the same source as the "Open in marimo" path
+  // so the notebook can scope the filter to the right artefact.
+  const auto = autoDetectedNotebookParams()
+  eventSync.publish('selection', {
+    bundle: name,
+    test: auto?.test ?? null,
+    suite_dir: auto?.suiteDir ?? null,
+  })
+}
+
+function fmtFs(v) {
+  if (!Number.isFinite(v)) return '?'
+  // fs → human: ns above 1e6, µs above 1e9, ms above 1e12.
+  if (Math.abs(v) >= 1e12) return (v / 1e12).toFixed(2) + ' ms'
+  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(2) + ' µs'
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(2) + ' ns'
+  return v + ' fs'
+}
 
 // Collect every edge with an axi-perf overlay into a flat list,
 // then layer in the interconnect roll-ups separately. Each entry
@@ -396,6 +438,29 @@ async function onOpenInMarimo() {
 .open-marimo-btn:hover:not(:disabled) {
   background: #4338ca;
   border-color: #4338ca;
+}
+.time-window-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  padding: 0.15rem 0.45rem;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  color: #3730a3;
+  border-radius: 999px;
+}
+.time-window-clear {
+  border: 0;
+  background: transparent;
+  color: #3730a3;
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.time-window-clear:hover {
+  color: #4338ca;
 }
 .open-marimo-btn:disabled {
   opacity: 0.5;
