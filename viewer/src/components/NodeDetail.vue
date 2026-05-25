@@ -56,7 +56,14 @@
           <table class="ports-table">
             <tbody>
               <tr v-for="port in group.ports" :key="port.name">
-                <td class="port-name-cell"><code>{{ port.name }}</code></td>
+                <td class="port-name-cell">
+                  <code>{{ port.name }}</code>
+                  <code
+                    v-if="port.port_kind === 'interface' || port.port_kind === 'interface_signal'"
+                    class="port-iface-tag"
+                    :title="ifaceTagTitle(port)"
+                  >{{ ifaceTag(port) }}</code>
+                </td>
                 <td class="port-expr-cell">
                   <code v-if="port.expr" class="port-expr">← {{ port.expr }}</code>
                 </td>
@@ -97,16 +104,27 @@ const hasParameters = computed(
 )
 // Group ports by direction so the panel reads like a port list in
 // an SV declaration — inputs first, then outputs, then inout /
-// other. Each section shows the count alongside the header.
-const PORT_DIR_ORDER = ['input', 'output', 'inout']
-const PORT_DIR_LABEL = { input: 'inputs', output: 'outputs', inout: 'inout' }
+// other. Interface bundles (``port_kind === 'interface'``) have no
+// direction and would otherwise pile up under "unknown"; we route
+// them to a dedicated "interfaces" group instead. Flattened
+// interface signals (``port_kind === 'interface_signal'``) have a
+// real ``dir`` pinned from the modport, so they land naturally in
+// inputs / outputs. (#102, #105.)
+const PORT_DIR_ORDER = ['input', 'output', 'inout', 'interface']
+const PORT_DIR_LABEL = {
+  input: 'inputs',
+  output: 'outputs',
+  inout: 'inout',
+  interface: 'interfaces',
+}
 const portGroups = computed(() => {
   if (!node.value || !Array.isArray(node.value.ports) || node.value.ports.length === 0) {
     return []
   }
   const groups = new Map()
   for (const port of node.value.ports) {
-    const dir = port.dir || 'unknown'
+    const dir =
+      port.port_kind === 'interface' ? 'interface' : port.dir || 'unknown'
     if (!groups.has(dir)) groups.set(dir, [])
     groups.get(dir).push(port)
   }
@@ -123,6 +141,24 @@ const portGroups = computed(() => {
   }
   return out
 })
+
+function ifaceDescriptor(port) {
+  // ``test_mem_if.sub`` when both are present; just the type when no
+  // modport; just the modport when no type — should never happen but
+  // we degrade gracefully.
+  if (port.interface_type && port.modport) return `${port.interface_type}.${port.modport}`
+  return port.interface_type || port.modport || 'interface'
+}
+function ifaceTag(port) {
+  return port.port_kind === 'interface_signal'
+    ? `(from ${ifaceDescriptor(port)})`
+    : `(${ifaceDescriptor(port)})`
+}
+function ifaceTagTitle(port) {
+  return port.port_kind === 'interface_signal'
+    ? `Signal flattened from ${ifaceDescriptor(port)}`
+    : `Unresolved interface port: ${ifaceDescriptor(port)}`
+}
 // Openable when the node has either a structured ``source`` block
 // (preferred — hub path uses (file, line, col)) or just a raw
 // ``link`` URI (offline fallback through the OS).
@@ -259,4 +295,13 @@ function openInEditor() {
   word-break: break-all;
 }
 .port-expr { color: #475569; }
+.port-iface-tag {
+  margin-left: 0.5em;
+  color: #92400e;       /* amber-800 — matches the block-flow tint */
+  background: #fef3c7;  /* amber-100 */
+  font-style: italic;
+  font-size: 0.85em;
+  padding: 0 0.3em;
+  border-radius: 3px;
+}
 </style>

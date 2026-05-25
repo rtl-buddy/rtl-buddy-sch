@@ -319,7 +319,7 @@ export function buildBlockFlowDot(graph, scopeId) {
         const cellId = `bf-in:${htmlEscape(child.id)}:${htmlEscape(p)}`
         tds.push(
           `<TD HREF="${cellId}" TITLE="${cellId}" PORT="${htmlEscape(p)}" ALIGN="LEFT">` +
-            `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)}</FONT></TD>`,
+            `<FONT POINT-SIZE="${PORT_FONT_SIZE}">▶ ${htmlEscape(p)}</FONT></TD>`,
         )
       } else if (i < leftRowCount) {
         tds.push(interfacePortCellHtml(child.id, ifacePorts[i - inPorts.length]))
@@ -341,7 +341,7 @@ export function buildBlockFlowDot(graph, scopeId) {
         const cellId = `bf-out:${htmlEscape(child.id)}:${htmlEscape(p)}`
         tds.push(
           `<TD HREF="${cellId}" TITLE="${cellId}" PORT="${htmlEscape(p)}" ALIGN="RIGHT">` +
-            `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)}</FONT></TD>`,
+            `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)} ▶</FONT></TD>`,
         )
       } else {
         tds.push('<TD></TD>')
@@ -486,7 +486,7 @@ function _renderLeafScope(scope) {
       const cellId = `bf-in:${htmlEscape(scope.id)}:${htmlEscape(p)}`
       tds.push(
         `<TD HREF="${cellId}" TITLE="${cellId}" PORT="${htmlEscape(p)}" ALIGN="LEFT">` +
-          `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)}</FONT></TD>`,
+          `<FONT POINT-SIZE="${PORT_FONT_SIZE}">▶ ${htmlEscape(p)}</FONT></TD>`,
       )
     } else if (i < leftRowCount) {
       tds.push(interfacePortCellHtml(scope.id, ifacePorts[i - inPorts.length]))
@@ -511,7 +511,7 @@ function _renderLeafScope(scope) {
       const cellId = `bf-out:${htmlEscape(scope.id)}:${htmlEscape(p)}`
       tds.push(
         `<TD HREF="${cellId}" TITLE="${cellId}" PORT="${htmlEscape(p)}" ALIGN="RIGHT">` +
-          `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)}</FONT></TD>`,
+          `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)} ▶</FONT></TD>`,
       )
     } else {
       tds.push('<TD></TD>')

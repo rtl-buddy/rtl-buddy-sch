@@ -126,21 +126,32 @@ URI references — that's the cursor target editors jump to.
   `null` when the port is declared but unconnected.
 - `anchor` (object | null) — `{line, col}` for the binding site
   in the parent module.
-- `port_kind` (`"wire" | "interface"`, optional) — discriminator for
-  the port's source-level shape. Omitted on `wire` ports to keep
-  the payload minimal; present (set to `"interface"`) on
-  SystemVerilog interface ports (`test_mem_if.sub m`).
+- `port_kind` (`"wire" | "interface" | "interface_signal"`, optional)
+  — discriminator for the port's source-level shape:
+  - omitted (default `wire`) on scalar / vector signals with a
+    `dir`.
+  - `"interface"` on SystemVerilog interface ports
+    (`test_mem_if.sub m`) whose interface body the producer
+    couldn't resolve. The port carries no `dir`; the SPA renders
+    it as an amber-tinted italic `▶▶` row and the wave overlay
+    skips it.
+  - `"interface_signal"` on the per-signal *flattening* of an
+    interface port (e.g. `m.req`, `m.addr`). Carries a real `dir`
+    pinned by the source modport (`modport sub(input a, b)` →
+    `dir: "input"`); behaves like a normal wire for connectivity
+    and wave-overlay purposes.
 - `interface_type` (string | null, optional) — interface name (e.g.
-  `"test_mem_if"`). Present only with `port_kind == "interface"`.
+  `"test_mem_if"`). Present only with `port_kind` of `"interface"`
+  or `"interface_signal"`.
 - `modport` (string | null, optional) — modport name (e.g. `"sub"`).
   May be `null` when the source declared a bare interface port
-  without a modport. Present only with `port_kind == "interface"`.
+  without a modport. Present only with `port_kind` of `"interface"`
+  or `"interface_signal"`.
 
-Interface ports are bundles, not scalars: they have no `dir`, and
-the wave overlay deliberately skips them (a single literal next to
-a bundle would be ambiguous). The SPA's block-flow renderer styles
-them distinctively — italic, amber tint, `▶▶` glyph — so a
-reviewer can tell at a glance that the row is a bundle.
+Bundle interface ports (`port_kind == "interface"`) are
+not value-badge-eligible (one literal next to a bundle would be
+ambiguous). Flattened signals (`port_kind == "interface_signal"`)
+are scalar and behave like wires.
 
 Positional port connections on blackbox instances are intentionally
 *excluded* from `ports[]` (they have no port name to bind to);

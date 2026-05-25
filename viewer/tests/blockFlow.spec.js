@@ -104,11 +104,12 @@ describe('buildBlockFlowDot', () => {
     const dot = buildBlockFlowDot(makeGraph(), 'top.u_a')
     expect(dot).toMatch(/digraph block_flow_leaf/)
     // u_a's ports include d_in (input) and q (output); clk is also
-    // there and we keep it (matches hier-view).
+    // there and we keep it (matches hier-view). Direction is
+    // encoded as a ``▶`` glyph prefix on inputs / suffix on outputs.
     expect(dot).toContain('"top.u_a"')
-    expect(dot).toContain('>d_in<')
-    expect(dot).toContain('>q<')
-    expect(dot).toContain('>clk<')
+    expect(dot).toContain('>▶ d_in<')
+    expect(dot).toContain('>q ▶<')
+    expect(dot).toContain('>▶ clk<')
     // Port cells retain the click identity so right-click open-source
     // still works for leaves.
     expect(dot).toContain('bf-in:top.u_a:d_in')
@@ -180,6 +181,44 @@ describe('buildBlockFlowDot', () => {
     // it. But we should also not accidentally treat 'm' as a wire
     // input port:
     expect(dot).not.toContain('bf-in:top.u_a:m')
+  })
+
+  it('flattened interface signals render as ▶ wire rows in leaf scope (#105)', () => {
+    // When the producer flattens an interface port (port_kind ===
+    // "interface_signal"), each signal has a real ``dir`` from its
+    // modport. The leaf-scope renderer should treat them like normal
+    // wires, picking up the ▶ cell-arrow polish for free.
+    const g = makeGraph()
+    const ua = g.nodes.find((n) => n.id === 'top.u_a')
+    ua.ports.push(
+      {
+        name: 'm.req',
+        dir: 'input',
+        expr: 'u_if.sub',
+        anchor: null,
+        port_kind: 'interface_signal',
+        interface_type: 'test_mem_if',
+        modport: 'sub',
+      },
+      {
+        name: 'm.addr',
+        dir: 'input',
+        expr: 'u_if.sub',
+        anchor: null,
+        port_kind: 'interface_signal',
+        interface_type: 'test_mem_if',
+        modport: 'sub',
+      },
+    )
+    const dot = buildBlockFlowDot(g, 'top.u_a')
+    // Flattened signals appear as bf-in cells (not bf-iface) and
+    // carry the ▶ glyph from the cell-arrow polish (#105 ask 2).
+    expect(dot).toContain('bf-in:top.u_a:m.req')
+    expect(dot).toContain('bf-in:top.u_a:m.addr')
+    expect(dot).toMatch(/>▶ m\.req</)
+    expect(dot).toMatch(/>▶ m\.addr</)
+    // No spurious bf-iface row for the flattened case.
+    expect(dot).not.toContain('bf-iface:top.u_a:m.req')
   })
 
   it('renders interface port on a leaf scope (#102)', () => {

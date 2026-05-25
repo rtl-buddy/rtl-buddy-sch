@@ -42,7 +42,13 @@ from urllib.parse import quote
 
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.axi_perf_annotations import AxiPerfMap, Bundle as AxiPerfBundle
-from rtl_buddy_view.extractor import Port, PortConnection, SourceLocation
+from rtl_buddy_view.extractor import (
+    ModuleTable,
+    Port,
+    PortConnection,
+    SourceLocation,
+    flatten_interface_ports,
+)
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.reset_annotations import ResetDomainMap
@@ -62,6 +68,7 @@ def render(
     axi_perf_source: Path | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
+    module_table: ModuleTable | None = None,
 ) -> None:
     """Render ``node`` and its subtree as ``view.json`` v1.
 
@@ -92,6 +99,7 @@ def render(
         axi_perf_source=axi_perf_source,
         with_legend=with_legend,
         embed_layout=embed_layout,
+        module_table=module_table,
     )
     json.dump(payload, out, indent=2, sort_keys=False)
     out.write("\n")
@@ -107,10 +115,11 @@ def _build_payload(
     axi_perf_source: Path | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
+    module_table: ModuleTable | None = None,
 ) -> dict:
     nodes = sorted(
         (
-            _node_dict(n, domain_map, reset_map, axi_perf_map, wave_map)
+            _node_dict(n, domain_map, reset_map, axi_perf_map, wave_map, module_table)
             for n in _walk(node)
         ),
         key=lambda d: d["id"],
@@ -146,6 +155,7 @@ def _build_payload(
             domain_map=domain_map,
             reset_map=reset_map,
             with_legend=with_legend,
+            module_table=module_table,
         )
     return payload
 
@@ -187,6 +197,7 @@ def _layout_block(
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
     with_legend: bool,
+    module_table: ModuleTable | None = None,
 ) -> dict:
     """Build the ``layout`` block by reusing the dot renderer.
 
@@ -212,7 +223,7 @@ def _layout_block(
     # parent-arrow-child tree. The standalone ``--format dot``
     # output keeps the original shape — see ``dot.render``'s
     # docstring for the rationale.
-    dot_render.render(node, buf, as_cluster_tree=True)
+    dot_render.render(node, buf, as_cluster_tree=True, module_table=module_table)
     # Reverse-map: Graphviz emits the cluster's ``<title>`` as the
     # sanitized DOT identifier (``cluster_<sanitized-instance-path>``),
     # not the instance path itself. The SPA needs the original
@@ -287,6 +298,7 @@ def _node_dict(
     reset_map: ResetDomainMap | None,
     axi_perf_map: AxiPerfMap | None,
     wave_map: WaveMap | None = None,
+    module_table: ModuleTable | None = None,
 ) -> dict:
     """One ``view.json`` v1 node entry.
 
@@ -301,7 +313,7 @@ def _node_dict(
         "instance_name": node.instance.name if node.instance is not None else None,
         "is_blackbox": node.is_blackbox,
         "parameters": _parameters_dict(node),
-        "ports": _ports_for_node(node),
+        "ports": _ports_for_node(node, module_table),
         "source": _source_block(node),
         "link": _link_for(node),
         "overlays": _node_overlays(node, domain_map, reset_map, axi_perf_map, wave_map),
@@ -326,13 +338,20 @@ def _parameters_dict(node: HierNode) -> dict[str, str]:
     }
 
 
-def _ports_for_node(node: HierNode) -> list[dict]:
+def _ports_for_node(
+    node: HierNode, module_table: ModuleTable | None = None
+) -> list[dict]:
     """Render the node's port list with expr/anchor joined from the parent.
 
     For a non-blackbox child instance, every port the *module*
     declares appears here; ``expr`` and ``anchor`` come from the
     parent-side connection that bound the port (if any).
     Unconnected ports surface with ``expr: null``.
+
+    Interface ports (``port_kind == "interface"``) are flattened into
+    per-signal scalar ports via :func:`flatten_interface_ports` when
+    the interface body is in scope. Unresolved interface types fall
+    back to the bundle row from #102. (#105.)
 
     For blackbox children (module never resolved) we don't know the
     port list, but the *parent's* port_connections tells us which
@@ -344,7 +363,8 @@ def _ports_for_node(node: HierNode) -> list[dict]:
     """
     expr_by_name = _expr_by_port(node)
     if node.module is not None and node.module.ports:
-        return [_port_dict_from_module(p, expr_by_name) for p in node.module.ports]
+        ports = flatten_interface_ports(node.module, module_table)
+        return [_port_dict_from_module(p, expr_by_name) for p in ports]
     if node.is_blackbox and node.instance is not None:
         # Best-effort: render the named bindings from the parent
         # side; positional bindings are skipped here because v1's
@@ -384,20 +404,27 @@ def _expr_by_port(node: HierNode) -> dict[str, PortConnection]:
 
 def _port_dict_from_module(port: Port, expr_by_name: dict[str, PortConnection]) -> dict:
     conn = expr_by_name.get(port.name)
+    if conn is None and port.port_kind == "interface_signal":
+        # Flattened interface signals (``m.req``) don't have their own
+        # parent-side binding — the source-level binding is at the
+        # owning interface port (``m``). Look that up so the SPA can
+        # still wire connectivity through the interface instance
+        # (e.g. block-flow edges anchored at ``_in_u_if.sub``). (#105.)
+        owning = port.name.split(".", 1)[0]
+        conn = expr_by_name.get(owning)
     out: dict = {
         "name": port.name,
         "dir": port.direction,
         "expr": conn.net_expr_text if conn is not None else None,
         "anchor": _anchor_dict(conn.location) if conn is not None else None,
     }
-    # Interface ports (``test_mem_if.sub m``) opt into three extra
-    # keys so downstream renderers can style them distinctively and
-    # the wave overlay can skip them (bundles aren't scalars; one
-    # literal per port would be ambiguous). Wire ports — the
-    # overwhelming majority — keep the minimal v1 shape.
-    # (rtl-buddy-view#102.)
-    if port.port_kind == "interface":
-        out["port_kind"] = "interface"
+    # Interface ports (``test_mem_if.sub m``) and their flattened
+    # per-signal variants (``m.req``, kind=``interface_signal``) opt
+    # into the three extra keys so downstream renderers can style
+    # them distinctively. Wire ports — the overwhelming majority —
+    # keep the minimal v1 shape. (rtl-buddy-view#102, #105.)
+    if port.port_kind in ("interface", "interface_signal"):
+        out["port_kind"] = port.port_kind
         out["interface_type"] = port.interface_type
         out["modport"] = port.modport
     return out

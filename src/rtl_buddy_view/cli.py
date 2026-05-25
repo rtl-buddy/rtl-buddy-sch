@@ -38,6 +38,7 @@ from rtl_buddy_view.annotations import (
     AnnotationsError,
     DomainMap,
 )
+from rtl_buddy_view.extractor import ModuleTable
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.frontend.verible import VeribleParseError, VeribleUnavailable
 from rtl_buddy_view.graph import HierarchyError, build_hierarchy
@@ -234,6 +235,7 @@ def main(
             wave_map,
             clock_legend,
             axi_perf_source=axi_perf_source,
+            module_table=table,
         )
     else:
         with output_path.open("w") as sink:
@@ -247,6 +249,7 @@ def main(
                 wave_map,
                 clock_legend,
                 axi_perf_source=axi_perf_source,
+                module_table=table,
             )
 
 
@@ -337,6 +340,7 @@ def _render(
     clock_legend: bool,
     *,
     axi_perf_source: Path | None = None,
+    module_table: ModuleTable | None = None,
 ) -> None:
     if fmt is OutputFormat.tree:
         tree_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
@@ -348,6 +352,7 @@ def _render(
             reset_map=reset_map,
             axi_perf_map=axi_perf_map,
             with_legend=clock_legend,
+            module_table=module_table,
         )
     elif fmt is OutputFormat.mermaid:
         mermaid_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
@@ -361,6 +366,7 @@ def _render(
             wave_map=wave_map,
             axi_perf_source=axi_perf_source,
             with_legend=clock_legend,
+            module_table=module_table,
         )
     else:  # pragma: no cover
         raise ValueError(f"Unknown format: {fmt}")

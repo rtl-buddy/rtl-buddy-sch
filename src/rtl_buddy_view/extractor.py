@@ -50,7 +50,14 @@ class Port:
     # ``"wire"`` keeps existing producers + consumers untouched;
     # ``port_kind == "interface"`` is the only value that adds the
     # follow-up fields. (rtl-buddy-view#102)
-    port_kind: Literal["wire", "interface"] = "wire"
+    #
+    # ``"interface_signal"`` is the per-signal flattening output of
+    # :func:`flatten_interface_ports` (#105): a synthesized scalar
+    # port carrying a real ``direction`` pinned by the source
+    # interface's modport. ``interface_type`` and ``modport``
+    # remain populated so the SPA can render "from <iface>.<mp>"
+    # styling.
+    port_kind: Literal["wire", "interface", "interface_signal"] = "wire"
     # Populated only when ``port_kind == "interface"``:
     #   - ``interface_type``: the interface name (``test_mem_if``).
     #   - ``modport``: the named modport from the ``.modport`` suffix
@@ -119,6 +126,148 @@ class Module:
     leading_doc: str = ""
 
 
+@dataclass(frozen=True)
+class InterfaceSignal:
+    """One signal declared inside a SystemVerilog interface body.
+
+    Mirrors :class:`Port` but lives at the interface-body level —
+    interface ports flatten down to one synthesized :class:`Port`
+    per signal when a modport pins the direction. (#105.)
+    """
+
+    name: str
+    type_text: str | None
+    location: SourceLocation | None
+
+
+@dataclass(frozen=True)
+class Modport:
+    """A named modport declaration inside an interface.
+
+    Each tuple holds signal names (declared inside the interface
+    body) grouped by direction. A signal may appear in only one of
+    the three buckets per modport.
+    """
+
+    name: str
+    inputs: tuple[str, ...] = ()
+    outputs: tuple[str, ...] = ()
+    inouts: tuple[str, ...] = ()
+    location: SourceLocation | None = None
+
+
+@dataclass(frozen=True)
+class Interface:
+    """A SystemVerilog interface declaration. (#105.)
+
+    Captured so that interface ports on instantiated modules can be
+    flattened into per-signal :class:`Port`-shaped entries with
+    synthesized directions (from the modport). When no matching
+    interface entry exists (blackbox interface, parametric type the
+    elaborator didn't simplify), consumers fall back to the bundle
+    row from #102.
+    """
+
+    name: str
+    parameters: tuple[Parameter, ...]
+    signals: tuple[InterfaceSignal, ...]
+    modports: tuple[Modport, ...]
+    location: SourceLocation | None
+
+
+def flatten_interface_ports(
+    module: "Module", table: "ModuleTable | None"
+) -> tuple[Port, ...]:
+    """Expand interface ports on ``module`` into per-signal scalar ports.
+
+    For each port with ``port_kind == "interface"``:
+
+    * If ``table`` is None, or the interface type isn't in
+      ``table.interfaces_by_name``, or the named modport isn't in
+      that interface, or the modport has no signals → keep the
+      original bundle port unchanged. This is the graceful-fallback
+      contract from #102.
+    * Otherwise → emit one synthesized :class:`Port` per signal in
+      the modport. Direction comes from the modport's input/output/inout
+      bucket; name is ``"{port.name}.{signal.name}"``; ``port_kind``
+      is ``"interface_signal"`` so downstream renderers can apply
+      "from interface" styling without confusing it with a bare wire.
+
+    Non-interface ports pass through verbatim. Source order is
+    preserved (interface signals slot in where the bundle port sat),
+    so block-flow's input/output column layout stays predictable.
+    (#105.)
+    """
+    if not module.ports:
+        return module.ports
+    interfaces_by_name = table.interfaces_by_name if table is not None else {}
+    out: list[Port] = []
+    for port in module.ports:
+        if port.port_kind != "interface":
+            out.append(port)
+            continue
+        iface = interfaces_by_name.get(port.interface_type or "")
+        modport = None
+        if iface is not None and port.modport is not None:
+            modport = next(
+                (mp for mp in iface.modports if mp.name == port.modport),
+                None,
+            )
+        if iface is None or modport is None:
+            # Unresolved: keep the bundle row (matches the #102 SPA
+            # fallback). When the interface is in scope but the
+            # modport name is missing we also can't pin directions —
+            # treating it as a bundle is safer than guessing.
+            out.append(port)
+            continue
+        signal_type: dict[str, str | None] = {
+            s.name: s.type_text for s in iface.signals
+        }
+        flattened = _flattened_signals_from_modport(
+            port=port, modport=modport, signal_type=signal_type
+        )
+        if not flattened:
+            # Modport without any directional entries — same fallback
+            # as an unresolved type. Keeps the bundle visible rather
+            # than silently dropping the port.
+            out.append(port)
+            continue
+        out.extend(flattened)
+    return tuple(out)
+
+
+def _flattened_signals_from_modport(
+    *,
+    port: Port,
+    modport: "Modport",
+    signal_type: dict[str, str | None],
+) -> list[Port]:
+    """Build the list of synthesized scalar ports for one modport.
+
+    Helper extracted so :func:`flatten_interface_ports` stays linear
+    and the per-direction emit can be reasoned about in isolation.
+    """
+    flat: list[Port] = []
+    for direction, signals in (
+        ("input", modport.inputs),
+        ("output", modport.outputs),
+        ("inout", modport.inouts),
+    ):
+        for sig_name in signals:
+            flat.append(
+                Port(
+                    name=f"{port.name}.{sig_name}",
+                    direction=direction,  # type: ignore[arg-type]
+                    type_text=signal_type.get(sig_name),
+                    location=port.location,
+                    port_kind="interface_signal",
+                    interface_type=port.interface_type,
+                    modport=port.modport,
+                )
+            )
+    return flat
+
+
 @dataclass
 class ModuleTable:
     """Result of running the frontend over a project's source files.
@@ -133,3 +282,8 @@ class ModuleTable:
 
     modules_by_name: dict[str, Module] = field(default_factory=dict)
     unresolved: set[str] = field(default_factory=set)
+    # Populated when the frontend encountered ``interface`` declarations.
+    # Keyed by interface name. Consumers (json_render, dot, tree,
+    # mermaid) use this to flatten interface ports into per-signal
+    # rows via :func:`flatten_interface_ports`. (#105.)
+    interfaces_by_name: dict[str, Interface] = field(default_factory=dict)

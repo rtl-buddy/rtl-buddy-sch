@@ -91,7 +91,10 @@ def test_port_order_preserves_source_order() -> None:
 # --- json_render contract ---------------------------------------------------
 
 
-def test_view_json_emits_interface_port_fields() -> None:
+def test_view_json_emits_bundle_port_when_no_module_table() -> None:
+    """Without ``module_table`` (back-compat), the interface port
+    surfaces as the #102-style bundle row. The flatten happens only
+    when the producer supplies the interface table."""
     table = _table()
     root = build_hierarchy(table, "tb_top")
     buf = io.StringIO()
@@ -102,9 +105,34 @@ def test_view_json_emits_interface_port_fields() -> None:
     assert m["port_kind"] == "interface"
     assert m["interface_type"] == "test_mem_if"
     assert m["modport"] == "sub"
-    # The expr/anchor join still works for interface ports — the
-    # SPA's BlockFlow edges depend on this.
     assert m["expr"] == "u_if.sub"
+
+
+def test_view_json_flattens_interface_ports_when_table_supplied() -> None:
+    """With ``module_table=table``, interface ports flatten to
+    per-signal scalar ports (m.req / m.addr) with synthesized
+    direction from the modport. The flattened ports carry
+    ``port_kind == "interface_signal"`` and the expr/anchor of the
+    owning interface port for connectivity purposes. (#105.)"""
+    table = _table()
+    root = build_hierarchy(table, "tb_top")
+    buf = io.StringIO()
+    json_render.render(root, buf, embed_layout=False, module_table=table)
+    payload = json.loads(buf.getvalue())
+    dut = next(n for n in payload["nodes"] if n["id"] == "tb_top.dut")
+    names = [p["name"] for p in dut["ports"]]
+    # ``m`` is gone, replaced by per-signal entries in source order.
+    assert "m" not in names
+    assert "m.req" in names
+    assert "m.addr" in names
+    m_req = next(p for p in dut["ports"] if p["name"] == "m.req")
+    assert m_req["port_kind"] == "interface_signal"
+    assert m_req["dir"] == "input"  # sub modport pins inputs
+    assert m_req["interface_type"] == "test_mem_if"
+    assert m_req["modport"] == "sub"
+    # The owning interface port's expr ("u_if.sub") rides along so
+    # block-flow can still wire connectivity through the bundle.
+    assert m_req["expr"] == "u_if.sub"
 
 
 def test_view_json_omits_new_fields_on_wire_ports() -> None:
@@ -114,12 +142,41 @@ def test_view_json_omits_new_fields_on_wire_ports() -> None:
     table = _table()
     root = build_hierarchy(table, "tb_top")
     buf = io.StringIO()
-    json_render.render(root, buf, embed_layout=False)
+    json_render.render(root, buf, embed_layout=False, module_table=table)
     payload = json.loads(buf.getvalue())
     dut = next(n for n in payload["nodes"] if n["id"] == "tb_top.dut")
     for p in dut["ports"]:
-        if p["name"] == "m":
+        if p["name"].startswith("m"):  # m.req / m.addr opted in
             continue
         assert "port_kind" not in p, p
         assert "interface_type" not in p, p
         assert "modport" not in p, p
+
+
+def test_flatten_interface_ports_unresolved_falls_back_to_bundle() -> None:
+    """If the interface body isn't in the table, the helper keeps
+    the original bundle port unchanged."""
+    from rtl_buddy_view.extractor import flatten_interface_ports
+
+    table = _table()
+    mod = table.modules_by_name["test_module_3"]
+    # Pretend the interface table is empty — same effect as a
+    # blackbox interface or a build that didn't see the .sv.
+    empty = type(table)()
+    flat = flatten_interface_ports(mod, empty)
+    assert any(p.name == "m" and p.port_kind == "interface" for p in flat)
+    # Confirm we didn't lose the wire ports either.
+    assert {p.name for p in flat if p.port_kind == "wire"} == {"clk", "rst", "z"}
+
+
+def test_interface_signals_and_modports_extracted() -> None:
+    """Producer-side: the verible walker captures the interface
+    body so json_render has a table to flatten against."""
+    table = _table()
+    iface = table.interfaces_by_name["test_mem_if"]
+    assert [s.name for s in iface.signals] == ["req", "addr"]
+    by_name = {mp.name: mp for mp in iface.modports}
+    assert by_name["master"].outputs == ("req", "addr")
+    assert by_name["master"].inputs == ()
+    assert by_name["sub"].inputs == ("req", "addr")
+    assert by_name["sub"].outputs == ()
