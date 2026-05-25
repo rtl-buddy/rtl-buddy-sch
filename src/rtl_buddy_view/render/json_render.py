@@ -384,12 +384,23 @@ def _expr_by_port(node: HierNode) -> dict[str, PortConnection]:
 
 def _port_dict_from_module(port: Port, expr_by_name: dict[str, PortConnection]) -> dict:
     conn = expr_by_name.get(port.name)
-    return {
+    out: dict = {
         "name": port.name,
         "dir": port.direction,
         "expr": conn.net_expr_text if conn is not None else None,
         "anchor": _anchor_dict(conn.location) if conn is not None else None,
     }
+    # Interface ports (``test_mem_if.sub m``) opt into three extra
+    # keys so downstream renderers can style them distinctively and
+    # the wave overlay can skip them (bundles aren't scalars; one
+    # literal per port would be ambiguous). Wire ports — the
+    # overwhelming majority — keep the minimal v1 shape.
+    # (rtl-buddy-view#102.)
+    if port.port_kind == "interface":
+        out["port_kind"] = "interface"
+        out["interface_type"] = port.interface_type
+        out["modport"] = port.modport
+    return out
 
 
 def _port_dict_from_connection(conn: PortConnection) -> dict:
@@ -514,6 +525,14 @@ def _wave_node_contribution(node: HierNode, wave_map: WaveMap) -> dict:
         return {}
     rows: list[dict[str, str]] = []
     for port in ports:
+        # Interface ports are bundles, not scalars — a single literal
+        # next to ``test_mem_if.sub m`` would be misleading. The SPA's
+        # wave overlay also enforces this; skipping here keeps the
+        # offline-snapshot contract aligned so an ``rb wave produce``
+        # against this design doesn't surface stray bundle entries
+        # via accidental signal-name collisions. (rtl-buddy-view#102.)
+        if port.port_kind == "interface":
+            continue
         value = wave_map.find_for_port(node.instance_path, port.name)
         if value is None:
             continue

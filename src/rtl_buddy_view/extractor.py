@@ -43,6 +43,21 @@ class Port:
     # enough for diagram labels and LLM context.
     type_text: str | None
     location: SourceLocation | None
+    # SystemVerilog "interface ports" (``test_mem_if.sub m``) are
+    # bundles of signals rather than scalar wires. They have no
+    # direction (interfaces are bidirectional by construction) and
+    # cannot be value-badge-eligible in the wave overlay. Default
+    # ``"wire"`` keeps existing producers + consumers untouched;
+    # ``port_kind == "interface"`` is the only value that adds the
+    # follow-up fields. (rtl-buddy-view#102)
+    port_kind: Literal["wire", "interface"] = "wire"
+    # Populated only when ``port_kind == "interface"``:
+    #   - ``interface_type``: the interface name (``test_mem_if``).
+    #   - ``modport``: the named modport from the ``.modport`` suffix
+    #     (``sub``). May be ``None`` when the source declared a bare
+    #     interface port without a modport (``test_mem_if m;``).
+    interface_type: str | None = None
+    modport: str | None = None
 
 
 @dataclass(frozen=True)

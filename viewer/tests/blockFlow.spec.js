@@ -148,6 +148,60 @@ describe('buildBlockFlowDot', () => {
     expect(dot).not.toMatch(/label="top\\ltop\\l"/)
   })
 
+  it('renders SystemVerilog interface ports as an italic left-column row (#102)', () => {
+    const g = makeGraph()
+    // Pin the interface port onto u_a so the child has both wire
+    // ports (the existing fixture) and an interface port. The
+    // multi-child path (top → u_a, u_b) is the surface most users
+    // see.
+    const ua = g.nodes.find((n) => n.id === 'top.u_a')
+    ua.ports.push({
+      name: 'm',
+      dir: null,
+      expr: 'u_if.sub',
+      anchor: null,
+      port_kind: 'interface',
+      interface_type: 'test_mem_if',
+      modport: 'sub',
+    })
+    const dot = buildBlockFlowDot(g, 'top')
+    // The interface cell uses the dedicated href prefix so click
+    // handlers can route differently than wire ports.
+    expect(dot).toContain('bf-iface:top.u_a:m')
+    // The cell text wraps the port name in <I>…</I> with the ▶▶
+    // glyph so the visual cue ("bundle, not scalar") is obvious.
+    expect(dot).toMatch(/<I>▶▶\s+m<\/I>/)
+    // Tooltip carries the interface_type.modport descriptor.
+    expect(dot).toMatch(/TITLE="bf-iface:top\.u_a:m :: test_mem_if\.sub"/)
+    // Amber background tints the interface row distinct from wires.
+    expect(dot).toContain('BGCOLOR="#fef3c7"')
+    // No spurious wire-edge emission — interface "expr" is u_if.sub
+    // (a non-bare identifier), so the IDENTIFIER_RE filter drops
+    // it. But we should also not accidentally treat 'm' as a wire
+    // input port:
+    expect(dot).not.toContain('bf-in:top.u_a:m')
+  })
+
+  it('renders interface port on a leaf scope (#102)', () => {
+    const g = makeGraph()
+    // u_a is a leaf in the base fixture; add an interface port to it
+    // and descend.
+    const ua = g.nodes.find((n) => n.id === 'top.u_a')
+    ua.ports.push({
+      name: 'm',
+      dir: null,
+      expr: null,
+      anchor: null,
+      port_kind: 'interface',
+      interface_type: 'test_mem_if',
+      modport: 'sub',
+    })
+    const dot = buildBlockFlowDot(g, 'top.u_a')
+    expect(dot).toMatch(/digraph block_flow_leaf/)
+    expect(dot).toContain('bf-iface:top.u_a:m')
+    expect(dot).toMatch(/<I>▶▶\s+m<\/I>/)
+  })
+
   it('emits two lines when instance_name differs from module', () => {
     const g = makeGraph()
     // Pretend the user descended into u_a; render with u_a as scope.

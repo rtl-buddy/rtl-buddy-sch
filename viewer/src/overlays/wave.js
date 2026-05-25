@@ -60,6 +60,12 @@ export function resolvePortValues(node, waveValuesByKey) {
     const ports = Array.isArray(node?.ports) ? node.ports : []
     for (const port of ports) {
       if (!port || typeof port.name !== 'string') continue
+      // Skip SystemVerilog interface ports — they're bundles, and a
+      // single scalar literal next to one is ambiguous. The producer
+      // also skips these in ``_wave_node_contribution``, but we
+      // double-defend here because the live cache may surface a
+      // suffix match for a coincidentally-named signal. (#102.)
+      if (port.port_kind === 'interface') continue
       const overrideScope = port.wave_scope
       const overrideSig = port.signal
       let live
