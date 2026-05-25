@@ -126,6 +126,21 @@ URI references — that's the cursor target editors jump to.
   `null` when the port is declared but unconnected.
 - `anchor` (object | null) — `{line, col}` for the binding site
   in the parent module.
+- `port_kind` (`"wire" | "interface"`, optional) — discriminator for
+  the port's source-level shape. Omitted on `wire` ports to keep
+  the payload minimal; present (set to `"interface"`) on
+  SystemVerilog interface ports (`test_mem_if.sub m`).
+- `interface_type` (string | null, optional) — interface name (e.g.
+  `"test_mem_if"`). Present only with `port_kind == "interface"`.
+- `modport` (string | null, optional) — modport name (e.g. `"sub"`).
+  May be `null` when the source declared a bare interface port
+  without a modport. Present only with `port_kind == "interface"`.
+
+Interface ports are bundles, not scalars: they have no `dir`, and
+the wave overlay deliberately skips them (a single literal next to
+a bundle would be ambiguous). The SPA's block-flow renderer styles
+them distinctively — italic, amber tint, `▶▶` glyph — so a
+reviewer can tell at a glance that the row is a bundle.
 
 Positional port connections on blackbox instances are intentionally
 *excluded* from `ports[]` (they have no port name to bind to);

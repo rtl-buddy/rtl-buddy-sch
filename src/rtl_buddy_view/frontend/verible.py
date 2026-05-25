@@ -210,6 +210,9 @@ def _port_from_decl(
     type_text: str | None = None
     name = "<unknown>"
     name_node: dict | None = None
+    port_kind: str = "wire"
+    interface_type: str | None = None
+    modport: str | None = None
     for child in decl.get("children", ()) or ():
         if not isinstance(child, dict):
             continue
@@ -218,6 +221,10 @@ def _port_from_decl(
             direction = _DIRECTION_TAGS[tag]
         elif tag == "kDataType":
             type_text = _source_slice(child, source)
+            iface_header = _first_child_with_tag(child, "kInterfacePortHeader")
+            if iface_header is not None:
+                port_kind = "interface"
+                interface_type, modport = _interface_port_idents(iface_header)
         elif tag == "kUnqualifiedId":
             sym = _first_child_with_tag(child, "SymbolIdentifier")
             if sym is not None and "text" in sym:
@@ -229,7 +236,49 @@ def _port_from_decl(
         if span is None
         else _location(file, offsets, span[0], span[1])
     )
-    return Port(name=name, direction=direction, type_text=type_text, location=loc)  # type: ignore[arg-type]
+    return Port(
+        name=name,
+        direction=direction,  # type: ignore[arg-type]
+        type_text=type_text,
+        location=loc,
+        port_kind=port_kind,  # type: ignore[arg-type]
+        interface_type=interface_type,
+        modport=modport,
+    )
+
+
+def _interface_port_idents(iface_header: dict) -> tuple[str | None, str | None]:
+    """Extract ``(interface_type, modport)`` from a ``kInterfacePortHeader``.
+
+    Verible's CST shape (confirmed against
+    ``tests/fixtures/interface_port_module/test_module_3.sv``)::
+
+        kInterfacePortHeader
+          kUnqualifiedId
+            SymbolIdentifier   <- interface type, e.g. "test_mem_if"
+          .                    <- optional, only present with a modport
+          SymbolIdentifier     <- modport, e.g. "sub"
+
+    The interface type lives one level deep (wrapped in
+    ``kUnqualifiedId``); the modport, when present, sits as a direct
+    leaf ``SymbolIdentifier`` after the ``.`` separator. ``None`` for
+    either field signals "absent" so callers can keep the
+    ``interface_type``/``modport`` slots typed.
+    """
+    interface_type: str | None = None
+    modport: str | None = None
+    for child in iface_header.get("children", ()) or ():
+        if not isinstance(child, dict):
+            continue
+        tag = child.get("tag")
+        if interface_type is None and tag == "kUnqualifiedId":
+            sym = _first_child_with_tag(child, "SymbolIdentifier")
+            if sym is not None and "text" in sym:
+                interface_type = sym["text"]
+        elif tag == "SymbolIdentifier" and "text" in child:
+            # Direct-leaf SymbolIdentifier — the modport leg.
+            modport = child["text"]
+    return interface_type, modport
 
 
 def _extract_parameters(

@@ -31,6 +31,13 @@ const CLOCK_RESET_RE = /(?:^|_)(?:clk|clock|rst|reset)(?:$|_)/i
 // chase fragments through partial-bus connections. Matches the
 // dot renderer's port-signal-flow filter.
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+// Marker glyph for SystemVerilog interface ports — distinct from
+// the scalar ``▶`` so a reader can tell at a glance that the row
+// is a bundle (a fan-in of signals) rather than a single wire.
+// Paired with italic styling + amber background in the cell HTML.
+// (rtl-buddy-view#102.)
+const INTERFACE_GLYPH = '▶▶'
+const INTERFACE_BG = '#fef3c7' // tailwind amber-100; legible on the gray box BG.
 
 function isClockOrResetName(name) {
   if (typeof name !== 'string') return false
@@ -78,6 +85,46 @@ function isInputDir(d) {
 }
 function isOutputDir(d) {
   return d === 'output' || d === 'inout'
+}
+
+// Interface ports (``test_mem_if.sub m`` style) have no scalar
+// direction. Block-flow renders them as a separate group on the
+// LEFT side of each child box, italicised and amber-tinted so the
+// reader can tell they're bundles rather than wires. We don't
+// trace edges for them — that would require resolving the
+// interface's internal signals, which the producer (Verible CST)
+// doesn't expose. The cell stays clickable (``bf-iface:`` HREF)
+// so the SPA can surface the bundle name in NodeDetail.
+// (rtl-buddy-view#102.)
+function interfacePortsFor(child) {
+  if (!child || !child.ports) return []
+  const out = []
+  for (const port of child.ports) {
+    if (port && port.port_kind === 'interface') {
+      out.push({
+        name: port.name,
+        interface_type: port.interface_type || '',
+        modport: port.modport || null,
+      })
+    }
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name))
+  return out
+}
+
+function interfacePortCellHtml(ownerId, iface) {
+  const cellId = `bf-iface:${htmlEscape(ownerId)}:${htmlEscape(iface.name)}`
+  const suffix = iface.modport
+    ? `${iface.interface_type}.${iface.modport}`
+    : iface.interface_type
+  // TITLE doubles as the hover tooltip; pack the bundle descriptor
+  // there so the user can see ``test_mem_if.sub`` without clicking.
+  const title = suffix ? `${cellId} :: ${suffix}` : cellId
+  return (
+    `<TD HREF="${cellId}" TITLE="${title}" PORT="${htmlEscape(iface.name)}" ` +
+    `ALIGN="LEFT" BGCOLOR="${INTERFACE_BG}">` +
+    `<FONT POINT-SIZE="9"><I>${INTERFACE_GLYPH} ${htmlEscape(iface.name)}</I></FONT></TD>`
+  )
 }
 
 /**
@@ -251,16 +298,22 @@ export function buildBlockFlowDot(graph, scopeId) {
   for (const child of children) {
     const inPorts = childInputPorts.get(child.id) || []
     const outPorts = childOutputPorts.get(child.id) || []
+    // Interface ports never participate in wire-net derivation —
+    // they're bundles. Pull them out separately and stack them on
+    // the left column below the wire inputs so the box still
+    // reflects the full port list of the underlying module.
+    const ifacePorts = interfacePortsFor(child)
     const inst = child.instance_name || child.module
-    const rowCount = Math.max(inPorts.length, outPorts.length, 1)
+    const leftRowCount = inPorts.length + ifacePorts.length
+    const rowCount = Math.max(leftRowCount, outPorts.length, 1)
     const rows = []
     for (let i = 0; i < rowCount; i++) {
       const tds = []
-      // Left column: input port or filler. ``HREF`` is the only
-      // per-cell attribute viz.js actually propagates to the SVG
-      // (becomes ``<a xlink:href>``) — ``ID`` is silently dropped
-      // on TDs. Click handlers walk up to the nearest ``<a>``
-      // and route based on the href prefix.
+      // Left column: wire inputs first, then interface-port rows,
+      // then filler. ``HREF`` is the only per-cell attribute viz.js
+      // actually propagates to the SVG (becomes ``<a xlink:href>``)
+      // — ``ID`` is silently dropped on TDs. Click handlers walk up
+      // to the nearest ``<a>`` and route based on the href prefix.
       if (i < inPorts.length) {
         const p = inPorts[i]
         const cellId = `bf-in:${htmlEscape(child.id)}:${htmlEscape(p)}`
@@ -268,6 +321,8 @@ export function buildBlockFlowDot(graph, scopeId) {
           `<TD HREF="${cellId}" TITLE="${cellId}" PORT="${htmlEscape(p)}" ALIGN="LEFT">` +
             `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)}</FONT></TD>`,
         )
+      } else if (i < leftRowCount) {
+        tds.push(interfacePortCellHtml(child.id, ifacePorts[i - inPorts.length]))
       } else {
         tds.push('<TD></TD>')
       }
@@ -405,11 +460,15 @@ function _renderLeafScope(scope) {
   const inPorts = []
   const outPorts = []
   for (const port of scope.ports || []) {
+    if (port && port.port_kind === 'interface') continue
     if (isInputDir(port.dir)) inPorts.push(port.name)
     else if (isOutputDir(port.dir)) outPorts.push(port.name)
   }
   inPorts.sort()
   outPorts.sort()
+  // Interface ports stack on the left side, below the wire inputs.
+  // Same rationale as the multi-child path — see ``interfacePortsFor``.
+  const ifacePorts = interfacePortsFor(scope)
 
   const inst = scope.instance_name || scope.module
   const showTwoLines = scope.instance_name && scope.instance_name !== scope.module
@@ -417,7 +476,8 @@ function _renderLeafScope(scope) {
     ? `<B>${htmlEscape(inst)}</B><BR/>${htmlEscape(scope.module)}`
     : `<B>${htmlEscape(scope.module)}</B>`
 
-  const rowCount = Math.max(inPorts.length, outPorts.length, 1)
+  const leftRowCount = inPorts.length + ifacePorts.length
+  const rowCount = Math.max(leftRowCount, outPorts.length, 1)
   const rows = []
   for (let i = 0; i < rowCount; i++) {
     const tds = []
@@ -428,6 +488,8 @@ function _renderLeafScope(scope) {
         `<TD HREF="${cellId}" TITLE="${cellId}" PORT="${htmlEscape(p)}" ALIGN="LEFT">` +
           `<FONT POINT-SIZE="${PORT_FONT_SIZE}">${htmlEscape(p)}</FONT></TD>`,
       )
+    } else if (i < leftRowCount) {
+      tds.push(interfacePortCellHtml(scope.id, ifacePorts[i - inPorts.length]))
     } else {
       tds.push('<TD></TD>')
     }

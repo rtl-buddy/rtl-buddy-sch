@@ -171,6 +171,19 @@
             "line": {"type": ["integer", "null"]},
             "col": {"type": ["integer", "null"]}
           }
+        },
+        "port_kind": {
+          "type": "string",
+          "enum": ["wire", "interface"],
+          "description": "Discriminator for the port's source-level shape. 'wire' (the default, omitted on the wire) is a scalar / vector signal with a direction. 'interface' marks a SystemVerilog interface port (``test_mem_if.sub m`` style) — a bundle of signals with no scalar direction; consumers should render it distinctively and the wave overlay should skip it. Wire ports MAY omit this field entirely to keep the payload minimal."
+        },
+        "interface_type": {
+          "type": ["string", "null"],
+          "description": "Interface name for interface ports (e.g. ``test_mem_if``). Present only when ``port_kind == \"interface\"``."
+        },
+        "modport": {
+          "type": ["string", "null"],
+          "description": "Modport name for interface ports (e.g. ``sub``). May be null when the source declared a bare interface port without a modport. Present only when ``port_kind == \"interface\"``."
         }
       }
     }

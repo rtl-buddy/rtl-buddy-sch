@@ -297,6 +297,40 @@ describe('built-in overlays', () => {
     expect(out.get('z')).toBe('1010')
   })
 
+  it('resolvePortValues skips interface ports — bundles are not value-badge-eligible (#102)', () => {
+    // Interface ports (``test_mem_if.sub m``) are bundles, not
+    // scalars. Painting a single literal next to them would be
+    // ambiguous. Even if the live cache has a suffix match for
+    // ``m`` (perhaps a coincidental wire elsewhere in the design),
+    // the overlay must skip the entry.
+    const node = {
+      id: 'tb_top.dut',
+      ports: [
+        { name: 'clk' },
+        {
+          name: 'm',
+          dir: null,
+          port_kind: 'interface',
+          interface_type: 'test_mem_if',
+          modport: 'sub',
+        },
+        { name: 'z' },
+      ],
+      overlays: {},
+    }
+    const live = {
+      'tb_top.clk': '1',
+      'tb_top.m': '1010', // would be ambiguous if we painted it
+      'tb_top.z': '11',
+    }
+    const out = resolvePortValues(node, live)
+    expect(out.get('clk')).toBe('1')
+    expect(out.get('z')).toBe('11')
+    // Interface port omitted from the values map even though the
+    // live cache had a match for its name.
+    expect(out.has('m')).toBe(false)
+  })
+
   it('resolvePortValues prefers shortest matching path on ambiguous suffix', () => {
     // Two cache keys end with ``.q``. The shorter (closer to leaf)
     // wins — the design subtree usually sits below the testbench
