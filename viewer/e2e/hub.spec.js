@@ -202,7 +202,7 @@ test.describe('Phase 10d hub wiring', () => {
     await expect(group).toHaveAttribute('data-count', '1')
   })
 
-  test('offline mode (no /ws) shows disconnected and clicks dispatch node.link', async ({ page, context }) => {
+  test('offline mode (no /ws) shows disconnected; left-click no-ops, right-click dispatches node.link', async ({ page, context }) => {
     // No routeWebSocket installer: the SPA's connect attempt will
     // hit the dev server and fail; the pill stays disconnected.
     await page.addInitScript((data) => {
@@ -210,7 +210,10 @@ test.describe('Phase 10d hub wiring', () => {
     }, PAYLOAD)
 
     // Intercept window.open so we can verify the offline-fallback
-    // dispatch without spawning a real OS handler.
+    // dispatch (right-click only — rtl-buddy-view #99 follow-up
+    // removed the left-click fallback because every standalone-mode
+    // left-click was opening a blank tab when the OS lacks an
+    // rtlbuddy:// handler).
     await page.addInitScript(() => {
       window.__opened__ = []
       window.open = (url) => { window.__opened__.push(String(url)) }
@@ -229,10 +232,21 @@ test.describe('Phase 10d hub wiring', () => {
     // dispatch path identically.
     const linked = PAYLOAD.nodes.find((n) => n.link && n.id !== PAYLOAD.top)
     if (linked) {
-      await page
-        .locator(`g.node[data-node-id="${linked.id}"]`)
-        .first()
-        .click()
+      const nodeEl = page.locator(`g.node[data-node-id="${linked.id}"]`).first()
+      // Left-click is a *selection* gesture — does NOT open a tab.
+      // This pins the new contract (#99): left-click in offline mode
+      // populates NodeDetail but never navigates, so dblclick-to-
+      // descend isn't poisoned by a first-click tab opening.
+      await nodeEl.click()
+      await page.waitForTimeout(500)
+      const afterLeftClick = await page.evaluate(
+        () => window.__opened__?.length || 0,
+      )
+      expect(afterLeftClick).toBe(0)
+      // Right-click ("open source" gesture) still falls back to the
+      // rtlbuddy:// URI via window.open so standalone users can wire
+      // up an OS handler if they want.
+      await nodeEl.click({ button: 'right' })
       await expect.poll(async () => {
         return await page.evaluate(() => window.__opened__?.length || 0)
       }, { timeout: 5_000 }).toBeGreaterThan(0)

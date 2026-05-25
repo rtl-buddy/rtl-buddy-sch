@@ -226,22 +226,31 @@ async function renderSvg() {
   requestAnimationFrame(fitToWindow)
 }
 
-// Stamp ``data-rb-dut-anchor`` on every SVG group whose model is
-// the active view's ``dut_top`` (view.json v1.1 / #99). The boundary
-// is rendered purely by CSS off that data-attribute — a dashed
-// border around the anchor's polygon plus an injected
-// ``<text>DUT</text>`` placed at the polygon's top-left corner so
-// the user can tell which subtree is the DUT in TB-rooted views.
-// Idempotent: any previously injected DUT label is removed before
-// the new pass so a model/scope switch can't leave stale labels
-// stacking up.
+// Draw a dashed boundary + "DUT" label around every SVG group whose
+// model matches the active view's ``dut_top`` (view.json v1.1 / #99).
+//
+// Implementation: rather than restyle Graphviz's cluster polygon
+// (which sits flush against the children — visually cramped),
+// inject a dedicated ``<rect data-rb-dut-frame>`` sized to the
+// polygon's bbox PLUS a few pixels of padding, and a sibling
+// ``<text data-rb-dut-label>`` anchored at the rect's top-left
+// corner. Both elements carry ``pointer-events: none`` so they
+// stay out of the hit-test path — clicks still land on the
+// underlying cluster / leaf as before.
+//
+// Idempotent: any previously injected frame/label is removed before
+// the new pass, so a model/scope switch can't leave stale
+// decorations stacking up.
+const DUT_FRAME_PADDING = 10
 function applyDutBoundary(svgRoot, graph) {
   if (!svgRoot) return
   for (const el of svgRoot.querySelectorAll('[data-rb-dut-anchor]')) {
     el.removeAttribute('data-rb-dut-anchor')
   }
-  for (const t of svgRoot.querySelectorAll('[data-rb-dut-label]')) {
-    t.remove()
+  for (const el of svgRoot.querySelectorAll(
+    '[data-rb-dut-frame], [data-rb-dut-label]',
+  )) {
+    el.remove()
   }
   const dutTop = graph?.dut_top
   if (typeof dutTop !== 'string' || !dutTop) return
@@ -250,7 +259,7 @@ function applyDutBoundary(svgRoot, graph) {
     if (!node || node.module !== dutTop) continue
     // Match every SVG element tagged with this instance path —
     // both ``g.node`` (leaf DUT) and ``g.cluster`` (container DUT)
-    // get stamped so the visual stays consistent across the
+    // get decorated so the visual stays consistent across the
     // hier-view's flat / cluster / bridge branches.
     const groups = svgRoot.querySelectorAll(
       `[data-node-id="${cssEscape(node.id)}"]`,
@@ -266,18 +275,38 @@ function applyDutBoundary(svgRoot, graph) {
         continue
       }
       if (!bb || !bb.width || !bb.height) continue
+
+      const pad = DUT_FRAME_PADDING
+      const frame = document.createElementNS(ns, 'rect')
+      frame.setAttribute('data-rb-dut-frame', 'true')
+      frame.setAttribute('x', String(bb.x - pad))
+      frame.setAttribute('y', String(bb.y - pad))
+      frame.setAttribute('width', String(bb.width + 2 * pad))
+      frame.setAttribute('height', String(bb.height + 2 * pad))
+      frame.setAttribute('rx', '6')
+      frame.setAttribute('ry', '6')
+      frame.setAttribute('fill', 'none')
+      frame.setAttribute('stroke', '#475569')
+      frame.setAttribute('stroke-width', '2')
+      frame.setAttribute('stroke-dasharray', '6,4')
+      frame.setAttribute('pointer-events', 'none')
+      // Insert as the FIRST child of the group so the dashed rect
+      // sits behind Graphviz's polygon + the children — the user
+      // sees the original cluster frame intact, with the dashed
+      // outer rect floating around it as a separator.
+      group.insertBefore(frame, group.firstChild)
+
       const label = document.createElementNS(ns, 'text')
       label.setAttribute('data-rb-dut-label', 'true')
-      // Place the badge a few pixels inside the top-left corner of
-      // the anchor's polygon so it reads as "this scope is the DUT"
-      // without colliding with the cluster's own ``label=``
-      // (Graphviz draws the cluster label at the top centre).
-      label.setAttribute('x', String(bb.x + 6))
-      label.setAttribute('y', String(bb.y + 14))
-      label.setAttribute('fill', '#0f172a')
+      // Anchor at the padded rect's top-left, slightly inset so the
+      // letters don't kiss the dashed stroke.
+      label.setAttribute('x', String(bb.x - pad + 6))
+      label.setAttribute('y', String(bb.y - pad - 4))
+      label.setAttribute('fill', '#475569')
       label.setAttribute('font-size', '10')
       label.setAttribute('font-family', 'ui-monospace, Menlo, monospace')
-      label.setAttribute('font-weight', '600')
+      label.setAttribute('font-weight', '700')
+      label.setAttribute('letter-spacing', '0.05em')
       label.setAttribute('pointer-events', 'none')
       label.textContent = 'DUT'
       group.appendChild(label)
@@ -1019,21 +1048,6 @@ onBeforeUnmount(() => {
 .svg-host :deep([data-rb-edge-highlighted]) polygon {
   fill: #f59e0b !important;
   stroke: #f59e0b !important;
-}
-
-/* DUT anchor boundary (#99 / 6c). Painted on every SVG group
-   matching a node whose ``module == graph.dut_top``. The dashed
-   slate-grey border calls out which subtree is the DUT in TB-rooted
-   views, without colliding with the selected-node blue accent or
-   the clock/reset overlay fills (those touch ``style.fill`` /
-   ``stroke``, not the inline stroke-dasharray we set here on the
-   non-selected default state). The ``!important`` overrides
-   viz.js's per-node stroke setting from cluster styling. */
-.svg-host :deep([data-rb-dut-anchor]) > polygon,
-.svg-host :deep([data-rb-dut-anchor]) > path {
-  stroke: #475569 !important;
-  stroke-width: 2 !important;
-  stroke-dasharray: 6,4 !important;
 }
 
 /* Selected-node accent. Painted by ``applySelectionHighlight``,
