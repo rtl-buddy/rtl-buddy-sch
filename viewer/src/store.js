@@ -161,6 +161,23 @@ export const useViewerStore = defineStore('viewer', {
     hubScope: null,
     diagnosticsBySource: {},
     hubError: null,
+    // Per-signal last-known value sourced from ``wave_values_changed``
+    // events. Keyed by ``${wave_scope}.${signal}`` so two signals with
+    // the same bare name in different scopes don't collide. Values are
+    // SV literal strings (e.g. ``32'hDEAD_BEEF``) — the renderer reads
+    // them verbatim. No clear-on-omit: a wave_values_changed event
+    // carrying an empty array (or omitting a signal) leaves prior
+    // values in place; explicit clearing happens on view-changed /
+    // graph reload.
+    waveValuesByKey: {},
+    // The t_fs at which ``waveValuesByKey`` was last refreshed.
+    // Distinct from ``hubCursorTimeFs`` because the hub may publish
+    // a cursor move without (yet) any value samples.
+    waveValuesTFs: null,
+    // Latest ``signal_selected`` hub event payload, kept so the
+    // viewer can highlight the selected signal's port on the
+    // schematic. Null when nothing selected wave-side yet.
+    hubSignalSelected: null,
     // Available models advertised by the hub's ``GET /models``
     // endpoint (issue rtl_buddy#174). Empty when the SPA is running
     // standalone (drag-drop / embed.py / no /models endpoint). The
@@ -447,6 +464,13 @@ export const useViewerStore = defineStore('viewer', {
       // boots at its own top.
       this.rootInstancePath = null
       this.flowScope = null
+      // Wave values are sampled at a t_fs of the previous design's
+      // simulation — keeping them would paint stale literals next to
+      // ports on the new design that happen to share a name. Reset
+      // alongside the rest of the per-graph state.
+      this.waveValuesByKey = {}
+      this.waveValuesTFs = null
+      this.hubSignalSelected = null
       // Default: every overlay the producer emitted is enabled, so
       // the user sees the full overlay decoration on first open.
       this.enabledOverlays = new Set(graph.overlays_present)
@@ -593,6 +617,53 @@ export const useViewerStore = defineStore('viewer', {
 
     dismissHubError() {
       this.hubError = null
+    },
+
+    applyWaveValues(payload) {
+      // ``payload`` is the ``wave_values_changed`` envelope payload:
+      // ``{ t_fs, values: [{wave_scope, signal, value}] }``. Merge
+      // into ``waveValuesByKey`` rather than replace — the producer
+      // is permitted to emit deltas (only the signals that changed
+      // at this sample), so wiping the map on every event would
+      // strip values the renderer was about to redraw.
+      if (!payload || typeof payload !== 'object') return
+      const t = payload.t_fs
+      const values = Array.isArray(payload.values) ? payload.values : []
+      if (typeof t === 'string') this.waveValuesTFs = t
+      if (values.length === 0) return
+      const next = { ...this.waveValuesByKey }
+      for (const v of values) {
+        if (
+          !v ||
+          typeof v.wave_scope !== 'string' ||
+          typeof v.signal !== 'string' ||
+          typeof v.value !== 'string'
+        ) continue
+        next[`${v.wave_scope}.${v.signal}`] = v.value
+      }
+      this.waveValuesByKey = next
+    },
+
+    applySignalSelected(payload) {
+      if (
+        payload &&
+        typeof payload === 'object' &&
+        typeof payload.signal === 'string' &&
+        typeof payload.wave_scope === 'string'
+      ) {
+        this.hubSignalSelected = {
+          signal: payload.signal,
+          wave_scope: payload.wave_scope,
+        }
+      } else {
+        this.hubSignalSelected = null
+      }
+    },
+
+    resetWaveValues() {
+      this.waveValuesByKey = {}
+      this.waveValuesTFs = null
+      this.hubSignalSelected = null
     },
   },
 })

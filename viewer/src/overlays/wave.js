@@ -1,0 +1,233 @@
+// 'wave' overlay renderer (Phase 8 + Phase 9).
+//
+// Paints per-port value badges on each node's <g> group. Two value
+// sources flow in:
+//
+//   1. ``node.overlays.wave.ports[] = {name, value}`` — the offline
+//      Phase-8 producer's pre-computed snapshot at a fixed t_fs.
+//      Same shape the ASCII / dot renderers consume.
+//   2. ``context.waveValuesByKey[`${wave_scope}.${signal}`]`` — the
+//      Phase-9 live cache, refreshed by the hub's
+//      ``wave_values_changed`` events. Wins over (1) when both are
+//      present, on the assumption the live value is more current
+//      than whatever the file was sampled at.
+//
+// The mapping from a view-side node+port to the wave-side
+// (wave_scope, signal) is convention-driven: ``wave_scope`` is the
+// instance path (``node.id``) and ``signal`` is ``port.name``. This
+// matches what the hub's view→wave resolver produces under the
+// default ``tb_prefix`` rules (no prefix transform). If a producer
+// wants a different prefix, they can populate
+// ``node.overlays.wave.ports[].wave_scope`` and
+// ``node.overlays.wave.ports[].signal`` to override the convention —
+// the renderer reads those when present.
+//
+// Visual: a small text block sits at the top-right of each node's
+// bounding box, listing ``port=value`` lines for ports with known
+// values. When the overlay is disabled (toggled off in the panel)
+// the function clears any previously-painted badges so the canvas
+// returns to its pristine state.
+
+const BADGE_CLASS = 'rb-wave-badge'
+
+function cssEscape(s) {
+  if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(s)
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`)
+}
+
+// Build the (port-name → value) map for a single node, fusing the
+// static overlay snapshot with whatever the live wave-values cache
+// supplies. Pure function — no DOM access, no store reads — so it's
+// trivially testable.
+export function resolvePortValues(node, waveValuesByKey) {
+  const out = new Map()
+  const ov = node?.overlays?.wave
+  if (ov && Array.isArray(ov.ports)) {
+    for (const p of ov.ports) {
+      if (!p || typeof p.name !== 'string') continue
+      if (typeof p.value === 'string') out.set(p.name, p.value)
+    }
+  }
+  if (waveValuesByKey && typeof waveValuesByKey === 'object') {
+    // Each port may explicitly carry its (wave_scope, signal) pair
+    // (overrides the instance-path convention). Otherwise fall back
+    // to ``${node.id}.${port.name}``.
+    const ports = Array.isArray(node?.ports) ? node.ports : []
+    for (const port of ports) {
+      if (!port || typeof port.name !== 'string') continue
+      let key
+      const overrideScope = port.wave_scope
+      const overrideSig = port.signal
+      if (
+        typeof overrideScope === 'string' && overrideScope.length > 0 &&
+        typeof overrideSig === 'string' && overrideSig.length > 0
+      ) {
+        key = `${overrideScope}.${overrideSig}`
+      } else if (typeof node.id === 'string' && node.id.length > 0) {
+        key = `${node.id}.${port.name}`
+      } else {
+        continue
+      }
+      const live = waveValuesByKey[key]
+      if (typeof live === 'string') out.set(port.name, live)
+    }
+    // Producer may also surface explicit (wave_scope, signal) pairs
+    // inside the overlay block itself — handy when port.name doesn't
+    // match the surfer-side variable name. Same convention: latest-
+    // writer-wins on collision (live cache wins via the explicit-key
+    // route below).
+    if (ov && Array.isArray(ov.ports)) {
+      for (const p of ov.ports) {
+        if (!p || typeof p.name !== 'string') continue
+        if (typeof p.wave_scope === 'string' && typeof p.signal === 'string') {
+          const live = waveValuesByKey[`${p.wave_scope}.${p.signal}`]
+          if (typeof live === 'string') out.set(p.name, live)
+        }
+      }
+    }
+  }
+  return out
+}
+
+function clearBadge(group) {
+  const existing = group.querySelector(`.${BADGE_CLASS}`)
+  if (existing) existing.remove()
+}
+
+function paintBadge(group, values) {
+  if (values.size === 0) {
+    clearBadge(group)
+    return
+  }
+  // Compute anchor point: top-right of the first <polygon>/<rect>/
+  // <ellipse>/<path> inside the group. Cluster groups expose their
+  // bounding rect via the same shape selector — we deliberately do
+  // NOT skip clusters here (a clustered subtree's ports are still
+  // worth labelling), but the rendered badge is anchored to the
+  // cluster's own bbox, not nested children.
+  const shape = group.querySelector('polygon, ellipse, rect, path')
+  if (!shape) {
+    clearBadge(group)
+    return
+  }
+  let bbox
+  try {
+    bbox = shape.getBBox()
+  } catch {
+    clearBadge(group)
+    return
+  }
+  if (!bbox || !isFinite(bbox.x) || !isFinite(bbox.y)) {
+    clearBadge(group)
+    return
+  }
+
+  const NS = 'http://www.w3.org/2000/svg'
+  // Reuse the existing badge element when possible so a 60 Hz scrub
+  // doesn't churn DOM nodes — we just rewrite the children.
+  let badge = group.querySelector(`.${BADGE_CLASS}`)
+  if (!badge) {
+    badge = document.createElementNS(NS, 'text')
+    badge.setAttribute('class', BADGE_CLASS)
+    badge.setAttribute('font-family', 'ui-monospace, Menlo, Consolas, monospace')
+    badge.setAttribute('font-size', '10')
+    badge.setAttribute('fill', '#0f172a')
+    badge.setAttribute('pointer-events', 'none')
+    group.appendChild(badge)
+  }
+  // Anchor at the top-right corner, push slightly outside the
+  // shape so it doesn't crowd a port pin label.
+  badge.setAttribute('x', String(bbox.x + bbox.width + 4))
+  badge.setAttribute('y', String(bbox.y))
+  badge.setAttribute('text-anchor', 'start')
+  // Clear existing children — we're rewriting the whole list.
+  while (badge.firstChild) badge.removeChild(badge.firstChild)
+  // Deterministic order: alphabetical by port name. Matches the
+  // sort discipline the dot/json renderers already enforce on
+  // overlay output, so screenshots are stable run-to-run.
+  const lines = []
+  for (const [name, value] of values) lines.push([name, value])
+  lines.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+  let dy = '0.8em'
+  for (const [name, value] of lines) {
+    const tspan = document.createElementNS(NS, 'tspan')
+    tspan.setAttribute('x', String(bbox.x + bbox.width + 4))
+    tspan.setAttribute('dy', dy)
+    tspan.textContent = `${name}=${value}`
+    badge.appendChild(tspan)
+    dy = '1.1em'
+  }
+}
+
+export const waveOverlay = {
+  name: 'wave',
+
+  /**
+   * Paint port-value badges on every node that has known values.
+   * Idempotent: applying twice yields the same DOM. Toggling
+   * ``enabled`` off clears all badges.
+   *
+   * ``context.waveValuesByKey`` is the live wave-values map sourced
+   * from the hub. Optional — when absent, only static
+   * ``node.overlays.wave.ports[]`` values render.
+   * ``context.selectedSignal`` is the ``{signal, wave_scope}`` of
+   * the last ``signal_selected`` event; the corresponding badge
+   * gets an accent stroke so the user can spot it on the canvas.
+   */
+  apply(svgRoot, graph, enabled, context = {}) {
+    if (!svgRoot || !graph || !Array.isArray(graph.nodes)) return
+    const waveValuesByKey = context.waveValuesByKey || {}
+    const selectedSignal = context.selectedSignal || null
+
+    for (const node of graph.nodes) {
+      const group = svgRoot.querySelector(
+        `[data-node-id="${cssEscape(node.id)}"]`,
+      )
+      if (!group) continue
+      if (!enabled) {
+        clearBadge(group)
+        group.removeAttribute('data-wave-selected')
+        continue
+      }
+      const values = resolvePortValues(node, waveValuesByKey)
+      paintBadge(group, values)
+      // Selected-signal highlight: tag the node group when one of
+      // its ports matches the last signal_selected event. CSS picks
+      // it up via ``[data-wave-selected]``.
+      let selectedHere = false
+      if (
+        selectedSignal &&
+        typeof selectedSignal.signal === 'string' &&
+        typeof selectedSignal.wave_scope === 'string'
+      ) {
+        const key = `${selectedSignal.wave_scope}.${selectedSignal.signal}`
+        const ports = Array.isArray(node.ports) ? node.ports : []
+        for (const p of ports) {
+          if (!p || typeof p.name !== 'string') continue
+          const portKey =
+            typeof p.wave_scope === 'string' && typeof p.signal === 'string'
+              ? `${p.wave_scope}.${p.signal}`
+              : `${node.id}.${p.name}`
+          if (portKey === key) { selectedHere = true; break }
+        }
+      }
+      if (selectedHere) {
+        group.setAttribute('data-wave-selected', 'true')
+      } else {
+        group.removeAttribute('data-wave-selected')
+      }
+    }
+  },
+
+  /** Per-overlay legend payload for OverlayPanel.vue. */
+  legend(graph) {
+    // The wave overlay's contribution is value text, not a colour
+    // swatch. Surface the t_fs when the static producer pinned one
+    // so the panel can display "@ 100ns" alongside the toggle.
+    const ov = graph?.overlay_meta?.wave
+    if (ov && typeof ov.t_fs === 'string') {
+      return [{ label: `@ ${ov.t_fs} fs`, swatch: null, kind: 'note' }]
+    }
+    return []
+  },
+}

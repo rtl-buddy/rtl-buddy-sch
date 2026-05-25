@@ -29,6 +29,14 @@ const CLIENT_VERSION = '0.1.0'
 const RECONNECT_INITIAL_MS = 500
 const RECONNECT_MAX_MS = 15000
 const RECONNECT_FACTOR = 1.8
+// Coalesce wave_values_changed bursts. Surfer cursor scrubbing can
+// fire at ~60 Hz; the renderer doesn't need to repaint that fast,
+// and the store mutation is the dominant cost. We collapse all
+// envelopes received within ``WAVE_VALUES_FLUSH_MS`` into a single
+// store write that applies the LATEST t_fs and the merged value set
+// (latest-wins per signal). This gives ~30 Hz worst-case redraw and
+// is the throttling layer #24's acceptance criteria asks for.
+const WAVE_VALUES_FLUSH_MS = 33
 
 const state = ref('disconnected')
 const peers = ref([])
@@ -48,6 +56,14 @@ let _autoReconnect = true
 let _wsFactory = (url) => new WebSocket(url)
 let _store = null
 let _initialised = false
+// Coalescing buffer for wave_values_changed. ``_waveTimer`` is the
+// pending setTimeout (null when no flush is queued); ``_wavePending``
+// holds the merged payload — t_fs is overwritten each receive (the
+// latest sample wins), and values is a Map keyed by
+// "${wave_scope}.${signal}" so multiple samples of the same signal
+// in a burst collapse to the most recent literal.
+let _waveTimer = null
+let _wavePending = null
 // Track whether the *next* hello should ask the hub to evict any
 // existing view registration. Set when a prior hello got an
 // "already registered" error so the retry takes over.
@@ -100,6 +116,45 @@ function sendEnvelope(env) {
   }
 }
 
+function flushWaveValues() {
+  _waveTimer = null
+  const pending = _wavePending
+  _wavePending = null
+  if (!pending) return
+  const values = []
+  for (const [key, value] of pending.values) {
+    const idx = key.indexOf('.')
+    // Key format guards in queueWaveValues guarantee a dot is present
+    // and not at position 0, so this slice is always well-formed.
+    values.push({
+      wave_scope: key.slice(0, idx),
+      signal: key.slice(idx + 1),
+      value,
+    })
+  }
+  _store?.applyWaveValues({ t_fs: pending.t_fs, values })
+}
+
+function queueWaveValues(payload) {
+  if (!payload || typeof payload !== 'object') return
+  const t = typeof payload.t_fs === 'string' ? payload.t_fs : null
+  const incoming = Array.isArray(payload.values) ? payload.values : []
+  if (!_wavePending) _wavePending = { t_fs: t, values: new Map() }
+  if (t !== null) _wavePending.t_fs = t
+  for (const v of incoming) {
+    if (
+      !v ||
+      typeof v.wave_scope !== 'string' || v.wave_scope.length === 0 ||
+      typeof v.signal !== 'string' || v.signal.length === 0 ||
+      typeof v.value !== 'string'
+    ) continue
+    _wavePending.values.set(`${v.wave_scope}.${v.signal}`, v.value)
+  }
+  if (_waveTimer === null) {
+    _waveTimer = setTimeout(flushWaveValues, WAVE_VALUES_FLUSH_MS)
+  }
+}
+
 function sendHello() {
   const payload = {
     client: 'view',
@@ -108,6 +163,8 @@ function sendHello() {
       'selection_changed',
       'cursor_time_changed',
       'scope_changed',
+      'signal_selected',
+      'wave_values_changed',
       'diagnostics_set',
     ],
   }
@@ -170,6 +227,23 @@ function applyEnvelope(env) {
     case 'scope_changed': {
       if (env.origin === 'view') break
       _store?.applyHubScope(env.payload || {})
+      break
+    }
+
+    case 'wave_values_changed': {
+      // Origin filter: the viewer never produces wave_values_changed,
+      // so anything tagged view is a misbehaving peer — drop it. The
+      // throttle/coalesce layer happens here, not in the store, so
+      // a 60-Hz scrub stays in JS land until the next animation
+      // window opens.
+      if (env.origin === 'view') break
+      queueWaveValues(env.payload || {})
+      break
+    }
+
+    case 'signal_selected': {
+      if (env.origin === 'view') break
+      _store?.applySignalSelected(env.payload || {})
       break
     }
 
@@ -441,12 +515,18 @@ export function useHub() {
 // cases.
 export const _testing = {
   applyEnvelope,
+  flushWaveValues,
   reset() {
     clearReconnectTimer()
     if (_socket) {
       try { _socket.close() } catch { /* ignore */ }
       _socket = null
     }
+    if (_waveTimer !== null) {
+      clearTimeout(_waveTimer)
+      _waveTimer = null
+    }
+    _wavePending = null
     state.value = 'disconnected'
     peers.value = []
     serverVersion.value = null

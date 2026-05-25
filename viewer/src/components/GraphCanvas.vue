@@ -208,7 +208,7 @@ async function renderSvg() {
       anchor.setAttribute('data-bf-id', href)
     }
   }
-  applyOverlays(_svgEl, graph.value, store.enabledOverlays)
+  applyOverlays(_svgEl, graph.value, store.enabledOverlays, overlayContext())
   applySelectionHighlight(store.selection)
   // Signal to the badge-position computed that the underlying SVG
   // has just been re-rendered — previously cached bboxes are stale.
@@ -287,7 +287,26 @@ watch(
   () => store.enabledOverlays,
   () => {
     if (_svgEl && graph.value) {
-      applyOverlays(_svgEl, graph.value, store.enabledOverlays)
+      applyOverlays(_svgEl, graph.value, store.enabledOverlays, overlayContext())
+    }
+  },
+)
+// Live wave-overlay re-tint: when the hub pushes a new value batch
+// (or the user selects a different surfer signal), re-run the
+// overlay layer without re-running viz.js layout. The wave overlay
+// reuses badge nodes in place — toggling neighbouring overlays is
+// unaffected.
+function overlayContext() {
+  return {
+    waveValuesByKey: store.waveValuesByKey,
+    selectedSignal: store.hubSignalSelected,
+  }
+}
+watch(
+  () => [store.waveValuesByKey, store.hubSignalSelected],
+  () => {
+    if (_svgEl && graph.value) {
+      applyOverlays(_svgEl, graph.value, store.enabledOverlays, overlayContext())
     }
   },
 )
