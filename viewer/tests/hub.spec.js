@@ -5,11 +5,12 @@
 // suite at viewer/e2e/hub.spec.js is the end-to-end coverage that
 // actually drives a mock /ws server.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useViewerStore } from '../src/store.js'
 import { useHub, initHub, _testing } from '../src/composables/useHub.js'
+import { registerSvgProvider, unregisterSvgProvider } from '../src/capture.js'
 
 class MockSocket {
   constructor(url) {
@@ -61,6 +62,10 @@ describe('useHub envelope dispatch', () => {
       applyViewChanged: (p) => store.applyViewChanged(p),
       applyWaveValues: (p) => store.applyWaveValues(p),
       applySignalSelected: (p) => store.applySignalSelected(p),
+      presentSelectionCandidates: (paths) =>
+        store.presentSelectionCandidates(paths),
+      chooseSelectionCandidate: (path) => store.chooseSelectionCandidate(path),
+      dismissSelectionCandidates: () => store.dismissSelectionCandidates(),
     })
   })
   afterEach(() => {
@@ -87,11 +92,45 @@ describe('useHub envelope dispatch', () => {
     expect(store.hubCursorTimeFs).toBe('1234567890')
   })
 
-  it('selection_changed picks the first element of an array instance_path', () => {
+  it('selection_changed with a single-string instance_path applies it', () => {
     _testing.applyEnvelope(
-      env('selection_changed', 'event', { instance_path: ['top.u_fifo', 'top.u_dut'] }, 'wave'),
+      env('selection_changed', 'event', { instance_path: 'top.u_fifo' }, 'wave'),
     )
     expect(store.selection).toBe('top.u_fifo')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('selection_changed picks [0] and surfaces the picker for multi-match arrays', () => {
+    _testing.applyEnvelope(
+      env(
+        'selection_changed',
+        'event',
+        { instance_path: ['top.u_fifo', 'top.u_dut', 'top.u_other'] },
+        'wave',
+      ),
+    )
+    // Smallest-range default still applied immediately so the canvas
+    // pans/zooms to ``[0]`` in the common case.
+    expect(store.selection).toBe('top.u_fifo')
+    // Full list surfaces so SelectionCandidates.vue can render the
+    // picker.
+    expect(store.selectionCandidates).toEqual([
+      'top.u_fifo',
+      'top.u_dut',
+      'top.u_other',
+    ])
+  })
+
+  it('selection_changed with a single-element array does not open the picker', () => {
+    // The hub only ever serialises ``instance_path`` as an array when
+    // there are multiple matches, but a future producer might emit a
+    // one-element array — that should still apply the selection without
+    // popping the disambiguation UI.
+    _testing.applyEnvelope(
+      env('selection_changed', 'event', { instance_path: ['top.u_only'] }, 'wave'),
+    )
+    expect(store.selection).toBe('top.u_only')
+    expect(store.selectionCandidates).toBeNull()
   })
 
   it('selection_changed from view origin does not loop back', () => {
@@ -381,6 +420,121 @@ describe('useHub.notifyClick', () => {
   })
 })
 
+describe('useHub disambiguation picker (rtl-buddy-view#55)', () => {
+  let store
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    store = useViewerStore()
+    _testing.reset()
+    _testing.setStore({
+      applyHubCursorTime: (t) => store.applyHubCursorTime(t),
+      applyHubSelection: (id) => store.applyHubSelection(id),
+      applyHubScope: (p) => store.applyHubScope(p),
+      applyDiagnostics: (s, items) => store.applyDiagnostics(s, items),
+      applyHubError: (e) => store.applyHubError(e),
+      presentSelectionCandidates: (paths) =>
+        store.presentSelectionCandidates(paths),
+      chooseSelectionCandidate: (path) => store.chooseSelectionCandidate(path),
+      dismissSelectionCandidates: () => store.dismissSelectionCandidates(),
+    })
+  })
+  afterEach(() => { _testing.reset() })
+
+  it('chooseSelectionCandidate locks the pick AND broadcasts to the hub', () => {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({ store })
+    sock.open()
+    sock.receive(env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }))
+
+    // Multi-match arrives → picker opens with [0] selected.
+    sock.receive(
+      env(
+        'selection_changed',
+        'event',
+        { instance_path: ['top.u_a', 'top.u_b'] },
+        'wave',
+      ),
+    )
+    expect(store.selection).toBe('top.u_a')
+    expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
+
+    const sentBefore = sock.sent.length
+    const hub = useHub()
+    hub.chooseSelectionCandidate('top.u_b')
+
+    // Store locked in on the override and the picker dismissed.
+    expect(store.selection).toBe('top.u_b')
+    expect(store.selectionCandidates).toBeNull()
+
+    // Wire broadcast: one ``selection_changed`` envelope from origin=view
+    // so peers (nvim, wave) lock onto the same path.
+    const fresh = sock.sent.slice(sentBefore).map((s) => JSON.parse(s))
+    const broadcast = fresh.find((e) => e.type === 'selection_changed')
+    expect(broadcast).toBeDefined()
+    expect(broadcast.origin).toBe('view')
+    expect(broadcast.payload.instance_path).toBe('top.u_b')
+  })
+
+  it('a fresh single-match selection_changed dismisses the picker', () => {
+    _testing.applyEnvelope(
+      env(
+        'selection_changed',
+        'event',
+        { instance_path: ['top.u_a', 'top.u_b'] },
+        'wave',
+      ),
+    )
+    expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
+
+    _testing.applyEnvelope(
+      env('selection_changed', 'event', { instance_path: 'top.other' }, 'wave'),
+    )
+    expect(store.selection).toBe('top.other')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('dismissSelectionCandidates clears the picker without touching selection', () => {
+    _testing.applyEnvelope(
+      env(
+        'selection_changed',
+        'event',
+        { instance_path: ['top.u_a', 'top.u_b'] },
+        'wave',
+      ),
+    )
+    expect(store.selection).toBe('top.u_a')
+    expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
+
+    const hub = useHub()
+    hub.dismissSelectionCandidates()
+    expect(store.selectionCandidates).toBeNull()
+    expect(store.selection).toBe('top.u_a')
+  })
+
+  it('the auto-dismiss timer clears the picker after the canonical window', async () => {
+    vi.useFakeTimers()
+    try {
+      _testing.applyEnvelope(
+        env(
+          'selection_changed',
+          'event',
+          { instance_path: ['top.u_a', 'top.u_b'] },
+          'wave',
+        ),
+      )
+      expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
+      // The selection (smallest-range default) survives the dismiss —
+      // only the picker chip goes away.
+      vi.advanceTimersByTime(_testing.SELECTION_PICKER_AUTODISMISS_MS + 1)
+      expect(store.selectionCandidates).toBeNull()
+      expect(store.selection).toBe('top.u_a')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('hub takeover handshake', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -499,5 +653,124 @@ describe('viewer store hub reducers', () => {
     expect(flat).toHaveLength(2)
     const sources = flat.map((d) => d.source).sort()
     expect(sources).toEqual(['a', 'b'])
+  })
+})
+
+describe('useHub view_capture request handler', () => {
+  // Fake <svg> shaped the way capture.js inspects it: ``getAttribute``
+  // for viewBox/width/height, ``cloneNode(true)`` returning a serialisable
+  // copy, and XMLSerializer chewing on it. jsdom provides both, so the
+  // SVG branch round-trips cleanly without a real layout pass.
+  function makeFakeSvg() {
+    // Use the live HTML document's createElementNS — jsdom serialises
+    // its detached SVGDocument as <html>, while elements attached
+    // through the main document keep their <svg> tag through
+    // XMLSerializer.
+    const ns = 'http://www.w3.org/2000/svg'
+    const svg = document.createElementNS(ns, 'svg')
+    svg.setAttribute('viewBox', '0 0 100 50')
+    svg.setAttribute('width', '100')
+    svg.setAttribute('height', '50')
+    const rect = document.createElementNS(ns, 'rect')
+    rect.setAttribute('x', '0')
+    rect.setAttribute('y', '0')
+    rect.setAttribute('width', '100')
+    rect.setAttribute('height', '50')
+    rect.setAttribute('fill', '#abcdef')
+    svg.appendChild(rect)
+    // Park it in the DOM so the cloneNode + XMLSerializer path
+    // doesn't fall through to the html serializer fallback.
+    document.body.appendChild(svg)
+    return svg
+  }
+
+  let sock
+  let provider
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    _testing.reset()
+    sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({})
+    sock.open()
+    sock.receive(
+      env('welcome', 'response', {
+        server_version: '1.0',
+        registered_clients: ['view'],
+      }),
+    )
+    provider = () => makeFakeSvg()
+    registerSvgProvider(provider)
+  })
+  afterEach(() => {
+    unregisterSvgProvider(provider)
+    _testing.reset()
+  })
+
+  it('responds with format=svg and base64 bytes when SVG requested', async () => {
+    const reqId = '11111111-1111-4111-8111-111111111111'
+    const sentBefore = sock.sent.length
+    sock.receive({
+      v: 1,
+      id: reqId,
+      origin: 'cli',
+      kind: 'request',
+      type: 'view_capture',
+      payload: { format: 'svg' },
+    })
+    // The handler is async — let microtasks drain so the response send
+    // lands in sock.sent before we inspect it.
+    await new Promise((r) => setTimeout(r, 0))
+    const out = sock.sent.slice(sentBefore).map((s) => JSON.parse(s))
+    const resp = out.find((e) => e.type === 'view_capture' && e.kind === 'response')
+    expect(resp).toBeDefined()
+    expect(resp.id).toBe(reqId) // correlation: same id back
+    expect(resp.origin).toBe('view')
+    expect(resp.payload.format).toBe('svg')
+    expect(resp.payload.width).toBe(100)
+    expect(resp.payload.height).toBe(50)
+    expect(typeof resp.payload.bytes_b64).toBe('string')
+    expect(resp.payload.bytes_b64.length).toBeGreaterThan(0)
+    // The decoded body should be SVG markup containing the rect we added.
+    const decoded = atob(resp.payload.bytes_b64)
+    expect(decoded).toContain('<svg')
+    expect(decoded).toContain('#abcdef')
+  })
+
+  it('responds with kind=error when no SVG is registered', async () => {
+    unregisterSvgProvider(provider)
+    const reqId = '22222222-2222-4222-8222-222222222222'
+    const sentBefore = sock.sent.length
+    sock.receive({
+      v: 1,
+      id: reqId,
+      origin: 'cli',
+      kind: 'request',
+      type: 'view_capture',
+      payload: { format: 'svg' },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    const out = sock.sent.slice(sentBefore).map((s) => JSON.parse(s))
+    const err = out.find((e) => e.kind === 'error')
+    expect(err).toBeDefined()
+    expect(err.id).toBe(reqId)
+    expect(err.payload.code).toBe('bad_request')
+    expect(err.payload.message).toMatch(/no graph rendered/i)
+  })
+
+  it('ignores view_capture envelopes whose kind is not request', async () => {
+    const sentBefore = sock.sent.length
+    sock.receive({
+      v: 1,
+      id: '33333333-3333-4333-8333-333333333333',
+      origin: 'cli',
+      kind: 'event',
+      type: 'view_capture',
+      payload: {},
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    // No new envelope sent — wrong-kind capture is a silent drop, not
+    // an error reply (responses to non-requests would loop).
+    expect(sock.sent.length).toBe(sentBefore)
   })
 })

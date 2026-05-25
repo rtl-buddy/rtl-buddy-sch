@@ -24,6 +24,8 @@
 
 import { ref } from 'vue'
 
+import { captureGraphImage } from '../capture.js'
+
 const PROTOCOL_VERSION = 1
 const CLIENT_VERSION = '0.1.0'
 const RECONNECT_INITIAL_MS = 500
@@ -37,6 +39,13 @@ const RECONNECT_FACTOR = 1.8
 // (latest-wins per signal). This gives ~30 Hz worst-case redraw and
 // is the throttling layer #24's acceptance criteria asks for.
 const WAVE_VALUES_FLUSH_MS = 33
+// How long the disambiguation popover stays visible after a multi-
+// match ``selection_changed`` lands. The smallest-range default
+// (``instance_path[0]``) is applied immediately so the canvas reacts;
+// the picker just gives the user a window to override before it
+// auto-dismisses. 4s is short enough not to clutter the toolbar but
+// long enough to read a handful of paths and click one.
+const SELECTION_PICKER_AUTODISMISS_MS = 4000
 
 const state = ref('disconnected')
 const peers = ref([])
@@ -68,6 +77,17 @@ let _wavePending = null
 // existing view registration. Set when a prior hello got an
 // "already registered" error so the retry takes over.
 let _pendingTakeover = false
+// Auto-dismiss timer for the disambiguation popover. Lives on the
+// composable singleton (not in the component) so a Vue remount mid-
+// timeout doesn't strand the picker open.
+let _pickerDismissTimer = null
+
+function clearPickerDismissTimer() {
+  if (_pickerDismissTimer) {
+    clearTimeout(_pickerDismissTimer)
+    _pickerDismissTimer = null
+  }
+}
 
 function makeId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -217,6 +237,20 @@ function applyEnvelope(env) {
     case 'selection_changed': {
       if (env.origin === 'view') break
       const ip = env.payload?.instance_path
+      if (Array.isArray(ip) && ip.length > 1) {
+        // Multi-match: smallest-range default ([0]) is applied
+        // immediately so the canvas reacts in the common case, but
+        // we also surface the picker so the user can override if
+        // the resolver's tie-break picked the wrong sibling
+        // (rtl-buddy-view#55).
+        _store?.presentSelectionCandidates(ip)
+        clearPickerDismissTimer()
+        _pickerDismissTimer = setTimeout(() => {
+          _store?.dismissSelectionCandidates()
+          _pickerDismissTimer = null
+        }, SELECTION_PICKER_AUTODISMISS_MS)
+        break
+      }
       const id = Array.isArray(ip) ? ip[0] : ip
       if (typeof id === 'string' && id.length > 0) {
         _store?.applyHubSelection(id)
@@ -322,6 +356,16 @@ function applyEnvelope(env) {
       break
     }
 
+    case 'view_capture': {
+      // Hub-routed request from a peer (typically ``rb hub send
+      // capture`` driven by the CLI): rasterise the current graph
+      // SVG and reply with base64 bytes. Graph-only — surrounding
+      // panels are not in scope for v1.
+      if (env.kind !== 'request') break
+      handleViewCapture(env)
+      break
+    }
+
     case 'view_changed': {
       // Hub-driven model switch (rtl_buddy#174). Forwarded to the
       // store, which dedupes against ``activeModel`` so a switch we
@@ -335,6 +379,40 @@ function applyEnvelope(env) {
     default:
       // Unknown types are silently dropped (protocol §11).
       break
+  }
+}
+
+async function handleViewCapture(env) {
+  // Response uses the request ``id`` per protocol §4 — that is the
+  // correlation key the hub uses to route the answer back to the
+  // requester. ``in_reply_to`` is the conceptual name in the Python
+  // helpers; on the wire it's just ``id``.
+  const reqId = env.id
+  const payload = env.payload || {}
+  const format = payload.format === 'svg' ? 'svg' : 'png'
+  const scale = Number.isFinite(payload.scale) && payload.scale > 0 ? payload.scale : 1
+  try {
+    const result = await captureGraphImage(format, { scale })
+    sendEnvelope({
+      v: PROTOCOL_VERSION,
+      id: reqId,
+      origin: 'view',
+      kind: 'response',
+      type: 'view_capture',
+      payload: result,
+    })
+  } catch (err) {
+    sendEnvelope({
+      v: PROTOCOL_VERSION,
+      id: reqId,
+      origin: 'view',
+      kind: 'error',
+      type: 'error',
+      payload: {
+        code: 'bad_request',
+        message: String((err && err.message) || err || 'capture failed'),
+      },
+    })
   }
 }
 
@@ -493,6 +571,37 @@ export function useHub() {
     disconnect,
     superseded,
     /**
+     * Lock the user's pick from the multi-match disambiguation popover
+     * (rtl-buddy-view#55). Updates the store (selection + clears the
+     * candidate list) AND broadcasts a ``selection_changed`` envelope
+     * from origin=view so the other peers (nvim, wave) lock onto the
+     * same path. Cancels the auto-dismiss timer so a fast double-pick
+     * doesn't get clobbered by a still-pending timeout.
+     */
+    chooseSelectionCandidate(path) {
+      if (typeof path !== 'string' || path.length === 0) return
+      clearPickerDismissTimer()
+      _store?.chooseSelectionCandidate(path)
+      sendEnvelope({
+        v: PROTOCOL_VERSION,
+        id: makeId(),
+        origin: 'view',
+        kind: 'event',
+        type: 'selection_changed',
+        payload: { instance_path: path },
+      })
+    },
+    /**
+     * Dismiss the disambiguation popover without changing the
+     * selection. Used by the close button on the popover, and on
+     * unmount so a dangling timer doesn't keep firing into a
+     * detached store.
+     */
+    dismissSelectionCandidates() {
+      clearPickerDismissTimer()
+      _store?.dismissSelectionCandidates()
+    },
+    /**
      * Reconnect to the hub, optionally asking it to evict any
      * existing registration in the view slot. ``takeover=true`` is
      * what the "Take back" button passes when a previous tab
@@ -518,6 +627,7 @@ export const _testing = {
   flushWaveValues,
   reset() {
     clearReconnectTimer()
+    clearPickerDismissTimer()
     if (_socket) {
       try { _socket.close() } catch { /* ignore */ }
       _socket = null
@@ -540,6 +650,9 @@ export const _testing = {
     _pendingTakeover = false
     _wsFactory = (url) => new WebSocket(url)
   },
+  // Expose the constant so tests / docs can reference the canonical
+  // auto-dismiss window without duplicating the number.
+  SELECTION_PICKER_AUTODISMISS_MS,
   setStore(store) { _store = store },
   setWsFactory(factory) { _wsFactory = factory },
   getSocket() { return _socket },

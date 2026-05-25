@@ -187,6 +187,19 @@ export const useViewerStore = defineStore('viewer', {
     // ``GET /models`` at boot and ``view_changed`` events at runtime.
     // ``null`` when running standalone.
     activeModel: null,
+    // Candidate instance paths when a hub ``selection_changed`` event
+    // resolves to more than one match (rtl-buddy-view#55). ``null``
+    // means no picker is showing. The first entry is also written to
+    // ``selection`` so the canvas pans/zooms to the smallest-range
+    // match — the picker just lets the user override that default.
+    selectionCandidates: null,
+    // "Open in marimo" launch state. Drives the AxiPerfView button's
+    // spinner / disabled state. ``axiNotebookError`` is a string when
+    // the last launch attempt failed (hub returned 4xx/5xx, or the
+    // network rejected); the UI shows it as an inline toast and the
+    // user can retry.
+    axiNotebookLaunching: false,
+    axiNotebookError: null,
   }),
   getters: {
     nodesById: (state) => {
@@ -350,6 +363,55 @@ export const useViewerStore = defineStore('viewer', {
      * (clears the list) when the endpoint is missing — that's how we
      * detect "running standalone, no hub" and hide the UI.
      */
+    /**
+     * Ask the hub to spawn a marimo notebook for ``{test, suiteDir}``
+     * and open the returned URL in a new browser tab. Mirrors
+     * ``rtl_buddy``'s ``/api/axi-profile/notebook`` endpoint (Phase 2
+     * of the marimo umbrella, axi-profiler#16).
+     *
+     * Used by the "Open in marimo" button in AxiPerfView. The hub
+     * spawns marimo with ``--headless --no-token`` (#190) so the URL
+     * we get back is the bare ``http://localhost:NNNN`` — no token
+     * juggling on our side.
+     */
+    async openAxiNotebook({ test, suiteDir }) {
+      this.axiNotebookLaunching = true
+      this.axiNotebookError = null
+      try {
+        const params = new URLSearchParams({ test, suite_dir: suiteDir })
+        const response = await fetch(
+          `/api/axi-profile/notebook?${params.toString()}`,
+        )
+        if (!response.ok) {
+          let detail = `${response.status} ${response.statusText}`
+          try {
+            const body = await response.json()
+            if (body && typeof body.error === 'string') detail = body.error
+          } catch {
+            /* non-JSON body — fall through with the status line */
+          }
+          throw new Error(detail)
+        }
+        const body = await response.json()
+        if (!body || typeof body.url !== 'string') {
+          throw new Error('hub response missing url')
+        }
+        // Open in a new tab. Some browsers block window.open() outside
+        // a user-gesture stack; the click handler that called this
+        // action satisfies that requirement.
+        if (typeof window !== 'undefined') {
+          window.open(body.url, '_blank', 'noopener')
+        }
+        return body
+      } catch (err) {
+        this.axiNotebookError =
+          err && err.message ? String(err.message) : String(err)
+        throw err
+      } finally {
+        this.axiNotebookLaunching = false
+      }
+    },
+
     async loadAvailableModels() {
       try {
         const response = await fetch('/models')
@@ -589,6 +651,45 @@ export const useViewerStore = defineStore('viewer', {
       if (typeof id !== 'string' || id.length === 0) return
       this.selection = id
       this.selectedEdge = null
+      // Any non-ambiguous selection invalidates a pending picker; a
+      // single match means the hub already disambiguated and we
+      // shouldn't keep an old candidate list floating.
+      this.selectionCandidates = null
+    },
+
+    presentSelectionCandidates(paths) {
+      // Multi-match hub ``selection_changed`` — apply the smallest-
+      // range default ([0]) immediately so the canvas reacts in the
+      // common case, and stash the full list so the SelectionCandidates
+      // popover can offer alternatives. The composable owns the
+      // auto-dismiss timer.
+      if (!Array.isArray(paths) || paths.length === 0) return
+      const filtered = paths.filter(
+        (p) => typeof p === 'string' && p.length > 0,
+      )
+      if (filtered.length === 0) return
+      this.selection = filtered[0]
+      this.selectedEdge = null
+      // Single match → no picker. Acts as the array-collapsing case
+      // for callers that don't pre-check (useHub does pre-check, but
+      // tests / future callers may not).
+      this.selectionCandidates = filtered.length > 1 ? filtered.slice() : null
+    },
+
+    chooseSelectionCandidate(path) {
+      // User picked one of the multi-match candidates from the popover.
+      // Lock the selection and dismiss the picker. The hub broadcast
+      // is the composable's job (useHub.chooseSelectionCandidate sends
+      // ``selection_changed`` from origin=view); the store just owns
+      // the local-side state transition.
+      if (typeof path !== 'string' || path.length === 0) return
+      this.selection = path
+      this.selectedEdge = null
+      this.selectionCandidates = null
+    },
+
+    dismissSelectionCandidates() {
+      this.selectionCandidates = null
     },
 
     applyHubScope(payload) {

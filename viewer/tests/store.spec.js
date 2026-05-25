@@ -699,4 +699,154 @@ describe('viewer store', () => {
     expect(store.waveValuesTFs).toBeNull()
     expect(store.hubSignalSelected).toBeNull()
   })
+
+  describe('openAxiNotebook', () => {
+    let origFetch
+    let origOpen
+    let opened
+    beforeEach(() => {
+      origFetch = window.fetch
+      origOpen = window.open
+      opened = []
+      window.fetch = async () => ({ ok: true, json: async () => ({}) })
+      window.open = (url, ...rest) => {
+        opened.push({ url, rest })
+        return null
+      }
+    })
+    afterEach(() => {
+      window.fetch = origFetch
+      window.open = origOpen
+    })
+
+    it('calls /api/axi-profile/notebook with the supplied test + suite_dir', async () => {
+      const captured = []
+      window.fetch = async (url) => {
+        captured.push(url)
+        return {
+          ok: true,
+          json: async () => ({ url: 'http://localhost:31337', pid: 9, port: 31337 }),
+        }
+      }
+      const store = useViewerStore()
+      await store.openAxiNotebook({ test: 'basic_traffic', suiteDir: 'verif/demo' })
+      expect(captured).toHaveLength(1)
+      expect(captured[0]).toMatch(/\/api\/axi-profile\/notebook\?/)
+      expect(captured[0]).toMatch(/test=basic_traffic/)
+      expect(captured[0]).toMatch(/suite_dir=verif%2Fdemo/)
+    })
+
+    it('opens the returned URL in a new tab on success', async () => {
+      window.fetch = async () => ({
+        ok: true,
+        json: async () => ({ url: 'http://localhost:31337' }),
+      })
+      const store = useViewerStore()
+      await store.openAxiNotebook({ test: 't', suiteDir: 's' })
+      expect(opened).toHaveLength(1)
+      expect(opened[0].url).toBe('http://localhost:31337')
+      expect(store.axiNotebookError).toBeNull()
+      expect(store.axiNotebookLaunching).toBe(false)
+    })
+
+    it('surfaces hub-side JSON error message on 4xx/5xx', async () => {
+      window.fetch = async () => ({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        json: async () => ({ error: 'marimo not on PATH; install [notebook]' }),
+      })
+      const store = useViewerStore()
+      await expect(
+        store.openAxiNotebook({ test: 't', suiteDir: 's' }),
+      ).rejects.toThrow(/marimo not on PATH/)
+      expect(store.axiNotebookError).toMatch(/marimo not on PATH/)
+      expect(opened).toHaveLength(0)
+    })
+
+    it('falls back to status line when error body is not JSON', async () => {
+      window.fetch = async () => ({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: async () => {
+          throw new Error('not json')
+        },
+      })
+      const store = useViewerStore()
+      await expect(
+        store.openAxiNotebook({ test: 't', suiteDir: 's' }),
+      ).rejects.toThrow(/500 Internal Server Error/)
+    })
+
+    it('clears launching flag even on exception', async () => {
+      window.fetch = async () => {
+        throw new Error('network down')
+      }
+      const store = useViewerStore()
+      await expect(
+        store.openAxiNotebook({ test: 't', suiteDir: 's' }),
+      ).rejects.toThrow(/network down/)
+      expect(store.axiNotebookLaunching).toBe(false)
+      expect(store.axiNotebookError).toMatch(/network down/)
+    })
+  })
+})
+
+describe('viewer store — disambiguation picker (rtl-buddy-view#55)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('presentSelectionCandidates sets selection to [0] and stashes the list', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates(['top.u_a', 'top.u_b', 'top.u_c'])
+    expect(store.selection).toBe('top.u_a')
+    expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b', 'top.u_c'])
+  })
+
+  it('presentSelectionCandidates with a single path skips the picker', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates(['top.u_only'])
+    expect(store.selection).toBe('top.u_only')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('chooseSelectionCandidate locks the pick and clears the picker', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates(['top.u_a', 'top.u_b'])
+    store.chooseSelectionCandidate('top.u_b')
+    expect(store.selection).toBe('top.u_b')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('dismissSelectionCandidates clears the picker without touching selection', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates(['top.u_a', 'top.u_b'])
+    store.dismissSelectionCandidates()
+    expect(store.selection).toBe('top.u_a')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('applyHubSelection (single match) invalidates any pending picker', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates(['top.u_a', 'top.u_b'])
+    // A fresh, unambiguous selection arriving from the hub means the
+    // resolver already disambiguated — don't keep a stale list around.
+    store.applyHubSelection('top.elsewhere')
+    expect(store.selection).toBe('top.elsewhere')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('rejects malformed inputs without crashing or mutating state', () => {
+    const store = useViewerStore()
+    store.presentSelectionCandidates([])
+    expect(store.selection).toBeNull()
+    expect(store.selectionCandidates).toBeNull()
+    store.presentSelectionCandidates([null, undefined, ''])
+    expect(store.selection).toBeNull()
+    expect(store.selectionCandidates).toBeNull()
+    store.chooseSelectionCandidate('')
+    expect(store.selection).toBeNull()
+  })
 })
