@@ -49,26 +49,28 @@ export function resolvePortValues(node, waveValuesByKey) {
     }
   }
   if (waveValuesByKey && typeof waveValuesByKey === 'object') {
+    const cacheKeys = Object.keys(waveValuesByKey)
     // Each port may explicitly carry its (wave_scope, signal) pair
-    // (overrides the instance-path convention). Otherwise fall back
-    // to ``${node.id}.${port.name}``.
+    // (overrides the instance-path convention). Otherwise we walk
+    // hierarchy-path prefixes leaf→root looking for a suffix match
+    // in the live cache — mirrors ``WaveMap.find_for_port`` in the
+    // Python wave_annotations producer. Without this the live path
+    // breaks the moment the VCD/FST wraps the design under a
+    // testbench (``tb.dut.*`` keys vs. ``design_top.*`` node ids).
     const ports = Array.isArray(node?.ports) ? node.ports : []
     for (const port of ports) {
       if (!port || typeof port.name !== 'string') continue
-      let key
       const overrideScope = port.wave_scope
       const overrideSig = port.signal
+      let live
       if (
         typeof overrideScope === 'string' && overrideScope.length > 0 &&
         typeof overrideSig === 'string' && overrideSig.length > 0
       ) {
-        key = `${overrideScope}.${overrideSig}`
-      } else if (typeof node.id === 'string' && node.id.length > 0) {
-        key = `${node.id}.${port.name}`
+        live = waveValuesByKey[`${overrideScope}.${overrideSig}`]
       } else {
-        continue
+        live = findBySuffix(cacheKeys, waveValuesByKey, node.id, port.name)
       }
-      const live = waveValuesByKey[key]
       if (typeof live === 'string') out.set(port.name, live)
     }
     // Producer may also surface explicit (wave_scope, signal) pairs
@@ -92,6 +94,35 @@ export function resolvePortValues(node, waveValuesByKey) {
 function clearBadge(group) {
   const existing = group.querySelector(`.${BADGE_CLASS}`)
   if (existing) existing.remove()
+}
+
+// Hierarchy-suffix match between a node + port and the live wave-
+// values cache. Walks ``node.id`` left→right shedding one segment
+// at a time so a port on ``counter.u_ff`` matches a VCD signal at
+// ``tb.dut.u_ff.q`` (drop ``counter`` → suffix ``u_ff.q`` → bare
+// ``q``). Same shape as the Python ``WaveMap.find_for_port`` so
+// offline + live both terminate at the same key.
+function findBySuffix(cacheKeys, cache, nodeId, portName) {
+  const segments = typeof nodeId === 'string' && nodeId.length > 0
+    ? nodeId.split('.')
+    : []
+  for (let start = 0; start <= segments.length; start++) {
+    const tail = segments.slice(start)
+    const suffix = tail.length > 0
+      ? `${tail.join('.')}.${portName}`
+      : portName
+    if (typeof cache[suffix] === 'string') return cache[suffix]
+    // Find shortest cache key ending with ``.suffix`` (closest to leaf).
+    const dotSuffix = `.${suffix}`
+    let best = null
+    for (const k of cacheKeys) {
+      if (k.endsWith(dotSuffix) && (best === null || k.length < best.length)) {
+        best = k
+      }
+    }
+    if (best !== null) return cache[best]
+  }
+  return undefined
 }
 
 function paintBadge(group, values) {
@@ -135,10 +166,18 @@ function paintBadge(group, values) {
     badge.setAttribute('pointer-events', 'none')
     group.appendChild(badge)
   }
-  // Anchor at the top-right corner, push slightly outside the
-  // shape so it doesn't crowd a port pin label.
-  badge.setAttribute('x', String(bbox.x + bbox.width + 4))
-  badge.setAttribute('y', String(bbox.y))
+  // Anchor inside the shape's top-left corner with a small inset.
+  // Anchoring outside the right edge (the original choice) clips off
+  // the canvas for top-level / right-edge nodes — and on cluster
+  // groups the bbox spans the entire subtree, so "outside" would
+  // land in another cluster's frame. Inside-top-left works on every
+  // shape; if it crowds a port-pin label the user can toggle the
+  // overlay off.
+  const inset = 4
+  const anchorX = bbox.x + inset
+  const anchorY = bbox.y + inset
+  badge.setAttribute('x', String(anchorX))
+  badge.setAttribute('y', String(anchorY))
   badge.setAttribute('text-anchor', 'start')
   // Clear existing children — we're rewriting the whole list.
   while (badge.firstChild) badge.removeChild(badge.firstChild)
@@ -151,7 +190,7 @@ function paintBadge(group, values) {
   let dy = '0.8em'
   for (const [name, value] of lines) {
     const tspan = document.createElementNS(NS, 'tspan')
-    tspan.setAttribute('x', String(bbox.x + bbox.width + 4))
+    tspan.setAttribute('x', String(anchorX))
     tspan.setAttribute('dy', dy)
     tspan.textContent = `${name}=${value}`
     badge.appendChild(tspan)

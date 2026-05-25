@@ -378,6 +378,27 @@ function applyEnvelope(env) {
       break
     }
 
+    case 'view_overlay_set': {
+      // Hub-routed request: flip an overlay's enabled state. Lets
+      // remote drivers (LLMs over `rb hub send overlay`, nvim, CI)
+      // present an issue by toggling the right overlay layer rather
+      // than clicking the panel in the SPA.
+      if (env.kind !== 'request') break
+      const p = env.payload || {}
+      const name = typeof p.name === 'string' ? p.name : ''
+      const enabled = p.enabled === true
+      if (name) _store?.setOverlayEnabled(name, enabled)
+      sendEnvelope({
+        v: PROTOCOL_VERSION,
+        id: env.id,
+        origin: 'view',
+        kind: 'response',
+        type: 'view_overlay_set',
+        payload: { ok: !!name },
+      })
+      break
+    }
+
     case 'view_changed': {
       // Hub-driven model switch (rtl_buddy#174). Forwarded to the
       // store, which dedupes against ``activeModel`` so a switch we

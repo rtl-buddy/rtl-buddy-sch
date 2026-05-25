@@ -274,6 +274,58 @@ describe('built-in overlays', () => {
     expect(resolvePortValues(node, live).get('q')).toBe("1'b1")
   })
 
+  it('resolvePortValues walks node-path prefixes to match testbench-wrapped scopes', () => {
+    // The bridge broadcasts wave_values_changed keyed by the
+    // VCD/FST's hierarchy (``tb_top.clk``). The viewer's node.id is
+    // design-relative (``test_module_3``). The wave overlay must
+    // walk node-path prefixes shedding one segment at a time so the
+    // join terminates at the bare suffix (``clk``) — without this,
+    // the live cascade never paints badges on a typical testbench.
+    const node = {
+      id: 'test_module_3',
+      ports: [{ name: 'clk' }, { name: 'rst' }, { name: 'z' }],
+      overlays: {},
+    }
+    const live = {
+      'tb_top.clk': '1',
+      'tb_top.rst': '0',
+      'tb_top.z':   '1010',
+    }
+    const out = resolvePortValues(node, live)
+    expect(out.get('clk')).toBe('1')
+    expect(out.get('rst')).toBe('0')
+    expect(out.get('z')).toBe('1010')
+  })
+
+  it('resolvePortValues prefers shortest matching path on ambiguous suffix', () => {
+    // Two cache keys end with ``.q``. The shorter (closer to leaf)
+    // wins — the design subtree usually sits below the testbench
+    // wrapper, so shorter == more-specific by construction.
+    const node = {
+      id: 'design_top',
+      ports: [{ name: 'q' }],
+      overlays: {},
+    }
+    const live = {
+      'tb.dut.q':            'A',
+      'tb.dut.u_inner.q':    'B',
+    }
+    expect(resolvePortValues(node, live).get('q')).toBe('A')
+  })
+
+  it('resolvePortValues walks prefixes for nested instances', () => {
+    // node.id ``counter.u_ff``, VCD path ``tb.dut.u_ff.q``. The
+    // walker drops ``counter`` (no match for ``counter.u_ff.q``),
+    // then finds ``u_ff.q`` as a suffix of ``tb.dut.u_ff.q``.
+    const node = {
+      id: 'counter.u_ff',
+      ports: [{ name: 'q' }],
+      overlays: {},
+    }
+    const live = { 'tb.dut.u_ff.q': '1' }
+    expect(resolvePortValues(node, live).get('q')).toBe('1')
+  })
+
   it('wave overlay applies port-value badges and clears them on toggle-off', () => {
     const overlay = getOverlay('wave')
     const graph = {

@@ -743,6 +743,32 @@ export const useViewerStore = defineStore('viewer', {
         next[`${v.wave_scope}.${v.signal}`] = v.value
       }
       this.waveValuesByKey = next
+      // First wave-values envelope ever → auto-enable the wave
+      // overlay. The producer's ``view.json`` doesn't have to list
+      // ``wave`` in ``overlays_present`` for the live cascade to
+      // paint — receiving values is itself the signal that the user
+      // wants the badges visible. Idempotent: re-arming the live
+      // path doesn't reset a user-disabled overlay because we only
+      // flip the flag the first time the map crosses from empty to
+      // non-empty.
+      if (!this.enabledOverlays.has('wave')) {
+        this.enabledOverlays = new Set(this.enabledOverlays).add('wave')
+      }
+    },
+
+    setOverlayEnabled(name, enabled) {
+      // Reactive helper used by both the local OverlayPanel and the
+      // remote ``view_overlay_set`` request. Reassigning the Set is
+      // what the canvas watcher hooks onto — mutating in place would
+      // not retrigger Pinia's reactivity for ``Set`` consumers.
+      if (typeof name !== 'string' || name.length === 0) return
+      const next = new Set(this.enabledOverlays)
+      if (enabled) {
+        next.add(name)
+      } else {
+        next.delete(name)
+      }
+      this.enabledOverlays = next
     },
 
     applySignalSelected(payload) {
