@@ -639,6 +639,98 @@ describe('viewer store', () => {
     store.applyDiagnostics('rtl-buddy-cdc', [])
     expect(store.diagnosticsByNode).toEqual({})
   })
+
+  describe('openAxiNotebook', () => {
+    let origFetch
+    let origOpen
+    let opened
+    beforeEach(() => {
+      origFetch = window.fetch
+      origOpen = window.open
+      opened = []
+      window.fetch = async () => ({ ok: true, json: async () => ({}) })
+      window.open = (url, ...rest) => {
+        opened.push({ url, rest })
+        return null
+      }
+    })
+    afterEach(() => {
+      window.fetch = origFetch
+      window.open = origOpen
+    })
+
+    it('calls /api/axi-profile/notebook with the supplied test + suite_dir', async () => {
+      const captured = []
+      window.fetch = async (url) => {
+        captured.push(url)
+        return {
+          ok: true,
+          json: async () => ({ url: 'http://localhost:31337', pid: 9, port: 31337 }),
+        }
+      }
+      const store = useViewerStore()
+      await store.openAxiNotebook({ test: 'basic_traffic', suiteDir: 'verif/demo' })
+      expect(captured).toHaveLength(1)
+      expect(captured[0]).toMatch(/\/api\/axi-profile\/notebook\?/)
+      expect(captured[0]).toMatch(/test=basic_traffic/)
+      expect(captured[0]).toMatch(/suite_dir=verif%2Fdemo/)
+    })
+
+    it('opens the returned URL in a new tab on success', async () => {
+      window.fetch = async () => ({
+        ok: true,
+        json: async () => ({ url: 'http://localhost:31337' }),
+      })
+      const store = useViewerStore()
+      await store.openAxiNotebook({ test: 't', suiteDir: 's' })
+      expect(opened).toHaveLength(1)
+      expect(opened[0].url).toBe('http://localhost:31337')
+      expect(store.axiNotebookError).toBeNull()
+      expect(store.axiNotebookLaunching).toBe(false)
+    })
+
+    it('surfaces hub-side JSON error message on 4xx/5xx', async () => {
+      window.fetch = async () => ({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        json: async () => ({ error: 'marimo not on PATH; install [notebook]' }),
+      })
+      const store = useViewerStore()
+      await expect(
+        store.openAxiNotebook({ test: 't', suiteDir: 's' }),
+      ).rejects.toThrow(/marimo not on PATH/)
+      expect(store.axiNotebookError).toMatch(/marimo not on PATH/)
+      expect(opened).toHaveLength(0)
+    })
+
+    it('falls back to status line when error body is not JSON', async () => {
+      window.fetch = async () => ({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: async () => {
+          throw new Error('not json')
+        },
+      })
+      const store = useViewerStore()
+      await expect(
+        store.openAxiNotebook({ test: 't', suiteDir: 's' }),
+      ).rejects.toThrow(/500 Internal Server Error/)
+    })
+
+    it('clears launching flag even on exception', async () => {
+      window.fetch = async () => {
+        throw new Error('network down')
+      }
+      const store = useViewerStore()
+      await expect(
+        store.openAxiNotebook({ test: 't', suiteDir: 's' }),
+      ).rejects.toThrow(/network down/)
+      expect(store.axiNotebookLaunching).toBe(false)
+      expect(store.axiNotebookError).toMatch(/network down/)
+    })
+  })
 })
 
 describe('viewer store — disambiguation picker (rtl-buddy-view#55)', () => {

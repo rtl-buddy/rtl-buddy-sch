@@ -176,6 +176,13 @@ export const useViewerStore = defineStore('viewer', {
     // ``selection`` so the canvas pans/zooms to the smallest-range
     // match — the picker just lets the user override that default.
     selectionCandidates: null,
+    // "Open in marimo" launch state. Drives the AxiPerfView button's
+    // spinner / disabled state. ``axiNotebookError`` is a string when
+    // the last launch attempt failed (hub returned 4xx/5xx, or the
+    // network rejected); the UI shows it as an inline toast and the
+    // user can retry.
+    axiNotebookLaunching: false,
+    axiNotebookError: null,
   }),
   getters: {
     nodesById: (state) => {
@@ -339,6 +346,55 @@ export const useViewerStore = defineStore('viewer', {
      * (clears the list) when the endpoint is missing — that's how we
      * detect "running standalone, no hub" and hide the UI.
      */
+    /**
+     * Ask the hub to spawn a marimo notebook for ``{test, suiteDir}``
+     * and open the returned URL in a new browser tab. Mirrors
+     * ``rtl_buddy``'s ``/api/axi-profile/notebook`` endpoint (Phase 2
+     * of the marimo umbrella, axi-profiler#16).
+     *
+     * Used by the "Open in marimo" button in AxiPerfView. The hub
+     * spawns marimo with ``--headless --no-token`` (#190) so the URL
+     * we get back is the bare ``http://localhost:NNNN`` — no token
+     * juggling on our side.
+     */
+    async openAxiNotebook({ test, suiteDir }) {
+      this.axiNotebookLaunching = true
+      this.axiNotebookError = null
+      try {
+        const params = new URLSearchParams({ test, suite_dir: suiteDir })
+        const response = await fetch(
+          `/api/axi-profile/notebook?${params.toString()}`,
+        )
+        if (!response.ok) {
+          let detail = `${response.status} ${response.statusText}`
+          try {
+            const body = await response.json()
+            if (body && typeof body.error === 'string') detail = body.error
+          } catch {
+            /* non-JSON body — fall through with the status line */
+          }
+          throw new Error(detail)
+        }
+        const body = await response.json()
+        if (!body || typeof body.url !== 'string') {
+          throw new Error('hub response missing url')
+        }
+        // Open in a new tab. Some browsers block window.open() outside
+        // a user-gesture stack; the click handler that called this
+        // action satisfies that requirement.
+        if (typeof window !== 'undefined') {
+          window.open(body.url, '_blank', 'noopener')
+        }
+        return body
+      } catch (err) {
+        this.axiNotebookError =
+          err && err.message ? String(err.message) : String(err)
+        throw err
+      } finally {
+        this.axiNotebookLaunching = false
+      }
+    },
+
     async loadAvailableModels() {
       try {
         const response = await fetch('/models')
