@@ -13,7 +13,15 @@
     },
     "top": {
       "type": "string",
-      "description": "Top module name."
+      "description": "Rendered root's module name. Equals dut_top when only --top was passed; equals tb_top when --tb-top was passed. Existing v1.0 consumers that read this field need no change."
+    },
+    "dut_top": {
+      "type": ["string", "null"],
+      "description": "(v1.1) Module name supplied via --top. Present as a non-null string whenever --top was passed (even alongside --tb-top); null when only --tb-top was passed. SPA draws a DUT boundary box around every instance whose module equals this value; instance-path enumeration is derived at view time from nodes[] (no separate dut_anchors list)."
+    },
+    "tb_top": {
+      "type": ["string", "null"],
+      "description": "(v1.1) Module name supplied via --tb-top. Present as a non-null string whenever --tb-top was passed; null when only --top was passed. When non-null the rendered root is the testbench top and the wave path is the identity of the view path (no tb_prefix strip)."
     },
     "tool": {
       "type": "object",

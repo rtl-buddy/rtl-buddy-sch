@@ -250,6 +250,8 @@ def test_alias_and_explicit_overlay_for_same_name_rejected(tmp_path: Path) -> No
 
 
 def test_top_required_for_rendering() -> None:
+    """At least one of --top or --tb-top is required (independent
+    flags, issue #99). --filelist is always required."""
     result = _run("--filelist", str(CLOCK_FIXTURES / "files.f"))
     assert result.returncode == 2
-    assert "--top and --filelist are required" in result.stderr
+    assert "--top or --tb-top is required" in result.stderr

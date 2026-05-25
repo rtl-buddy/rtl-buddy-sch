@@ -15,14 +15,19 @@ validates every shipped fixture against the schema on every PR.
 
 > Phase 4 (rtl-buddy-view#17) locked the schema at v1. Bumping to
 > v2 is allowed in a future major; v1.x payloads are backward-
-> compatible by contract (see § 9).
+> compatible by contract (see § 9). v1.1 (rtl-buddy-view#99) added
+> the `dut_top` and `tb_top` descriptive fields for the testbench-
+> top view; v1.0 consumers that ignore unknown keys parse v1.1
+> payloads unchanged.
 
 ## 1. Top-level envelope
 
 ```jsonc
 {
-  "schema_version": "1.0",
-  "top": "soc_top",
+  "schema_version": "1.1",
+  "top": "tb_top",
+  "dut_top": "soc_top",
+  "tb_top": "tb_top",
   "tool": {
     "name": "rtl-buddy-view",
     "version": "0.1.0"
@@ -35,8 +40,10 @@ validates every shipped fixture against the schema on every PR.
 
 | Field              | Type                | Notes |
 | ------------------ | ------------------- | ----- |
-| `schema_version`   | string              | `MAJOR.MINOR`. Currently `"1.0"`. |
-| `top`              | string              | Top module name passed to `--top`. |
+| `schema_version`   | string              | `MAJOR.MINOR`. Currently `"1.1"`. |
+| `top`              | string              | Rendered root's module name. Equals `dut_top` when only `--top` was passed; equals `tb_top` when `--tb-top` was passed (with or without `--top`). |
+| `dut_top`          | string \| null      | (v1.1) Module name supplied via `--top`. Non-null whenever `--top` was passed; null when only `--tb-top` was passed. SPA derives DUT instance anchors by filtering `nodes[]` for `module == dut_top` (no separate `dut_anchors` list — derivable, not stored). |
+| `tb_top`           | string \| null      | (v1.1) Module name supplied via `--tb-top`. Non-null whenever `--tb-top` was passed; null when only `--top` was passed. When non-null, the rendered root is the testbench top — the hub's wave path is the identity of the view path (no `tb_prefix` strip). |
 | `tool`             | object (optional)   | `{name, version}` — producer self-identification. Consumers shouldn't gate on this. |
 | `nodes`            | array of `node`     | Every elaborated instance in the design, sorted by `id`. |
 | `edges`            | array of `edge`     | Parent → child instantiation edges, sorted by `(from, to)`. |
@@ -44,6 +51,24 @@ validates every shipped fixture against the schema on every PR.
 
 Additional properties are allowed at the top level; consumers that
 don't recognise them should pass them through.
+
+### 1.1 CLI modes that drive the envelope
+
+`--top` and `--tb-top` are **independent** flags on `rtl-buddy-view`;
+at least one is required.
+
+| CLI                                 | `top`     | `dut_top` | `tb_top` | Notes |
+| ----------------------------------- | --------- | --------- | -------- | ----- |
+| `--top X`                           | `X`       | `X`       | `null`   | DUT view (byte-identical to v1.0 behaviour). |
+| `--tb-top Y`                        | `Y`       | `null`    | `Y`      | TB view, no DUT marking. Overlays (CDC, AXI perf) still anchor under their own `design_top` by walking `nodes[]` at load time. |
+| `--top X --tb-top Y`                | `Y`       | `X`       | `Y`      | TB view with DUT recorded. SPA draws a dashed boundary at every instance whose module is `X`. |
+| _(neither)_                         | —         | —         | —        | Error: exit code 2. |
+
+The renderer does **not** error when `--top` and `--tb-top` are
+both set but the DUT module doesn't appear in the TB elaboration.
+That's surfaced at overlay load time, where the overlay's
+`design_top` fails to resolve into any instance path — a load-time
+warning is more actionable than a render-time error.
 
 ## 2. Node objects
 
@@ -298,7 +323,8 @@ retyping any of the above *is*.
 - **Minor bump** (`1.0` → `1.1`): purely additive. New optional
   fields, new overlays, new metadata keys under `overlays`. v1.0
   consumers parse v1.1 payloads correctly by ignoring unknown
-  keys.
+  keys. The v1.1 bump (issue #99) added envelope-level `dut_top`
+  and `tb_top` strings.
 - **Major bump** (`1.x` → `2.0`): any field rename, retype, or
   removal. The schema file is republished as `view-v2.json`; the
   v1 schema stays in the tree for the deprecation window. The

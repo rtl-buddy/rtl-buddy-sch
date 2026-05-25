@@ -75,7 +75,22 @@ def main(
         None,
         "--top",
         "-t",
-        help="Top module name.",
+        help="DUT top module name. When --tb-top is also set, the "
+        "renderer elaborates from --tb-top and records this name in "
+        "view.json::dut_top so the SPA can mark every DUT instance. "
+        "When --tb-top is unset, the renderer elaborates from --top "
+        "(today's behaviour). At least one of --top or --tb-top is "
+        "required.",
+    ),
+    tb_top: str = typer.Option(
+        None,
+        "--tb-top",
+        help="Testbench top module name. Independent of --top: when "
+        "set on its own, the renderer elaborates from this module and "
+        "records view.json::tb_top; overlays (CDC, AXI perf, ...) "
+        "still anchor under their own design_top at load time by "
+        "walking nodes[] for module-name matches. Combine with --top "
+        "to record both anchors.",
     ),
     filelist: Path | None = typer.Option(
         None,
@@ -155,13 +170,23 @@ def main(
             typer.echo(f"{overlay.name}\t{overlay.schema_version}\t({source})")
         raise typer.Exit(code=0)
 
-    # `--top` / `--filelist` are mandatory for actual rendering, but
-    # `--list-overlays` is a pure diagnostic so we accept the
-    # invocation without them. Validate here instead of marking the
-    # options as required at the typer level.
-    if top is None or filelist is None:
-        typer.echo("error: --top and --filelist are required", err=True)
+    # `--filelist` and at least one of `--top` / `--tb-top` are
+    # mandatory for actual rendering, but `--list-overlays` is a pure
+    # diagnostic so we accept the invocation without them. Validate
+    # here instead of marking the options as required at the typer
+    # level.
+    if filelist is None:
+        typer.echo("error: --filelist is required", err=True)
         raise typer.Exit(code=2)
+    if top is None and tb_top is None:
+        typer.echo("error: --top or --tb-top is required", err=True)
+        raise typer.Exit(code=2)
+
+    # The rendered root is whatever the user named with --tb-top; when
+    # only --top is supplied, fall back to DUT-rooted (today's
+    # byte-identical behaviour). Both flags survive into view.json as
+    # descriptive fields regardless of which was used as the root.
+    rendered_top = tb_top if tb_top is not None else top
 
     overlay_specs = _collect_overlays(overlays_flag, cdc_annotations, rdc_annotations)
 
@@ -203,7 +228,7 @@ def main(
         raise typer.Exit(code=2) from None
 
     try:
-        root = build_hierarchy(table, top)
+        root = build_hierarchy(table, rendered_top)
     except HierarchyError as e:
         typer.echo(f"hierarchy: {e}", err=True)
         raise typer.Exit(code=1) from None
@@ -234,6 +259,8 @@ def main(
             axi_perf_map,
             wave_map,
             clock_legend,
+            top,
+            tb_top,
             axi_perf_source=axi_perf_source,
             module_table=table,
         )
@@ -248,6 +275,8 @@ def main(
                 axi_perf_map,
                 wave_map,
                 clock_legend,
+                top,
+                tb_top,
                 axi_perf_source=axi_perf_source,
                 module_table=table,
             )
@@ -338,6 +367,8 @@ def _render(
     axi_perf_map: AxiPerfMap | None,
     wave_map: WaveMap | None,
     clock_legend: bool,
+    dut_top: str | None,
+    tb_top: str | None,
     *,
     axi_perf_source: Path | None = None,
     module_table: ModuleTable | None = None,
@@ -367,6 +398,8 @@ def _render(
             axi_perf_source=axi_perf_source,
             with_legend=clock_legend,
             module_table=module_table,
+            dut_top=dut_top,
+            tb_top=tb_top,
         )
     else:  # pragma: no cover
         raise ValueError(f"Unknown format: {fmt}")
