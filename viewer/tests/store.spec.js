@@ -920,4 +920,236 @@ describe('viewer store — disambiguation picker (rtl-buddy-view#55)', () => {
     store.chooseSelectionCandidate('')
     expect(store.selection).toBeNull()
   })
+
+  // ---------------------------------------------------------------------------
+  // TB view (rtl-buddy-view#99 / 6c) — dut_top boundary derivation,
+  // /tests endpoint, switchTest, view_changed.view_mode routing
+  // ---------------------------------------------------------------------------
+
+  function tbPayload() {
+    // Mirrors the tb_over_dut fixture from #99 / 6a: TB instantiates
+    // a single DUT plus a clkgen + driver. The renderer's dut_top is
+    // 'dut'; the SPA derives the anchor (tb_top.u_dut) by filtering
+    // nodes[] for module == dut_top.
+    return {
+      schema_version: '1.1',
+      top: 'tb_top',
+      dut_top: 'dut',
+      tb_top: 'tb_top',
+      nodes: [
+        { id: 'tb_top', module: 'tb_top', is_blackbox: false, parameters: {}, ports: [], overlays: {} },
+        { id: 'tb_top.u_clkgen', module: 'clkgen', is_blackbox: false, parameters: {}, ports: [], overlays: {} },
+        { id: 'tb_top.u_driver', module: 'driver', is_blackbox: false, parameters: {}, ports: [], overlays: {} },
+        { id: 'tb_top.u_dut', module: 'dut', is_blackbox: false, parameters: {}, ports: [], overlays: {} },
+        { id: 'tb_top.u_dut.u_a', module: 'leaf', is_blackbox: false, parameters: {}, ports: [], overlays: {} },
+      ],
+      edges: [],
+      overlays_present: [],
+    }
+  }
+
+  function mockFetch(responses) {
+    return async (url) => {
+      const factory = responses[url] || responses['*']
+      if (!factory) {
+        return {
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: async () => '',
+          json: async () => ({}),
+        }
+      }
+      return factory(url)
+    }
+  }
+
+  it('dutAnchorIds returns instance paths matching graph.dut_top', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(tbPayload()))
+    expect(store.dutAnchorIds).toEqual(['tb_top.u_dut'])
+  })
+
+  it('dutAnchorIds is empty when dut_top is unset (TB-only view)', () => {
+    const store = useViewerStore()
+    const p = tbPayload()
+    p.dut_top = null
+    store.loadFromText(JSON.stringify(p))
+    expect(store.dutAnchorIds).toEqual([])
+  })
+
+  it('dutAnchorIds respects the current descend scope', () => {
+    // Filter is driven by ``displayGraph``, so a non-default
+    // rootInstancePath that excludes the DUT anchor should drop the
+    // boundary — the renderer shouldn't paint a stroke outside the
+    // rendered tree. ``descend()`` itself no-ops for leaves, so set
+    // the scope state directly for this assertion.
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(tbPayload()))
+    store.rootInstancePath = 'tb_top.u_driver'
+    expect(store.dutAnchorIds).toEqual([])
+    // Scoping into the DUT itself: the anchor stays in scope.
+    store.rootInstancePath = 'tb_top.u_dut'
+    expect(store.dutAnchorIds).toEqual(['tb_top.u_dut'])
+  })
+
+  it('renderedViewMode is tb when top == tb_top, dut otherwise', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(tbPayload()))
+    expect(store.renderedViewMode).toBe('tb')
+    // DUT-rooted payload: tb_top is null (or absent) → 'dut'.
+    const dut = tbPayload()
+    dut.top = 'dut'
+    dut.tb_top = null
+    store.loadFromText(JSON.stringify(dut))
+    expect(store.renderedViewMode).toBe('dut')
+  })
+
+  it('loadAvailableTests populates from /tests, 404 clears', async () => {
+    const originalFetch = window.fetch
+    window.fetch = mockFetch({
+      '/tests': async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          tests: [
+            { name: 't1', model: 'alpha', tb: 'tb_top', tests_file: '/p/tests.yaml' },
+            { name: 't2', model: 'beta', tb: 'tb_top', tests_file: '/p/tests.yaml' },
+          ],
+        }),
+      }),
+    })
+    try {
+      const store = useViewerStore()
+      await store.loadAvailableTests()
+      expect(store.availableTests.map((t) => t.name)).toEqual(['t1', 't2'])
+    } finally {
+      window.fetch = originalFetch
+    }
+    // 404 → cleared.
+    window.fetch = async () => ({ ok: false, status: 404, json: async () => ({}) })
+    try {
+      const store = useViewerStore()
+      store.availableTests = [{ name: 'stale' }]
+      await store.loadAvailableTests()
+      expect(store.availableTests).toEqual([])
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('switchTest fetches /view.json?test=, flips activeTest + viewModeTb, and resolves model', async () => {
+    const originalFetch = window.fetch
+    const payload = tbPayload()
+    window.fetch = mockFetch({
+      '/view.json?test=t1': async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify(payload),
+      }),
+    })
+    try {
+      const store = useViewerStore()
+      store.availableTests = [
+        { name: 't1', model: 'alpha', tb: 'tb_top', tests_file: '/p/tests.yaml' },
+      ]
+      await store.switchTest('t1', { updateUrl: false })
+      expect(store.status).toBe('ready')
+      expect(store.activeTest).toBe('t1')
+      expect(store.activeModel).toBe('alpha')
+      expect(store.viewModeTb).toBe(true)
+      expect(store.graph.top).toBe('tb_top')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('switchModel clears any active TB selection (mode switch)', async () => {
+    const originalFetch = window.fetch
+    const payload = minimalPayload()
+    window.fetch = mockFetch({
+      '/view.json?model=alpha': async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify(payload),
+      }),
+    })
+    try {
+      const store = useViewerStore()
+      store.activeTest = 't_old'
+      store.viewModeTb = true
+      await store.switchModel('alpha', { updateUrl: false })
+      expect(store.activeTest).toBeNull()
+      expect(store.viewModeTb).toBe(false)
+      expect(store.activeModel).toBe('alpha')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('applyViewChanged routes view_mode=tb payloads through switchTest', async () => {
+    const originalFetch = window.fetch
+    const calls = []
+    window.fetch = async (url) => {
+      calls.push(url)
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify(tbPayload()),
+      }
+    }
+    try {
+      const store = useViewerStore()
+      store.availableTests = [{ name: 't1', model: 'alpha', tb: 'tb_top' }]
+      await store.applyViewChanged({ view_mode: 'tb', test: 't1', model: 'alpha' })
+      expect(calls).toContain('/view.json?test=t1')
+      expect(store.activeTest).toBe('t1')
+      expect(store.viewModeTb).toBe(true)
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('applyViewChanged dedupes self-echo for the active test', async () => {
+    const originalFetch = window.fetch
+    let fetched = 0
+    window.fetch = async () => {
+      fetched += 1
+      return { ok: true, status: 200, text: async () => '{}' }
+    }
+    try {
+      const store = useViewerStore()
+      store.activeTest = 't1'
+      await store.applyViewChanged({ view_mode: 'tb', test: 't1' })
+      expect(fetched).toBe(0)
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('applyViewChanged falls back to switchModel when no view_mode is set', async () => {
+    const originalFetch = window.fetch
+    const calls = []
+    window.fetch = async (url) => {
+      calls.push(url)
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify(minimalPayload()),
+      }
+    }
+    try {
+      const store = useViewerStore()
+      store.activeModel = 'old'
+      await store.applyViewChanged({ model: 'new' })
+      expect(calls).toContain('/view.json?model=new')
+      expect(store.activeModel).toBe('new')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
 })

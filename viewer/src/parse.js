@@ -59,6 +59,24 @@ export function parseViewJson(payload) {
   if (typeof payload.top !== 'string') {
     throw new ViewJsonError('top must be a string')
   }
+  // v1.1 (issue #99): optional nullable descriptive fields recording
+  // the --top / --tb-top values. Tolerate omission for v1.0 payloads.
+  // Reject only on wrong type — a typed-but-wrong field means the
+  // producer is malformed, not stale.
+  if (
+    payload.dut_top !== undefined &&
+    payload.dut_top !== null &&
+    typeof payload.dut_top !== 'string'
+  ) {
+    throw new ViewJsonError('dut_top must be a string or null')
+  }
+  if (
+    payload.tb_top !== undefined &&
+    payload.tb_top !== null &&
+    typeof payload.tb_top !== 'string'
+  ) {
+    throw new ViewJsonError('tb_top must be a string or null')
+  }
   if (!Array.isArray(payload.nodes)) {
     throw new ViewJsonError('nodes must be an array')
   }

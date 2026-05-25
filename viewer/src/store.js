@@ -208,6 +208,27 @@ export const useViewerStore = defineStore('viewer', {
     // purely informational ("the notebook is currently focused on
     // this window").
     axiPerfTimeWindow: null,
+    // Available tests advertised by the hub's ``GET /tests`` endpoint
+    // (rtl-buddy-view#99 / 6b). Each entry is at minimum
+    // ``{ name, model, tb, tests_file }``. Empty when the SPA is
+    // standalone or the hub hasn't implemented /tests yet — that's
+    // how the header DUT/TB toggle stays hidden until the hub catches
+    // up.
+    availableTests: [],
+    // Currently-active test (TB-view mode). Mutually exclusive with
+    // ``activeModel`` only at the level of the rendered view: the
+    // test pins both a model and a TB top, so switching to a test
+    // implicitly fixes the model as well — but the SPA still records
+    // the resolved model name in ``activeModel`` for the picker.
+    activeTest: null,
+    // Current view orientation: ``'dut'`` = the rendered tree is
+    // rooted at the DUT (today's only behaviour), ``'tb'`` = rooted
+    // at the testbench top with the DUT called out as a subtree.
+    // Drives the segmented control in ``ModelPicker.vue`` and the
+    // ``?view=`` query persisted on the URL. Derived from the loaded
+    // view.json's ``tb_top`` field at install time; mode switches go
+    // through ``switchModel`` / ``switchTest``.
+    viewModeTb: false,
   }),
   getters: {
     nodesById: (state) => {
@@ -275,6 +296,36 @@ export const useViewerStore = defineStore('viewer', {
     },
     overlaysPresent: (state) =>
       state.graph ? state.graph.overlays_present : [],
+    // Instance paths of every DUT anchor in the current graph,
+    // derived from ``graph.dut_top`` per view-json v1.1 — the SPA's
+    // DUT-boundary renderer (GraphCanvas) walks this list to stamp
+    // ``data-rb-dut-anchor`` on the matching SVG groups. Empty when
+    // ``dut_top`` is unset (TB-view without --top) or no node in the
+    // current display matches it. Recomputed off ``displayGraph`` so
+    // the anchors track the descend/ascend scope correctly: a
+    // boundary outside the current rooted subtree isn't drawn.
+    dutAnchorIds(state) {
+      const g = this.displayGraph
+      if (!g || typeof g.dut_top !== 'string' || !g.dut_top) return []
+      const out = []
+      for (const n of g.nodes) {
+        if (n && n.module === g.dut_top) out.push(n.id)
+      }
+      return out
+    },
+    // Convenience: which mode are we in? Mirrors the rule the docs
+    // pin (top == tb_top → TB; otherwise DUT). Kept off the loaded
+    // graph rather than the ``viewModeTb`` flag because the flag is
+    // a *request* (what the user clicked) while the graph encodes
+    // *what was actually rendered* after the round-trip — the truth
+    // for UI labelling.
+    renderedViewMode(state) {
+      const g = state.graph
+      if (g && typeof g.tb_top === 'string' && g.top === g.tb_top) {
+        return 'tb'
+      }
+      return 'dut'
+    },
     diagnosticsForNode: (state) => (nodeId) => {
       // Flatten diagnostics across all sources that reference this
       // node. Producers may attach an optional ``instance_path``
@@ -320,40 +371,52 @@ export const useViewerStore = defineStore('viewer', {
   actions: {
     async bootstrap() {
       // Priority order:
-      //   1. ``?model=NAME`` URL query — explicit hub-model selector
+      //   1. ``?test=NAME`` URL query — TB-view entry (#99 / 6c).
+      //      Calls ``/view.json?test=NAME`` and the rendered tree is
+      //      rooted at the test's tb_top.
+      //   2. ``?model=NAME`` URL query — explicit hub-model selector
       //      (rtl_buddy#174). Calls ``/view.json?model=NAME`` and
       //      promotes that model to active hub-side.
-      //   2. ``?view=`` URL query — explicit caller intent.
-      //   3. ``window.__RTL_BUDDY_VIEW_URL__`` — hub injection. Set
+      //   3. ``?view=`` URL query — explicit view.json URL caller
+      //      intent (drag-and-drop replacement; bypasses the hub).
+      //   4. ``window.__RTL_BUDDY_VIEW_URL__`` — hub injection. Set
       //      by rtl-buddy-hub's index.html renderer when it has a
       //      view.json configured (see rtl_buddy hub/viewer_http.py).
       //      Visiting ``http://hub:port/`` with no query string then
       //      auto-loads the design instead of dropping the user on
       //      the empty drag-drop screen.
-      //   4. ``window.__RTL_BUDDY_VIEW_DATA__`` — embed.py inject
+      //   5. ``window.__RTL_BUDDY_VIEW_DATA__`` — embed.py inject
       //      (single-file standalone HTML build).
-      //   5. Stay idle and wait for drag-drop / file picker.
+      //   6. Stay idle and wait for drag-drop / file picker.
       //
-      // In hub mode (priority 1-3), we also fire-and-forget a
-      // ``GET /models`` so the picker is populated by the time the
-      // first frame renders.
+      // In hub mode (priority 1-4), we also fire-and-forget a
+      // ``GET /models`` + ``GET /tests`` so the picker is populated
+      // by the time the first frame renders.
       const params = new URLSearchParams(window.location.search)
+      const testParam = params.get('test')
       const modelParam = params.get('model')
       const viewUrl = params.get('view')
-      if (modelParam) {
-        // Best-effort models list — failure here doesn't block the
-        // primary load.
+      if (testParam) {
         this.loadAvailableModels().catch(() => {})
+        this.loadAvailableTests().catch(() => {})
+        await this.switchTest(testParam, { updateUrl: false })
+        return
+      }
+      if (modelParam) {
+        this.loadAvailableModels().catch(() => {})
+        this.loadAvailableTests().catch(() => {})
         await this.switchModel(modelParam, { updateUrl: false })
         return
       }
       if (viewUrl) {
         this.loadAvailableModels().catch(() => {})
+        this.loadAvailableTests().catch(() => {})
         await this.loadFromUrl(viewUrl)
         return
       }
       if (typeof window !== 'undefined' && window.__RTL_BUDDY_VIEW_URL__) {
         this.loadAvailableModels().catch(() => {})
+        this.loadAvailableTests().catch(() => {})
         await this.loadFromUrl(window.__RTL_BUDDY_VIEW_URL__)
         return
       }
@@ -439,6 +502,27 @@ export const useViewerStore = defineStore('viewer', {
     },
 
     /**
+     * Fetch ``GET /tests`` and populate the TB-mode picker. Silently
+     * no-ops (clears the list) when the endpoint is missing —
+     * mirrors loadAvailableModels' "no hub" / "hub too old to
+     * advertise tests" path. Shape we expect (see issue #99 / 6b):
+     * ``{ tests: [{ name, model, tb, tests_file }] }``.
+     */
+    async loadAvailableTests() {
+      try {
+        const response = await fetch('/tests')
+        if (!response.ok) {
+          this.availableTests = []
+          return
+        }
+        const payload = await response.json()
+        this.availableTests = Array.isArray(payload.tests) ? payload.tests : []
+      } catch {
+        this.availableTests = []
+      }
+    },
+
+    /**
      * Switch the hub-side active model. Calls
      * ``GET /view.json?model=NAME``, installs the returned graph, and
      * (by default) updates the URL bar with ``?model=NAME`` so the
@@ -454,9 +538,54 @@ export const useViewerStore = defineStore('viewer', {
       // next view_changed echo doesn't get masked.
       if (this.status === 'ready') {
         this.activeModel = name
+        this.activeTest = null
+        this.viewModeTb = false
         if (updateUrl && typeof window !== 'undefined' && window.history) {
           const params = new URLSearchParams(window.location.search)
           params.set('model', name)
+          params.delete('view')
+          params.delete('test')
+          const newQuery = params.toString()
+          const newUrl =
+            window.location.pathname +
+            (newQuery ? `?${newQuery}` : '') +
+            window.location.hash
+          try {
+            window.history.replaceState({}, '', newUrl)
+          } catch {
+            /* security-restricted environments — best effort only */
+          }
+        }
+      }
+    },
+
+    /**
+     * Switch the hub-side active TB view (#99 / 6c). Calls
+     * ``GET /view.json?test=NAME``, installs the returned TB-rooted
+     * graph, and updates the URL bar with ``?test=NAME``. The hub
+     * resolves the test to its ``(model, tb)`` cache key — two tests
+     * sharing a TB share the artefact.
+     *
+     * Dedupes the ``view_changed`` echo via ``activeTest`` so the
+     * initiator doesn't re-fetch from its own broadcast.
+     */
+    async switchTest(name, { updateUrl = true } = {}) {
+      if (!name) return
+      const url = `/view.json?test=${encodeURIComponent(name)}`
+      await this.loadFromUrl(url)
+      if (this.status === 'ready') {
+        this.activeTest = name
+        // The test pins both a model and a TB; surface the resolved
+        // model name in the picker so the user sees what's loaded.
+        const entry = this.availableTests.find((t) => t && t.name === name)
+        if (entry && typeof entry.model === 'string') {
+          this.activeModel = entry.model
+        }
+        this.viewModeTb = true
+        if (updateUrl && typeof window !== 'undefined' && window.history) {
+          const params = new URLSearchParams(window.location.search)
+          params.set('test', name)
+          params.delete('model')
           params.delete('view')
           const newQuery = params.toString()
           const newUrl =
@@ -474,15 +603,36 @@ export const useViewerStore = defineStore('viewer', {
 
     /**
      * Apply a ``view_changed`` event from the hub. Dedupes against
-     * ``activeModel`` so the SPA that initiated a switch via
-     * ``switchModel`` doesn't re-fetch from its own broadcast (the
-     * hub broadcasts to every WS peer including the initiator —
-     * see rtl_buddy#174 close-out comment).
+     * the active model/test so the SPA that initiated a switch
+     * doesn't re-fetch from its own broadcast (the hub broadcasts to
+     * every WS peer including the initiator — see rtl_buddy#174
+     * close-out comment).
+     *
+     * v1.1 protocol (#99 / 6b): the envelope may carry
+     * ``{ view_mode: 'dut' | 'tb', test, model }``. When
+     * ``view_mode == 'tb'`` and ``test`` is set, route through
+     * ``switchTest``; otherwise (or for legacy payloads carrying
+     * only ``model``) fall back to ``switchModel``. Unknown payloads
+     * are ignored.
      */
     async applyViewChanged(payload) {
-      if (!payload || typeof payload.model !== 'string') return
-      if (payload.model === this.activeModel) return
-      await this.switchModel(payload.model, { updateUrl: true })
+      if (!payload) return
+      const mode = typeof payload.view_mode === 'string' ? payload.view_mode : null
+      const test = typeof payload.test === 'string' ? payload.test : null
+      const model = typeof payload.model === 'string' ? payload.model : null
+      if (mode === 'tb' && test) {
+        if (test === this.activeTest) return
+        await this.switchTest(test, { updateUrl: true })
+        return
+      }
+      if (model) {
+        // Legacy / mode='dut' path. Only refetch if the model
+        // actually changed — equally important for TB-side dedup
+        // because switching back from TB to DUT may echo with the
+        // same model name we already had.
+        if (model === this.activeModel && !this.viewModeTb) return
+        await this.switchModel(model, { updateUrl: true })
+      }
     },
     async loadFromUrl(url) {
       this.status = 'loading'

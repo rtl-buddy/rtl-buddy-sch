@@ -215,6 +215,7 @@ async function renderSvg() {
       anchor.setAttribute('data-bf-id', href)
     }
   }
+  applyDutBoundary(_svgEl, graph.value)
   applyOverlays(_svgEl, graph.value, store.enabledOverlays, overlayContext())
   applySelectionHighlight(store.selection)
   // Signal to the badge-position computed that the underlying SVG
@@ -223,6 +224,74 @@ async function renderSvg() {
   // Defer to next frame so flex layout has settled and the host
   // rect is its final size before we compute the fit scale.
   requestAnimationFrame(fitToWindow)
+}
+
+// Stamp ``data-rb-dut-anchor`` on every SVG group whose model is
+// the active view's ``dut_top`` (view.json v1.1 / #99). The boundary
+// is rendered purely by CSS off that data-attribute — a dashed
+// border around the anchor's polygon plus an injected
+// ``<text>DUT</text>`` placed at the polygon's top-left corner so
+// the user can tell which subtree is the DUT in TB-rooted views.
+// Idempotent: any previously injected DUT label is removed before
+// the new pass so a model/scope switch can't leave stale labels
+// stacking up.
+function applyDutBoundary(svgRoot, graph) {
+  if (!svgRoot) return
+  for (const el of svgRoot.querySelectorAll('[data-rb-dut-anchor]')) {
+    el.removeAttribute('data-rb-dut-anchor')
+  }
+  for (const t of svgRoot.querySelectorAll('[data-rb-dut-label]')) {
+    t.remove()
+  }
+  const dutTop = graph?.dut_top
+  if (typeof dutTop !== 'string' || !dutTop) return
+  const ns = 'http://www.w3.org/2000/svg'
+  for (const node of graph.nodes) {
+    if (!node || node.module !== dutTop) continue
+    // Match every SVG element tagged with this instance path —
+    // both ``g.node`` (leaf DUT) and ``g.cluster`` (container DUT)
+    // get stamped so the visual stays consistent across the
+    // hier-view's flat / cluster / bridge branches.
+    const groups = svgRoot.querySelectorAll(
+      `[data-node-id="${cssEscape(node.id)}"]`,
+    )
+    for (const group of groups) {
+      group.setAttribute('data-rb-dut-anchor', 'true')
+      const shape = group.querySelector('polygon, ellipse, rect, path')
+      if (!shape || typeof shape.getBBox !== 'function') continue
+      let bb
+      try {
+        bb = shape.getBBox()
+      } catch {
+        continue
+      }
+      if (!bb || !bb.width || !bb.height) continue
+      const label = document.createElementNS(ns, 'text')
+      label.setAttribute('data-rb-dut-label', 'true')
+      // Place the badge a few pixels inside the top-left corner of
+      // the anchor's polygon so it reads as "this scope is the DUT"
+      // without colliding with the cluster's own ``label=``
+      // (Graphviz draws the cluster label at the top centre).
+      label.setAttribute('x', String(bb.x + 6))
+      label.setAttribute('y', String(bb.y + 14))
+      label.setAttribute('fill', '#0f172a')
+      label.setAttribute('font-size', '10')
+      label.setAttribute('font-family', 'ui-monospace, Menlo, monospace')
+      label.setAttribute('font-weight', '600')
+      label.setAttribute('pointer-events', 'none')
+      label.textContent = 'DUT'
+      group.appendChild(label)
+    }
+  }
+}
+
+// CSS.escape is widely available but not on every JSDOM build; fall
+// back to a conservative escaper for selector use. Mirrors the same
+// helper in overlays/clock.js — kept local so this file stands on
+// its own for the boundary-renderer unit test.
+function cssEscape(s) {
+  if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(s)
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`)
 }
 
 // Mark the SVG element whose ``data-node-id`` matches the current
@@ -950,6 +1019,21 @@ onBeforeUnmount(() => {
 .svg-host :deep([data-rb-edge-highlighted]) polygon {
   fill: #f59e0b !important;
   stroke: #f59e0b !important;
+}
+
+/* DUT anchor boundary (#99 / 6c). Painted on every SVG group
+   matching a node whose ``module == graph.dut_top``. The dashed
+   slate-grey border calls out which subtree is the DUT in TB-rooted
+   views, without colliding with the selected-node blue accent or
+   the clock/reset overlay fills (those touch ``style.fill`` /
+   ``stroke``, not the inline stroke-dasharray we set here on the
+   non-selected default state). The ``!important`` overrides
+   viz.js's per-node stroke setting from cluster styling. */
+.svg-host :deep([data-rb-dut-anchor]) > polygon,
+.svg-host :deep([data-rb-dut-anchor]) > path {
+  stroke: #475569 !important;
+  stroke-width: 2 !important;
+  stroke-dasharray: 6,4 !important;
 }
 
 /* Selected-node accent. Painted by ``applySelectionHighlight``,
