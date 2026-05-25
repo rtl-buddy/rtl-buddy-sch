@@ -60,6 +60,8 @@ describe('useHub envelope dispatch', () => {
       applyDiagnostics: (s, items) => store.applyDiagnostics(s, items),
       applyHubError: (e) => store.applyHubError(e),
       applyViewChanged: (p) => store.applyViewChanged(p),
+      applyWaveValues: (p) => store.applyWaveValues(p),
+      applySignalSelected: (p) => store.applySignalSelected(p),
       presentSelectionCandidates: (paths) =>
         store.presentSelectionCandidates(paths),
       chooseSelectionCandidate: (path) => store.chooseSelectionCandidate(path),
@@ -289,6 +291,71 @@ describe('useHub envelope dispatch', () => {
     // Missing origin shouldn't crash or wipe the list.
     _testing.applyEnvelope({ v: 1, id: 'x', kind: 'event', type: 'peer_joined' })
     expect(hub.peers.value).toEqual(['view', 'src'])
+  })
+
+  it('wave_values_changed merges into store after the coalesce flush', () => {
+    _testing.applyEnvelope(
+      env(
+        'wave_values_changed',
+        'event',
+        {
+          t_fs: '12500000',
+          values: [
+            { wave_scope: 'tb.dut', signal: 'q', value: "1'b1" },
+            { wave_scope: 'tb.dut', signal: 'clk', value: "1'b0" },
+          ],
+        },
+        'wave',
+      ),
+    )
+    // Coalesce buffer is pending — store hasn't been written yet.
+    expect(store.waveValuesByKey).toEqual({})
+    _testing.flushWaveValues()
+    expect(store.waveValuesByKey['tb.dut.q']).toBe("1'b1")
+    expect(store.waveValuesByKey['tb.dut.clk']).toBe("1'b0")
+    expect(store.waveValuesTFs).toBe('12500000')
+  })
+
+  it('wave_values_changed bursts coalesce — latest sample wins per signal', () => {
+    // Three back-to-back envelopes for the same signal; only the
+    // last value should reach the store (the renderer redraws once,
+    // not three times).
+    for (const v of ["32'h0", "32'h1", "32'hDEAD"]) {
+      _testing.applyEnvelope(
+        env(
+          'wave_values_changed',
+          'event',
+          { t_fs: '100', values: [{ wave_scope: 'tb', signal: 'd', value: v }] },
+          'wave',
+        ),
+      )
+    }
+    _testing.flushWaveValues()
+    expect(store.waveValuesByKey['tb.d']).toBe("32'hDEAD")
+  })
+
+  it('wave_values_changed echoed from view is ignored (loop-prevention)', () => {
+    _testing.applyEnvelope(
+      env(
+        'wave_values_changed',
+        'event',
+        { t_fs: '1', values: [{ wave_scope: 'tb', signal: 'q', value: "1'b1" }] },
+        'view',
+      ),
+    )
+    _testing.flushWaveValues()
+    expect(store.waveValuesByKey).toEqual({})
+  })
+
+  it('signal_selected from wave updates store; echo from view is ignored', () => {
+    _testing.applyEnvelope(
+      env('signal_selected', 'event', { wave_scope: 'tb.dut', signal: 'q' }, 'wave'),
+    )
+    expect(store.hubSignalSelected).toEqual({ wave_scope: 'tb.dut', signal: 'q' })
+    _testing.applyEnvelope(
+      env('signal_selected', 'event', { wave_scope: 'tb.dut', signal: 'other' }, 'view'),
+    )
+    expect(store.hubSignalSelected.signal).toBe('q')
   })
 
   it('unknown types are silently ignored (protocol §11)', () => {

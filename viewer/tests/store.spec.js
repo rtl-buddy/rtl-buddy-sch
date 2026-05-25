@@ -640,6 +640,66 @@ describe('viewer store', () => {
     expect(store.diagnosticsByNode).toEqual({})
   })
 
+  it('applyWaveValues merges deltas — absent signals retain prior values', () => {
+    const store = useViewerStore()
+    store.applyWaveValues({
+      t_fs: '100',
+      values: [
+        { wave_scope: 'tb.dut', signal: 'q',   value: "1'b0" },
+        { wave_scope: 'tb.dut', signal: 'clk', value: "1'b1" },
+      ],
+    })
+    expect(store.waveValuesByKey['tb.dut.q']).toBe("1'b0")
+    expect(store.waveValuesByKey['tb.dut.clk']).toBe("1'b1")
+    expect(store.waveValuesTFs).toBe('100')
+    // Delta — only ``q`` changes. ``clk`` stays at "1'b1".
+    store.applyWaveValues({
+      t_fs: '200',
+      values: [{ wave_scope: 'tb.dut', signal: 'q', value: "1'b1" }],
+    })
+    expect(store.waveValuesByKey['tb.dut.q']).toBe("1'b1")
+    expect(store.waveValuesByKey['tb.dut.clk']).toBe("1'b1")
+    expect(store.waveValuesTFs).toBe('200')
+  })
+
+  it('applyWaveValues with empty values updates the timestamp but keeps the map', () => {
+    const store = useViewerStore()
+    store.applyWaveValues({
+      t_fs: '100',
+      values: [{ wave_scope: 'tb', signal: 'q', value: "1'b1" }],
+    })
+    // Cursor moved into a region with nothing tracked — the hub
+    // sends an empty values list. Map stays.
+    store.applyWaveValues({ t_fs: '500', values: [] })
+    expect(store.waveValuesByKey['tb.q']).toBe("1'b1")
+    expect(store.waveValuesTFs).toBe('500')
+  })
+
+  it('applySignalSelected stores the {signal, wave_scope} pair', () => {
+    const store = useViewerStore()
+    store.applySignalSelected({ wave_scope: 'tb.dut', signal: 'q' })
+    expect(store.hubSignalSelected).toEqual({ wave_scope: 'tb.dut', signal: 'q' })
+    store.applySignalSelected(null)
+    expect(store.hubSignalSelected).toBeNull()
+  })
+
+  it('graph reload clears stale wave values', () => {
+    // Wave values are sampled at a t_fs of the previous design's
+    // simulation. They MUST be wiped on _installGraph so the new
+    // design doesn't paint port literals from a sibling model.
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(diagPayload()))
+    store.applyWaveValues({
+      t_fs: '100',
+      values: [{ wave_scope: 'top.u_dma', signal: 'q', value: "1'b1" }],
+    })
+    expect(store.waveValuesByKey['top.u_dma.q']).toBe("1'b1")
+    store.loadFromText(JSON.stringify(diagPayload()))
+    expect(store.waveValuesByKey).toEqual({})
+    expect(store.waveValuesTFs).toBeNull()
+    expect(store.hubSignalSelected).toBeNull()
+  })
+
   describe('openAxiNotebook', () => {
     let origFetch
     let origOpen
