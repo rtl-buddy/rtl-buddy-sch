@@ -36,7 +36,12 @@ from typing import IO
 
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.axi_perf_annotations import AxiPerfMap
-from rtl_buddy_view.extractor import ParameterOverride, PortConnection
+from rtl_buddy_view.extractor import (
+    ModuleTable,
+    ParameterOverride,
+    PortConnection,
+    flatten_interface_ports,
+)
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 
@@ -90,6 +95,7 @@ def render(
     axi_perf_map: AxiPerfMap | None = None,
     with_legend: bool = False,
     as_cluster_tree: bool = False,
+    module_table: ModuleTable | None = None,
 ) -> None:
     """Render ``node`` and its subtree as a Graphviz ``.dot`` digraph.
 
@@ -172,7 +178,12 @@ def render(
     out.write('  edge [fontname="Courier,monospace"];\n')
     out.write("\n")
     _emit_top_frame(
-        node, out, active_map, active_reset_map, as_cluster_tree=as_cluster_tree
+        node,
+        out,
+        active_map,
+        active_reset_map,
+        as_cluster_tree=as_cluster_tree,
+        module_table=module_table,
     )
     if with_legend and active_map is not None:
         _emit_legend(active_map, out)
@@ -186,6 +197,7 @@ def _emit_top_frame(
     reset_map: ResetDomainMap | None = None,
     *,
     as_cluster_tree: bool = False,
+    module_table: ModuleTable | None = None,
 ) -> None:
     """Emit the top module as a titled cluster with port-rank anchors."""
     title = _escape(top.module_name)
@@ -221,7 +233,7 @@ def _emit_top_frame(
     # would inflate every cluster.
     out.write('    margin="20,20";\n')
 
-    _emit_port_anchors(top, out)
+    _emit_port_anchors(top, out, module_table=module_table)
 
     if as_cluster_tree:
         # Cluster-tree emission: every instance with children becomes
@@ -405,7 +417,12 @@ def _signal_edge_color(
     return _palette_color(clk)
 
 
-def _emit_port_anchors(top: HierNode, out: IO[str]) -> None:
+def _emit_port_anchors(
+    top: HierNode,
+    out: IO[str],
+    *,
+    module_table: ModuleTable | None = None,
+) -> None:
     """Emit input/output port markers in source/sink rank groups.
 
     Input ports anchor to ``rank=source`` (left edge under LR), output
@@ -416,11 +433,20 @@ def _emit_port_anchors(top: HierNode, out: IO[str]) -> None:
     ``\\r`` right-aligns input labels (arrows form a column on the
     right, closest to the children); ``\\l`` left-aligns output labels
     (arrows form a column on the left, closest to the children).
+
+    When ``module_table`` is supplied, interface ports are flattened
+    via :func:`flatten_interface_ports` so each interface signal
+    surfaces as its own anchor with a real direction. Without the
+    table the bundle port is dropped here (interface ports have
+    ``direction=None``, which excludes them from the input/output
+    filters) — matching the pre-#105 behaviour for back-compat with
+    callers that don't have a table on hand. (#105.)
     """
     if top.module is None or not top.module.ports:
         return
-    inputs = [p for p in top.module.ports if p.direction == "input"]
-    outputs = [p for p in top.module.ports if p.direction in ("output", "inout")]
+    ports = flatten_interface_ports(top.module, module_table)
+    inputs = [p for p in ports if p.direction == "input"]
+    outputs = [p for p in ports if p.direction in ("output", "inout")]
 
     if inputs:
         # Right-edge alignment: pad each name on the LEFT to the max

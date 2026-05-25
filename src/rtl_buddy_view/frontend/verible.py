@@ -28,7 +28,10 @@ from rtl_buddy_view._offsets import OffsetIndex
 from rtl_buddy_view._verible_install import find_binary
 from rtl_buddy_view.extractor import (
     Instance,
+    Interface,
+    InterfaceSignal,
     Module,
+    Modport,
     ModuleTable,
     Parameter,
     ParameterOverride,
@@ -90,6 +93,17 @@ def parse(files: list[Path]) -> ModuleTable:
                     f"redefined at {mod.location}."
                 )
             table.modules_by_name[mod.name] = mod
+        for iface in _walk_interfaces(
+            cst, file=str(path), offsets=offsets, source=source_bytes
+        ):
+            # Duplicate interface definitions are silently last-wins:
+            # rtl-buddy-view's flat-namespace assumption applies here
+            # too, but interfaces appear less often than modules and
+            # producers sometimes vendor the same interface header
+            # into multiple filelists. Raising would be louder than
+            # the benefit; consumers care about *some* definition
+            # being available for flattening, not strict identity.
+            table.interfaces_by_name[iface.name] = iface
     return table
 
 
@@ -159,6 +173,213 @@ def _walk_modules(
             )
         )
     return out
+
+
+# --- interface walkers ------------------------------------------------------
+
+
+def _walk_interfaces(
+    tree: dict,
+    *,
+    file: str,
+    offsets: OffsetIndex,
+    source: bytes,
+) -> list[Interface]:
+    """Yield one :class:`Interface` per ``kInterfaceDeclaration`` in the CST.
+
+    Shape (confirmed against the sandbox + fixture)::
+
+        kInterfaceDeclaration
+          kModuleHeader
+            interface
+            SymbolIdentifier               <- name
+            kFormalParameterListDeclaration (optional)
+          kModuleItemList
+            kDataDeclaration               <- signals
+              kInstantiationBase
+                kInstantiationType > kDataType
+                kGateInstanceRegisterVariableList
+                  kRegisterVariable
+                    SymbolIdentifier        <- signal name
+            kModportDeclaration            <- modports
+              kModportItemList
+                kModportItem
+                  SymbolIdentifier         <- modport name
+                  kParenGroup
+                    kModportPortList ...
+
+    Modports inside generate blocks or nested scopes are out of
+    scope for #105 — flat interfaces only.
+    """
+    out: list[Interface] = []
+    for node in _iter_nodes_with_tag(tree, "kInterfaceDeclaration"):
+        header = _first_child_with_tag(node, "kModuleHeader")
+        if header is None:
+            continue
+        name_node = _first_child_with_tag(header, "SymbolIdentifier")
+        if name_node is None or "text" not in name_node:
+            continue
+        name = name_node["text"]
+        span = _node_span(node)
+        loc = (
+            SourceLocation(file=file)
+            if span is None
+            else _location(file, offsets, span[0], span[1])
+        )
+        parameters = _extract_parameters(
+            header, file=file, offsets=offsets, source=source
+        )
+        item_list = _first_child_with_tag(node, "kModuleItemList")
+        signals = _extract_interface_signals(
+            item_list, file=file, offsets=offsets, source=source
+        )
+        modports = _extract_modports(item_list, file=file, offsets=offsets)
+        out.append(
+            Interface(
+                name=name,
+                parameters=parameters,
+                signals=signals,
+                modports=modports,
+                location=loc,
+            )
+        )
+    return out
+
+
+def _extract_interface_signals(
+    item_list: dict | None,
+    *,
+    file: str,
+    offsets: OffsetIndex,
+    source: bytes,
+) -> tuple[InterfaceSignal, ...]:
+    """Pull ``kDataDeclaration`` rows under ``kModuleItemList``.
+
+    Each kDataDeclaration carries one or more kRegisterVariable
+    entries (Verible's name for variable-style net declarations,
+    used for ``logic`` / ``wire`` signals). We capture the first
+    name + the data-type slice — enough for the flatten step to
+    synthesize a :class:`Port` per signal. (#105.)
+    """
+    if item_list is None:
+        return ()
+    out: list[InterfaceSignal] = []
+    for child in item_list.get("children", ()) or ():
+        if not isinstance(child, dict) or child.get("tag") != "kDataDeclaration":
+            continue
+        base = _first_child_with_tag(child, "kInstantiationBase")
+        if base is None:
+            continue
+        inst_type = _first_child_with_tag(base, "kInstantiationType")
+        type_text = None
+        if inst_type is not None:
+            dtype = _first_child_with_tag(inst_type, "kDataType")
+            if dtype is not None:
+                type_text = _source_slice(dtype, source)
+        var_list = _first_child_with_tag(base, "kGateInstanceRegisterVariableList")
+        if var_list is None:
+            continue
+        for var in var_list.get("children", ()) or ():
+            if not isinstance(var, dict) or var.get("tag") != "kRegisterVariable":
+                continue
+            sym = _first_child_with_tag(var, "SymbolIdentifier")
+            if sym is None or "text" not in sym:
+                continue
+            span = _node_span(sym)
+            loc = (
+                SourceLocation(file=file)
+                if span is None
+                else _location(file, offsets, span[0], span[1])
+            )
+            out.append(
+                InterfaceSignal(
+                    name=sym["text"],
+                    type_text=type_text,
+                    location=loc,
+                )
+            )
+    return tuple(out)
+
+
+def _extract_modports(
+    item_list: dict | None,
+    *,
+    file: str,
+    offsets: OffsetIndex,
+) -> tuple[Modport, ...]:
+    """Pull ``kModportDeclaration`` rows from the interface body.
+
+    A single ``modport`` keyword can declare one or more modports
+    (comma-separated). For each ``kModportItem`` we capture the
+    name + per-direction signal lists. Mixed-direction modports
+    (``modport sub(input a, output b)``) get one
+    ``kModportSimplePortsDeclaration`` per direction; same-direction
+    shorthand (``output a, b``) puts both signals under a single
+    declaration. We handle both.
+    """
+    if item_list is None:
+        return ()
+    out: list[Modport] = []
+    for child in item_list.get("children", ()) or ():
+        if not isinstance(child, dict) or child.get("tag") != "kModportDeclaration":
+            continue
+        items = _first_child_with_tag(child, "kModportItemList")
+        if items is None:
+            continue
+        for item in items.get("children", ()) or ():
+            if not isinstance(item, dict) or item.get("tag") != "kModportItem":
+                continue
+            sym = _first_child_with_tag(item, "SymbolIdentifier")
+            if sym is None or "text" not in sym:
+                continue
+            paren = _first_child_with_tag(item, "kParenGroup")
+            port_list = (
+                _first_child_with_tag(paren, "kModportPortList") if paren else None
+            )
+            inputs: list[str] = []
+            outputs: list[str] = []
+            inouts: list[str] = []
+            if port_list is not None:
+                for decl in port_list.get("children", ()) or ():
+                    if (
+                        not isinstance(decl, dict)
+                        or decl.get("tag") != "kModportSimplePortsDeclaration"
+                    ):
+                        continue
+                    direction: str | None = None
+                    bucket: list[str] | None = None
+                    for sub in decl.get("children", ()) or ():
+                        if not isinstance(sub, dict):
+                            continue
+                        sub_tag = sub.get("tag")
+                        if sub_tag in _DIRECTION_TAGS:
+                            direction = _DIRECTION_TAGS[sub_tag]
+                            if direction == "input":
+                                bucket = inputs
+                            elif direction == "output":
+                                bucket = outputs
+                            else:
+                                bucket = inouts
+                        elif sub_tag == "kModportSimplePort" and bucket is not None:
+                            sig = _first_child_with_tag(sub, "SymbolIdentifier")
+                            if sig is not None and "text" in sig:
+                                bucket.append(sig["text"])
+            span = _node_span(sym)
+            loc = (
+                SourceLocation(file=file)
+                if span is None
+                else _location(file, offsets, span[0], span[1])
+            )
+            out.append(
+                Modport(
+                    name=sym["text"],
+                    inputs=tuple(inputs),
+                    outputs=tuple(outputs),
+                    inouts=tuple(inouts),
+                    location=loc,
+                )
+            )
+    return tuple(out)
 
 
 # --- port / instance walkers -------------------------------------------------
