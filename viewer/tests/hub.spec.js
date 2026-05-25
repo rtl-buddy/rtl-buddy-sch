@@ -85,6 +85,33 @@ describe('useHub envelope dispatch', () => {
     expect(hub.peers.value).toEqual(['view', 'wave', 'src'])
   })
 
+  it('wasEverReady latches on first welcome and survives state transitions', () => {
+    // A fresh tab starts with the flag clear so HubStatus doesn't
+    // show "reconnecting" while we're just connecting for the
+    // first time.
+    const hub = useHub()
+    expect(hub.wasEverReady.value).toBe(false)
+    _testing.applyEnvelope(
+      env('welcome', 'response', {
+        server_version: '1.0.0',
+        registered_clients: ['view'],
+      }),
+    )
+    expect(hub.wasEverReady.value).toBe(true)
+    // A hub-side error (server kicked us out) doesn't clear the
+    // latch — the banner SHOULD show because we were online and
+    // then weren't.
+    _testing.applyEnvelope({
+      v: 1,
+      id: '00000000-0000-4000-8000-00000000000a',
+      origin: 'wave',
+      kind: 'error',
+      type: 'error',
+      payload: { code: 'not_connected', message: 'wave dropped' },
+    })
+    expect(hub.wasEverReady.value).toBe(true)
+  })
+
   it('cursor_time_changed from wave updates store, but echo from view is ignored', () => {
     _testing.applyEnvelope(env('cursor_time_changed', 'event', { t_fs: '1234567890' }, 'wave'))
     expect(store.hubCursorTimeFs).toBe('1234567890')

@@ -57,6 +57,13 @@ const lastClick = ref(null)
 // would just kick the new tab back. Stays true until the user
 // explicitly calls reconnect() (e.g. clicks a "take back" button).
 const superseded = ref(false)
+// Latches the first time we see a ``welcome``. Drives the
+// "Reconnecting…" banner: a fresh tab that never reached `ready`
+// shouldn't show the banner (it's just connecting for the first
+// time), but a tab whose hub dropped mid-session should. Reset on
+// explicit ``disconnect()`` so a user-initiated stop doesn't keep
+// showing the banner.
+const wasEverReady = ref(false)
 
 let _socket = null
 let _reconnectTimer = null
@@ -221,6 +228,11 @@ function applyEnvelope(env) {
         ? p.registered_clients.slice()
         : []
       state.value = 'ready'
+      // Latch: we made it to ``ready`` at least once this session.
+      // The reconnecting banner uses this to distinguish "first
+      // connect in progress" (no banner) from "lost the hub mid-
+      // session" (banner).
+      wasEverReady.value = true
       // Hello accepted — clear the takeover-retry flag so the next
       // reconnect starts polite again.
       _pendingTakeover = false
@@ -480,6 +492,11 @@ function disconnect() {
   state.value = 'disconnected'
   peers.value = []
   serverVersion.value = null
+  // User-initiated stop — don't show the reconnecting banner. The
+  // socket close handler would otherwise leave ``wasEverReady`` set
+  // and the banner would linger on a tab the user explicitly took
+  // offline.
+  wasEverReady.value = false
 }
 
 // Initialise the hub composable. Idempotent — calling twice is safe
@@ -570,6 +587,7 @@ export function useHub() {
     },
     disconnect,
     superseded,
+    wasEverReady,
     /**
      * Lock the user's pick from the multi-match disambiguation popover
      * (rtl-buddy-view#55). Updates the store (selection + clears the
@@ -643,6 +661,7 @@ export const _testing = {
     lastError.value = null
     lastClick.value = null
     superseded.value = false
+    wasEverReady.value = false
     _autoReconnect = true
     _reconnectDelay = RECONNECT_INITIAL_MS
     _initialised = false
