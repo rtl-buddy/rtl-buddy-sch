@@ -205,6 +205,15 @@ def main(
     domain_map: DomainMap | None = annotations.get("clock")  # type: ignore[assignment]
     reset_map: ResetDomainMap | None = annotations.get("reset")  # type: ignore[assignment]
     axi_perf_map: AxiPerfMap | None = annotations.get("axi-perf")  # type: ignore[assignment]
+    # Carry the original axi-perf.json path through to the JSON
+    # renderer so view.json can carry a top-level `axi_perf.source`
+    # field — the SPA's "Open in marimo" button reads it to skip the
+    # test/suite_dir prompts (Phase 2.5 of the marimo umbrella).
+    axi_perf_source: Path | None = None
+    for name, path in overlay_specs:
+        if name == "axi-perf":
+            axi_perf_source = path
+            break
 
     sink: IO[str]
     if output_path is None:
@@ -217,6 +226,7 @@ def main(
             reset_map,
             axi_perf_map,
             clock_legend,
+            axi_perf_source=axi_perf_source,
         )
     else:
         with output_path.open("w") as sink:
@@ -228,6 +238,7 @@ def main(
                 reset_map,
                 axi_perf_map,
                 clock_legend,
+                axi_perf_source=axi_perf_source,
             )
 
 
@@ -310,6 +321,8 @@ def _render(
     reset_map: ResetDomainMap | None,
     axi_perf_map: AxiPerfMap | None,
     clock_legend: bool,
+    *,
+    axi_perf_source: Path | None = None,
 ) -> None:
     if fmt is OutputFormat.tree:
         tree_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
@@ -331,6 +344,7 @@ def _render(
             domain_map=domain_map,
             reset_map=reset_map,
             axi_perf_map=axi_perf_map,
+            axi_perf_source=axi_perf_source,
             with_legend=clock_legend,
         )
     else:  # pragma: no cover

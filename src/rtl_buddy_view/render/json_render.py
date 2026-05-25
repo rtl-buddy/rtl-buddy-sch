@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 from typing import IO
 from urllib.parse import quote
 
@@ -56,6 +57,7 @@ def render(
     domain_map: DomainMap | None = None,
     reset_map: ResetDomainMap | None = None,
     axi_perf_map: AxiPerfMap | None = None,
+    axi_perf_source: Path | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
 ) -> None:
@@ -69,12 +71,22 @@ def render(
     edge labels, and clock-domain palette all included. Producers
     that don't want the cost (or don't ship Graphviz on the consumer
     side) can pass ``embed_layout=False`` to drop the block.
+
+    ``axi_perf_source`` (the original ``--overlay axi-perf=PATH``
+    argument) lands as a top-level ``axi_perf`` block carrying the
+    absolute source path and — when the path matches the canonical
+    ``<suite_dir>/artefacts/axi/<test>/axi-perf.json`` layout —
+    derived ``test`` / ``suite_dir`` fields. The SPA's "Open in
+    marimo" button (Phase 2 of the marimo umbrella) reads this
+    block to skip the test/suite_dir prompts. Absent when no
+    axi-perf overlay was supplied.
     """
     payload = _build_payload(
         node,
         domain_map,
         reset_map,
         axi_perf_map,
+        axi_perf_source=axi_perf_source,
         with_legend=with_legend,
         embed_layout=embed_layout,
     )
@@ -88,6 +100,7 @@ def _build_payload(
     reset_map: ResetDomainMap | None,
     axi_perf_map: AxiPerfMap | None,
     *,
+    axi_perf_source: Path | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
 ) -> dict:
@@ -108,6 +121,8 @@ def _build_payload(
         "edges": edges,
         "overlays_present": overlays_present,
     }
+    if axi_perf_source is not None:
+        payload["axi_perf"] = _axi_perf_source_block(axi_perf_source)
     if embed_layout:
         payload["layout"] = _layout_block(
             node,
@@ -116,6 +131,37 @@ def _build_payload(
             with_legend=with_legend,
         )
     return payload
+
+
+def _axi_perf_source_block(source: Path) -> dict:
+    """Build the top-level ``axi_perf`` metadata block.
+
+    Always emits ``source`` (the absolute file path). Tries to derive
+    ``test`` + ``suite_dir`` from the canonical artefact layout
+    ``<suite_dir>/artefacts/axi/<test>/axi-perf.json`` — when the
+    path doesn't match, those fields are omitted and the SPA falls
+    back to its prompt path. Conservative on purpose: a wrong
+    derivation would silently feed garbage into the marimo launcher.
+    """
+    from pathlib import Path as _P
+
+    abs_source = _P(source).resolve()
+    block: dict = {"source": str(abs_source)}
+    parts = abs_source.parts
+    # Walk from the file up looking for ``.../artefacts/axi/<test>/<file>``.
+    # The penultimate part is the test name; three parents up is the
+    # suite_dir. Anything else → no derivation.
+    try:
+        # abs_source = .../<suite>/artefacts/axi/<test>/axi-perf.json
+        if len(parts) >= 5 and parts[-3] == "axi" and parts[-4] == "artefacts":
+            block["test"] = parts[-2]
+            block["suite_dir"] = str(abs_source.parent.parent.parent.parent)
+    except (IndexError, OSError):
+        # Don't let derivation failures break the JSON emit — `source`
+        # alone is enough for the SPA to surface the path in the
+        # prompt as a hint.
+        pass
+    return block
 
 
 def _layout_block(

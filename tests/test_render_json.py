@@ -609,3 +609,60 @@ def test_combined_overlay_payload_validates_against_v1_schema(
     assert dst_node["overlays"]["clock"] == {"clock": "clk_b"}
     assert dst_node["overlays"]["reset"]["reset"] == "rst_n"
     assert dst_node["overlays"]["reset"]["polarity"] == "low"
+
+
+# --- axi_perf source metadata (Phase 2.5 of the marimo umbrella) -----------
+
+
+def test_axi_perf_block_absent_by_default() -> None:
+    """No ``axi_perf`` overlay supplied → no top-level ``axi_perf``
+    block. The SPA's "Open in marimo" button falls back to prompts."""
+    root = _node("top", "top")
+    payload = _render(root)
+    assert "axi_perf" not in payload
+
+
+def test_axi_perf_block_carries_source_and_derived_test_when_canonical(
+    tmp_path: Path,
+) -> None:
+    """Canonical layout ``<suite>/artefacts/axi/<test>/axi-perf.json``
+    → the SPA gets ``test`` + ``suite_dir`` for free and can skip
+    prompts entirely."""
+    src = (
+        tmp_path
+        / "verif"
+        / "demo_axi_2x2"
+        / "artefacts"
+        / "axi"
+        / "basic_traffic"
+        / "axi-perf.json"
+    )
+    src.parent.mkdir(parents=True)
+    src.write_text("{}")  # contents don't matter for the source-block test
+
+    root = _node("top", "top")
+    payload = _render(root, axi_perf_source=src)
+
+    block = payload["axi_perf"]
+    assert block["source"] == str(src.resolve())
+    assert block["test"] == "basic_traffic"
+    assert block["suite_dir"] == str((tmp_path / "verif" / "demo_axi_2x2").resolve())
+
+
+def test_axi_perf_block_omits_derived_keys_when_layout_nonstandard(
+    tmp_path: Path,
+) -> None:
+    """Non-canonical layout (e.g. user pointed at ``perf.json`` in a
+    random directory) → only ``source`` is emitted; SPA falls back to
+    prompts so it doesn't act on a wrong derivation."""
+    src = tmp_path / "elsewhere" / "perf.json"
+    src.parent.mkdir(parents=True)
+    src.write_text("{}")
+
+    root = _node("top", "top")
+    payload = _render(root, axi_perf_source=src)
+
+    block = payload["axi_perf"]
+    assert block["source"] == str(src.resolve())
+    assert "test" not in block
+    assert "suite_dir" not in block

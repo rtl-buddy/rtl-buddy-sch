@@ -730,6 +730,28 @@ describe('viewer store', () => {
       expect(store.axiNotebookLaunching).toBe(false)
       expect(store.axiNotebookError).toMatch(/network down/)
     })
+
+    it('preserves the axi_perf block from view.json on the loaded graph', () => {
+      // The Phase 2.5 auto-detect lives in AxiPerfView.vue (it reads
+      // store.graph.axi_perf to skip the prompt). Store side just has
+      // to not strip the field. Lock that with a round-trip through
+      // loadFromText so a future parse.js tightening doesn't silently
+      // drop the metadata.
+      const store = useViewerStore()
+      const payload = minimalPayload({
+        axi_perf: {
+          source: '/abs/verif/demo/artefacts/axi/basic_traffic/axi-perf.json',
+          test: 'basic_traffic',
+          suite_dir: '/abs/verif/demo',
+        },
+      })
+      store.loadFromText(JSON.stringify(payload))
+      expect(store.graph.axi_perf).toEqual({
+        source: '/abs/verif/demo/artefacts/axi/basic_traffic/axi-perf.json',
+        test: 'basic_traffic',
+        suite_dir: '/abs/verif/demo',
+      })
+    })
   })
 })
 
