@@ -34,7 +34,16 @@ RESET_FIXTURES = Path(__file__).parent / "fixtures" / "reset_domain_maps"
 
 def test_default_registry_has_clock_and_reset() -> None:
     registry = default_registry()
-    assert registry.names() == ("axi-perf", "clock", "reset", "wave")
+    # Order is alphabetical (the registry's stable-output contract).
+    # Adding a new built-in here is a CLI-visible change: it appears
+    # in ``--list-overlays`` output without any further plumbing.
+    assert registry.names() == (
+        "axi-perf",
+        "clock",
+        "clock-tb",
+        "reset",
+        "wave",
+    )
 
 
 def test_get_returns_registered_overlay() -> None:
@@ -49,7 +58,7 @@ def test_get_unknown_raises_with_known_list() -> None:
     registry = default_registry()
     with pytest.raises(
         OverlayError,
-        match=r"unknown overlay 'cov'.*\['axi-perf', 'clock', 'reset', 'wave'\]",
+        match=r"unknown overlay 'cov'.*\['axi-perf', 'clock', 'clock-tb', 'reset', 'wave'\]",
     ):
         registry.get("cov")
 
@@ -67,7 +76,7 @@ def test_iteration_is_name_sorted() -> None:
     registry = default_registry()
     yielded = [o.name for o in registry]
     assert yielded == sorted(yielded)
-    assert yielded == ["axi-perf", "clock", "reset", "wave"]
+    assert yielded == ["axi-perf", "clock", "clock-tb", "reset", "wave"]
 
 
 # --- protocol structural typing ---------------------------------------------

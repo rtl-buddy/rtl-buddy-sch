@@ -149,4 +149,45 @@ describe('OverlayPanel TB-scope legend note (#99 / 6d)', () => {
     const wrapper = mount(OverlayPanel)
     expect(wrapper.find('.legend-note').exists()).toBe(false)
   })
+
+  it('hides the clock footnote in TB view when a tb_clock_map tinted TB scope (#99 / 6e)', () => {
+    // The renderer-side merge synthesises FlopDomain entries for TB
+    // scopes outside the DUT subtree, which surface here as
+    // ``overlays.clock`` on non-DUT nodes. When that happens the
+    // "(no clock map above DUT)" footnote is misleading — the user
+    // can see the tints exist.
+    const p = clockPayload()
+    // Drop the in-DUT clock entry, add a TB-scope one (above the DUT).
+    p.nodes[1].overlays = {}
+    p.nodes.push({
+      id: 'tb_top.u_clkgen',
+      module: 'clkgen',
+      is_blackbox: false,
+      parameters: {},
+      ports: [],
+      overlays: { clock: { clock: 'main_clk' } },
+    })
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(p))
+    const wrapper = mount(OverlayPanel)
+    expect(wrapper.text()).not.toContain('(no clock map above DUT)')
+  })
+
+  it('hides the reset footnote in TB view when a tb_clock_map tinted TB scope', () => {
+    const p = clockPayload()
+    p.overlays_present = ['reset']
+    p.nodes[1].overlays = {}
+    p.nodes.push({
+      id: 'tb_top.u_rstgen',
+      module: 'rstgen',
+      is_blackbox: false,
+      parameters: {},
+      ports: [],
+      overlays: { reset: { reset: 'por_rst_n', polarity: 'low' } },
+    })
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(p))
+    const wrapper = mount(OverlayPanel)
+    expect(wrapper.text()).not.toContain('(no reset map above DUT)')
+  })
 })

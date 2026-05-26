@@ -190,6 +190,73 @@ distinct visual axes — color vs. border, fill vs. pattern, suffix
 vs. prefix. The clock/reset built-ins reserve fill color and reset
 suffix respectively; pick something else.
 
+## 5a. Built-in: `clock-tb` (TB-context clock + reset, issue #99 / phase 6e)
+
+When the renderer is invoked in TB-rooted mode (`--tb-top <module>`),
+the DUT-side clock domain map produced by rtl-buddy-cdc only covers
+the DUT subtree — SDC has no concept of testbench scope. Phase 6d
+surfaces this with a `(no clock map above DUT)` legend footnote;
+phase 6e adds an opt-in upgrade: a hand-authored `tb_clock_map.json`
+that names each TB-level clock + the instance paths it drives.
+
+```bash
+rtl-buddy-view --top my_dut --tb-top my_tb \
+  --filelist tb_plus_dut.f \
+  --overlay clock=dut_domain_map.json \
+  --overlay clock-tb=tb_clock_map.json
+```
+
+File shape:
+
+```json
+{
+  "rtl-buddy-filetype": "tb_clock_map",
+  "schema_version": "1.0",
+  "clocks": [
+    {
+      "name": "main_clk",
+      "drives": [
+        "tb_top.u_clkgen",
+        "tb_top.u_driver",
+        "tb_top.u_dut.clk"
+      ],
+      "period_ns": 10
+    }
+  ],
+  "resets": [
+    {
+      "name": "por_rst_n",
+      "drives": ["tb_top.u_rstgen", "tb_top.u_dut.rst_n"],
+      "active_low": true
+    }
+  ]
+}
+```
+
+Merge rules (pinned by [#99](https://github.com/rtl-buddy/rtl-buddy-view/issues/99)
+under "TB-context overlay story"):
+
+- **TB-side fills outside DUT.** Drives that don't sit inside any
+  instance whose module matches `--top` become synthetic
+  per-flop entries on the merged `DomainMap`; the renderer's existing
+  predominant-clock walk then tints the TB scopes.
+- **DUT-side wins inside DUT.** Drives that sit inside (or at) any
+  DUT instance are skipped with a stderr warning — the DUT's
+  rtl-buddy-cdc-derived map is the authority for in-DUT flops.
+- **Both can populate the boundary clock.** Naming the same clock
+  on both sides (e.g. `tb.dut.clk` in `tb_clock_map.json` AND in
+  the DUT's `domain_map.json`) is the supported way to keep the
+  color consistent across the boundary; mismatches surface as a
+  warning, not a fatal error.
+
+Resets follow the same merge contract via `resets[]` with
+`active_low:`.
+
+The `clock-tb` overlay is independent of `clock` — supply it on its
+own (no DUT-side analysis available) and the TB-side entries still
+tint TB scopes; the DUT subtree just stays neutral. Combine with
+`--overlay clock=...` for full coverage.
+
 ## 6. Stability guarantees
 
 `Overlay`, `Annotation`, `OverlayRegistry`, `default_registry`,
