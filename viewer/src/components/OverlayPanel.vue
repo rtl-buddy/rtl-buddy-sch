@@ -81,9 +81,36 @@ function legendFor(name) {
 // overlays that aren't affected or when the view is DUT-rooted.
 function tbScopeNoteFor(name) {
   if (store.renderedViewMode !== 'tb') return ''
+  if (name !== 'clock' && name !== 'reset') return ''
+  // Phase 6e (#99): when a `tb_clock_map.json` is in play, the
+  // renderer has already tinted TB scopes outside the DUT — at
+  // least one non-DUT node carries an overlays.<name> entry. In
+  // that case the "no map above DUT" footnote is misleading; hide
+  // it and let the legend speak for itself.
+  if (_overlayReachesTbScope(name)) return ''
   if (name === 'clock') return '(no clock map above DUT)'
   if (name === 'reset') return '(no reset map above DUT)'
   return ''
+}
+
+function _overlayReachesTbScope(overlayName) {
+  const g = store.graph
+  if (!g) return false
+  const anchors = store.dutAnchorIds || []
+  const isInsideDut = (id) =>
+    anchors.some((a) => id === a || id.startsWith(a + '.'))
+  for (const node of g.nodes) {
+    if (isInsideDut(node.id)) continue
+    const ov = node.overlays && node.overlays[overlayName]
+    if (!ov) continue
+    // The clock + reset overlays both surface their identity via a
+    // non-empty field (``clock`` for clocks, ``reset`` for resets).
+    // Anything truthy under the key means the overlay reaches this
+    // TB-side node.
+    if (overlayName === 'clock' && ov.clock) return true
+    if (overlayName === 'reset' && ov.reset) return true
+  }
+  return false
 }
 
 // Structural-style legend — entries that aren't overlay-toggleable

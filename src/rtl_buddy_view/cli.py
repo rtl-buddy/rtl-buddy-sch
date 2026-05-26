@@ -237,6 +237,40 @@ def main(
     reset_map: ResetDomainMap | None = annotations.get("reset")  # type: ignore[assignment]
     axi_perf_map: AxiPerfMap | None = annotations.get("axi-perf")  # type: ignore[assignment]
     wave_map: WaveMap | None = annotations.get("wave")  # type: ignore[assignment]
+
+    # Phase 6e (#99): TB-context clock + reset map. When a
+    # ``tb_clock_map.json`` is loaded via ``--overlay clock-tb=…``,
+    # merge its TB-side clock + reset entries into the DUT-side
+    # maps. DUT-side wins inside every DUT instance (the rule pinned
+    # by #99's TB-overlay story); TB-side fills outside. The renderer
+    # then sees one unified DomainMap / ResetDomainMap, so existing
+    # per-node clock/reset contribution code paths apply unchanged.
+    from rtl_buddy_view.tb_clock_map import (
+        TbClockMap,
+        merge_into_domain_map,
+        merge_into_reset_map,
+    )
+
+    tb_clock_map_raw = annotations.get("clock-tb")
+    tb_clock_map: TbClockMap | None = (
+        tb_clock_map_raw if isinstance(tb_clock_map_raw, TbClockMap) else None
+    )
+    if tb_clock_map is not None:
+        domain_map = merge_into_domain_map(
+            domain_map,
+            tb_clock_map,
+            root=root,
+            dut_top_module=top,
+            warn_stream=sys.stderr,
+        )
+        if tb_clock_map.resets:
+            reset_map = merge_into_reset_map(
+                reset_map,
+                tb_clock_map,
+                root=root,
+                dut_top_module=top,
+                warn_stream=sys.stderr,
+            )
     # Carry the original axi-perf.json path through to the JSON
     # renderer so view.json can carry a top-level `axi_perf.source`
     # field — the SPA's "Open in marimo" button reads it to skip the

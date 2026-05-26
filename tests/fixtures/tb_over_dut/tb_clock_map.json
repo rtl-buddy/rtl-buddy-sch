@@ -1,0 +1,23 @@
+{
+  "rtl-buddy-filetype": "tb_clock_map",
+  "schema_version": "1.0",
+  "clocks": [
+    {
+      "name": "main_clk",
+      "drives": [
+        "tb_top.u_clkgen",
+        "tb_top.u_driver"
+      ],
+      "period_ns": 10
+    }
+  ],
+  "resets": [
+    {
+      "name": "por_rst_n",
+      "drives": [
+        "tb_top.u_driver"
+      ],
+      "active_low": true
+    }
+  ]
+}
