@@ -298,6 +298,36 @@ name in an OSC-8 hyperlink pointing at the same `rtlbuddy://` URI
 redirects auto-disable OSC-8 so plain-text capture stays
 machine-readable; `NO_COLOR=1` is also respected.
 
+## Public API
+
+A small surface is exported as a stable, SemVer-covered Python API for downstream rtl-buddy tools that need the same Verible-CST infrastructure (currently [`rtl-buddy-axi-profiler`](https://github.com/rtl-buddy/rtl-buddy-axi-profiler/issues/34) and the upcoming [`rtl-buddy-xeno`](https://github.com/rtl-buddy/rtl-buddy-xeno/issues/4); see [view#109](https://github.com/rtl-buddy/rtl-buddy-view/issues/109) for the promotion rationale). The contract:
+
+| Symbol                                            | Purpose                                                              |
+| ------------------------------------------------- | -------------------------------------------------------------------- |
+| `rtl_buddy_view.frontend.verible.locate_binary`   | Locate `verible-verilog-syntax` — PATH-first, vendored fallback      |
+| `rtl_buddy_view.cst_cache.get_or_compute`         | Content-hashed CST cache; takes `verible_binary`, `compute`, `cache_dir` |
+| `rtl_buddy_view.cst_cache.cache_root`             | Cache-root path; takes optional `override`                           |
+| `rtl_buddy_view.offsets.OffsetIndex`              | Byte-offset → `(line, column)`, UTF-8-correct, O(log n)              |
+| `rtl_buddy_view.extractor.SourceLocation`         | Frozen `(file, start_line, start_column, end_line, end_column)`      |
+
+Plus the existing `extractor` dataclasses (`Module`, `Port`, `Parameter`, `Instance`) consumed via the JSON renderer's pinned contract.
+
+Anything **not** in that list (graph internals, renderer internals, the SPA bundle path, the underscore-prefixed modules) is implementation detail and may change without notice. The legacy underscore-prefixed imports (`rtl_buddy_view._cst_cache`, `rtl_buddy_view._offsets`) remain available as deprecation shims for one minor version with a `DeprecationWarning` pointing at the new locations.
+
+### CST cache — shared across rtl-buddy tools
+
+The cache directory is a **shared resource** across any rtl-buddy tool that imports `cst_cache`. Resolution order, decreasing precedence:
+
+1. `cache_dir` keyword argument to `get_or_compute` (caller-injected; the rtl_buddy orchestrator's preferred path — it reads `cfg-cst-cache.dir` from `root_config.yaml` and passes it through).
+2. `RTL_BUDDY_CACHE_DIR` environment variable.
+3. `RTL_BUDDY_VIEW_CACHE_DIR` (deprecated alias; emits a `DeprecationWarning`).
+4. `$XDG_CACHE_HOME/rtl-buddy/sv-cst/` (per the XDG Base Directory spec).
+5. `~/.cache/rtl-buddy/sv-cst/` (XDG default).
+
+If only the legacy `<xdg-cache>/rtl-buddy-view/cst/` directory exists on disk, it is read as a one-time fallback with a `DeprecationWarning`. New writes always go to the new path.
+
+`RTL_BUDDY_NO_CACHE=1` disables caching entirely (useful for CI and Verible-overhead measurement); `RTL_BUDDY_VIEW_NO_CACHE` is honoured as a deprecated alias.
+
 ## Roadmap
 
 - **Phase 1** ✅ — Verible frontend, semantic extractor, hierarchy

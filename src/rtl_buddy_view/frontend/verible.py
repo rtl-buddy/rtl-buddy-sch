@@ -23,9 +23,9 @@ import json
 import subprocess
 from pathlib import Path
 
-from rtl_buddy_view._cst_cache import get_or_compute
-from rtl_buddy_view._offsets import OffsetIndex
 from rtl_buddy_view._verible_install import find_binary
+from rtl_buddy_view.cst_cache import get_or_compute
+from rtl_buddy_view.offsets import OffsetIndex
 from rtl_buddy_view.extractor import (
     Instance,
     Interface,
@@ -82,7 +82,11 @@ def parse(files: list[Path]) -> ModuleTable:
         text = path.read_text()
         source_bytes = text.encode("utf-8")
         offsets = OffsetIndex.build(text)
-        cst = get_or_compute(binary, path, compute=_run_verible)
+        cst = get_or_compute(
+            path,
+            verible_binary=binary,
+            compute=_run_verible,
+        )
         for mod in _walk_modules(
             cst, file=str(path), offsets=offsets, source=source_bytes
         ):
