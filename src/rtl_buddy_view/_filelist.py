@@ -36,6 +36,14 @@ def parse_filelist(path: Path) -> list[Path]:
                 f"filelist surface."
             )
         candidate = (base / line).resolve()
+        if candidate.is_dir():
+            # A directory entry is an include dir, not a source file —
+            # e.g. a ``+incdir+`` path that an upstream generator (rb
+            # hier's filelist strip) reduced to a bare path. The Verible
+            # frontend parses each source standalone and never consumes
+            # include dirs, so skip it rather than letting ``read_text``
+            # blow up with IsADirectoryError downstream.
+            continue
         if not candidate.exists():
             raise FilelistError(f"{path}:{lineno}: file does not exist: {candidate}")
         files.append(candidate)
