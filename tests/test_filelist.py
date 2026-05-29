@@ -34,6 +34,17 @@ def test_strips_comments_and_blank_lines(tmp_path: Path) -> None:
     assert [p.name for p in out] == ["a.sv"]
 
 
+def test_skips_directory_entries(tmp_path: Path) -> None:
+    """A bare directory line is an include dir (e.g. a +incdir+ path an
+    upstream generator stripped to a bare path), not a source file. Skip
+    it instead of crashing the frontend with IsADirectoryError."""
+    _write(tmp_path, "a.sv", "module a; endmodule\n")
+    (tmp_path / "include").mkdir()
+    f = _write(tmp_path, "files.f", "include\na.sv\n")
+    out = parse_filelist(f)
+    assert [p.name for p in out] == ["a.sv"]
+
+
 def test_rejects_unsupported_directives(tmp_path: Path) -> None:
     f = _write(tmp_path, "files.f", "+incdir+/some/path\na.sv\n")
     with pytest.raises(FilelistError, match="not supported"):
