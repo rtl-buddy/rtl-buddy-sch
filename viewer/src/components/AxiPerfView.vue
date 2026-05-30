@@ -98,6 +98,14 @@
             <dt>Protocol</dt><dd>{{ selectedBundle.protocol }} / {{ selectedBundle.data_width }}b data / {{ selectedBundle.id_width }}b id</dd>
             <dt>Throughput</dt>
             <dd>R {{ fmtBps(selectedBundle.throughput.read_bps) }} · W {{ fmtBps(selectedBundle.throughput.write_bps) }}</dd>
+            <dt>Theoretical max</dt>
+            <dd>
+              <template v-if="theoreticalMaxBps">
+                {{ fmtBps(theoreticalMaxBps) }}/dir<span v-if="clockMhz" class="muted"> @ {{ clockMhz }} MHz</span>
+                <span class="muted"> ({{ utilOfMaxPct }}% used)</span>
+              </template>
+              <template v-else>—</template>
+            </dd>
             <dt>Outstanding</dt>
             <dd>
               R peak {{ selectedBundle.outstanding.read_peak }} avg {{ selectedBundle.outstanding.read_avg.toFixed(1) }} ·
@@ -195,29 +203,51 @@ function fmtFs(v) {
   return v + ' fs'
 }
 
-// Collect every edge with an axi-perf overlay into a flat list,
-// then layer in the interconnect roll-ups separately. Each entry
-// gets a stable `bundleKey` (the bundle name; falls back to
-// from→to when absent) so the list-detail wiring is one source.
+// Collect every AXI bundle into a flat list keyed by bundle NAME, then
+// layer in the interconnect roll-ups separately. The primary source is
+// per-node ``overlays['axi-perf'].bundle_pins`` — the complete,
+// name-keyed set that covers bundles sharing the same (master, slave)
+// endpoints (e.g. two slave-side bundles on one DUT) which the legacy
+// edge index collapses. Edge overlays are folded in as a back-compat
+// fallback for edge-model designs. Dedup is first-wins by bundle name.
 const bundles = computed(() => {
   const g = store.graph
-  if (!g || !Array.isArray(g.edges)) return []
-  const out = []
-  for (const e of g.edges) {
-    const block = e.overlays && e.overlays['axi-perf']
-    if (!block) continue
-    out.push({
-      bundleKey: block.name || `${e.from}->${e.to}`,
-      name: block.name || '(unnamed bundle)',
-      from: e.from,
-      to: e.to,
-      maxBp: maxBp(block),
-      ...block,
-    })
+  if (!g) return []
+  const byKey = new Map()
+  const add = (key, name, from, to, role, block) => {
+    if (!block || byKey.has(key)) return
+    byKey.set(key, { bundleKey: key, name, from, to, role: role || null, maxBp: maxBp(block), ...block })
   }
-  // Highest backpressure first; ties broken by name so the order
-  // stays stable across re-renders.
-  out.sort((a, b) => b.maxBp - a.maxBp || a.name.localeCompare(b.name))
+  // 1. Per-node bundle pins (interface + manifest-synthesized).
+  if (Array.isArray(g.nodes)) {
+    for (const n of g.nodes) {
+      const ov = n.overlays && n.overlays['axi-perf']
+      const pins = ov && Array.isArray(ov.bundle_pins) ? ov.bundle_pins : []
+      for (const pin of pins) {
+        const block = pin.bundle
+        if (!block) continue
+        const key = block.name || pin.port || n.id
+        // The node owns one endpoint; ``peer`` is the other side.
+        const from = pin.role === 'master' ? n.id : pin.peer || '?'
+        const to = pin.role === 'master' ? pin.peer || '?' : n.id
+        add(key, block.name || pin.port || '(unnamed bundle)', from, to, pin.role, block)
+      }
+    }
+  }
+  // 2. Edge overlays (back-compat for the (master, slave) edge model).
+  if (Array.isArray(g.edges)) {
+    for (const e of g.edges) {
+      const block = e.overlays && e.overlays['axi-perf']
+      if (!block) continue
+      add(block.name || `${e.from}->${e.to}`, block.name || '(unnamed bundle)', e.from, e.to, null, block)
+    }
+  }
+  const out = [...byKey.values()]
+  // Sort by endpoint TYPE — initiator (master) ports first, then
+  // target (slave) ports (edge-model bundles with no node role last) —
+  // and alphabetically by name within each type.
+  const roleRank = (r) => (r === 'master' ? 0 : r === 'slave' ? 1 : 2)
+  out.sort((a, b) => roleRank(a.role) - roleRank(b.role) || a.name.localeCompare(b.name))
   return out
 })
 
@@ -247,6 +277,30 @@ const selectedBundle = computed(
     bundles.value.find((b) => b.bundleKey === store.selectedAxiBundle)
     || null,
 )
+// Clock period (ns) carried on the view.json's top-level axi_perf
+// block — needed for the per-bundle theoretical max throughput.
+const clockPeriodNs = computed(() => {
+  const v = store.graph?.axi_perf?.clock_period_ns
+  return typeof v === 'number' && v > 0 ? v : null
+})
+const clockMhz = computed(() =>
+  clockPeriodNs.value ? Math.round(1000 / clockPeriodNs.value) : null,
+)
+// AXI moves one ``data_width``-bit beat per clock per direction, so the
+// theoretical ceiling per direction is data_width × clock frequency.
+const theoreticalMaxBps = computed(() => {
+  const b = selectedBundle.value
+  if (!b || !clockPeriodNs.value || !b.data_width) return null
+  return (b.data_width * 1e9) / clockPeriodNs.value
+})
+// What fraction of that ceiling the busier direction actually used.
+const utilOfMaxPct = computed(() => {
+  const b = selectedBundle.value
+  const max = theoreticalMaxBps.value
+  if (!b || !max) return 0
+  const busiest = Math.max(b.throughput.read_bps || 0, b.throughput.write_bps || 0)
+  return Math.round((busiest / max) * 100)
+})
 const selectedInterconnect = computed(
   () =>
     interconnects.value.find((ic) => ic.node_path === store.selectedAxiBundle)
@@ -562,6 +616,7 @@ async function onOpenInMarimo() {
   word-break: break-all;
 }
 .meta .bad { color: #dc2626; font-weight: 600; }
+.meta .muted { color: #94a3b8; }
 .lat-summary { margin: 0 0 0.25rem; font-size: 0.75rem; color: #475569; }
 .chart-wrap {
   height: 220px;
