@@ -42,7 +42,7 @@
       class="app-body"
       v-if="store.graph && (store.status !== 'ready' || store.activeTab === 'hierarchy')"
     >
-      <aside class="sidebar">
+      <aside class="sidebar" :style="{ width: sidebarWidth + 'px' }">
         <CollapsiblePanel title="Overlays" persist-key="overlays">
           <OverlayPanel />
         </CollapsiblePanel>
@@ -75,6 +75,13 @@
           <DiagnosticsPanel />
         </CollapsiblePanel>
       </aside>
+      <div
+        class="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        title="Drag to resize"
+        @mousedown.prevent="startResize"
+      ></div>
       <div class="canvas-wrap">
         <GraphCanvas />
         <div v-if="store.status === 'loading'" class="loading-overlay">
@@ -124,7 +131,7 @@
 // Drag-and-drop is wired at the document level so users can drop
 // onto any part of the viewer without targeting a specific zone.
 
-import { computed, onMounted, onBeforeUnmount } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useViewerStore } from './store.js'
 import GraphCanvas from './components/GraphCanvas.vue'
 import OverlayPanel from './components/OverlayPanel.vue'
@@ -141,6 +148,43 @@ import { initEventSync } from './composables/useEventSync.js'
 
 const store = useViewerStore()
 const hub = useHub()
+
+// --- Resizable sidebar (drag the divider between sidebar and canvas).
+const SIDEBAR_MIN = 200
+const SIDEBAR_MAX = 640
+function loadSidebarWidth() {
+  try {
+    const v = Number(localStorage.getItem('rb-sidebar-width'))
+    if (Number.isFinite(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX) return v
+  } catch {
+    /* localStorage unavailable — fall through to the default */
+  }
+  return 280
+}
+const sidebarWidth = ref(loadSidebarWidth())
+function startResize(e) {
+  const startX = e.clientX
+  const startW = sidebarWidth.value
+  const onMove = (ev) => {
+    const w = startW + (ev.clientX - startX)
+    sidebarWidth.value = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w))
+  }
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    try {
+      localStorage.setItem('rb-sidebar-width', String(sidebarWidth.value))
+    } catch {
+      /* best-effort persistence */
+    }
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+}
 
 const hasAxiPerf = computed(
   () =>
@@ -268,11 +312,24 @@ body, html, .app { margin: 0; height: 100%; }
 .app-body { display: flex; height: calc(100vh - 48px); }
 .app-body.axi-tab { display: block; overflow: auto; background: #ffffff; }
 .sidebar {
-  width: 280px;
+  width: 280px;        /* fallback; overridden by the inline :style width */
+  flex-shrink: 0;      /* honour the width in the flex row (don't squeeze) */
   border-right: 1px solid #e5e7eb;
   padding: 0;
   overflow: auto;
   background: #ffffff;
+}
+/* Draggable divider between the sidebar and the canvas. */
+.sidebar-resizer {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  margin-left: -1px;   /* sit over the sidebar's right border */
+  z-index: 2;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer:active {
+  background: #93c5fd;  /* blue-300 highlight while grabbing */
 }
 .canvas-wrap {
   flex: 1;

@@ -1,0 +1,1015 @@
+{
+  "schema_version": "1.0",
+  "top": "tb_axi_2x2",
+  "tool": {
+    "name": "rtl-buddy-view",
+    "version": "0.1.0"
+  },
+  "nodes": [
+    {
+      "id": "tb_axi_2x2",
+      "module": "tb_axi_2x2",
+      "instance_name": null,
+      "is_blackbox": false,
+      "parameters": {},
+      "ports": [],
+      "source": {
+        "file": "/Users/zloh/Work/claude_1/rtl-buddy-project-template/.worktrees/axi-demo/verif/demo_axi_2x2/tb_axi_2x2.sv",
+        "start_line": 27,
+        "start_column": 1,
+        "end_line": 509,
+        "end_column": 10,
+        "decl_line": 27,
+        "decl_col": 1
+      },
+      "link": "rtlbuddy://open?file=/Users/zloh/Work/claude_1/rtl-buddy-project-template/.worktrees/axi-demo/verif/demo_axi_2x2/tb_axi_2x2.sv&line=27&col=1",
+      "overlays": {}
+    },
+    {
+      "id": "tb_axi_2x2.dut",
+      "module": "axi_2x2",
+      "instance_name": "dut",
+      "is_blackbox": false,
+      "parameters": {
+        "ADDR_W": "ADDR_W",
+        "DATA_W": "DATA_W",
+        "ID_W": "SLV_ID_W"
+      },
+      "ports": [
+        {
+          "name": "clk",
+          "dir": "input",
+          "expr": "clk",
+          "anchor": {
+            "line": 153,
+            "col": 15
+          }
+        },
+        {
+          "name": "rst_n",
+          "dir": "input",
+          "expr": "rst_n",
+          "anchor": {
+            "line": 154,
+            "col": 15
+          }
+        },
+        {
+          "name": "test_en",
+          "dir": "input",
+          "expr": "1'b0",
+          "anchor": {
+            "line": 155,
+            "col": 15
+          }
+        }
+      ],
+      "source": {
+        "file": "/Users/zloh/Work/claude_1/rtl-buddy-project-template/.worktrees/axi-demo/verif/demo_axi_2x2/tb_axi_2x2.sv",
+        "start_line": 152,
+        "start_column": 5,
+        "end_line": 157,
+        "end_column": 4,
+        "decl_line": 15,
+        "decl_col": 1
+      },
+      "link": "rtlbuddy://open?file=/Users/zloh/Work/claude_1/rtl-buddy-project-template/.worktrees/axi-demo/verif/demo_axi_2x2/tb_axi_2x2.sv&line=152&col=5",
+      "overlays": {
+        "axi-perf": {
+          "bundle_pins": [
+            {
+              "port": "in0",
+              "modport": null,
+              "interface_instance": null,
+              "role": "slave",
+              "peer": "tb_axi_2x2",
+              "synthetic": true,
+              "bundle": {
+                "name": "in0",
+                "protocol": "AXI4",
+                "data_width": 32,
+                "id_width": 4,
+                "default_view": "parent",
+                "channels": {
+                  "ar": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  },
+                  "aw": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  },
+                  "r": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "beats": 0
+                  },
+                  "w": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "beats": 0
+                  },
+                  "b": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  }
+                },
+                "throughput": {
+                  "read_bps": 261189650.57348624,
+                  "write_bps": 261189650.57348624
+                },
+                "outstanding": {
+                  "read_peak": 1,
+                  "read_avg": 1.0,
+                  "write_peak": 1,
+                  "write_avg": 1.0
+                },
+                "latency_cycles": {
+                  "ar_to_r_first": {
+                    "p50": 50000000,
+                    "p95": 70000000,
+                    "p99": 90000000,
+                    "max": 90000000,
+                    "hist_log2": [
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      68
+                    ]
+                  },
+                  "aw_to_b": {
+                    "p50": 105000000,
+                    "p95": 496000000,
+                    "p99": 582700000,
+                    "max": 710000000,
+                    "hist_log2": [
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      68
+                    ]
+                  }
+                },
+                "errors": {
+                  "slverr": 0,
+                  "decerr": 0
+                }
+              }
+            },
+            {
+              "port": "in1",
+              "modport": null,
+              "interface_instance": null,
+              "role": "slave",
+              "peer": "tb_axi_2x2",
+              "synthetic": true,
+              "bundle": {
+                "name": "in1",
+                "protocol": "AXI4",
+                "data_width": 32,
+                "id_width": 4,
+                "default_view": "parent",
+                "channels": {
+                  "ar": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  },
+                  "aw": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  },
+                  "r": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "beats": 0
+                  },
+                  "w": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "beats": 0
+                  },
+                  "b": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  }
+                },
+                "throughput": {
+                  "read_bps": 271614918.2436157,
+                  "write_bps": 271614918.2436157
+                },
+                "outstanding": {
+                  "read_peak": 1,
+                  "read_avg": 1.0,
+                  "write_peak": 1,
+                  "write_avg": 1.0
+                },
+                "latency_cycles": {
+                  "ar_to_r_first": {
+                    "p50": 65000000,
+                    "p95": 80000000,
+                    "p99": 90000000,
+                    "max": 90000000,
+                    "hist_log2": [
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      104
+                    ]
+                  },
+                  "aw_to_b": {
+                    "p50": 110000000,
+                    "p95": 448500000,
+                    "p99": 587000000,
+                    "max": 650000000,
+                    "hist_log2": [
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      104
+                    ]
+                  }
+                },
+                "errors": {
+                  "slverr": 0,
+                  "decerr": 0
+                }
+              }
+            },
+            {
+              "port": "out0",
+              "modport": null,
+              "interface_instance": null,
+              "role": "master",
+              "peer": "tb_axi_2x2",
+              "synthetic": true,
+              "bundle": {
+                "name": "out0",
+                "protocol": "AXI4",
+                "data_width": 32,
+                "id_width": 5,
+                "default_view": "parent",
+                "channels": {
+                  "ar": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  },
+                  "aw": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  },
+                  "r": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "beats": 0
+                  },
+                  "w": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "beats": 0
+                  },
+                  "b": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  }
+                },
+                "throughput": {
+                  "read_bps": 270439096.0867169,
+                  "write_bps": 270439096.0867169
+                },
+                "outstanding": {
+                  "read_peak": 1,
+                  "read_avg": 1.0,
+                  "write_peak": 1,
+                  "write_avg": 1.0
+                },
+                "latency_cycles": {
+                  "ar_to_r_first": {
+                    "p50": 30000000,
+                    "p95": 30000000,
+                    "p99": 30000000,
+                    "max": 30000000,
+                    "hist_log2": [
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      103
+                    ]
+                  },
+                  "aw_to_b": {
+                    "p50": 90000000,
+                    "p95": 410000000,
+                    "p99": 490000000,
+                    "max": 540000000,
+                    "hist_log2": [
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      103
+                    ]
+                  }
+                },
+                "errors": {
+                  "slverr": 0,
+                  "decerr": 0
+                }
+              }
+            },
+            {
+              "port": "out1",
+              "modport": null,
+              "interface_instance": null,
+              "role": "master",
+              "peer": "tb_axi_2x2",
+              "synthetic": true,
+              "bundle": {
+                "name": "out1",
+                "protocol": "AXI4",
+                "data_width": 32,
+                "id_width": 5,
+                "default_view": "parent",
+                "channels": {
+                  "ar": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  },
+                  "aw": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  },
+                  "r": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "beats": 0
+                  },
+                  "w": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "beats": 0
+                  },
+                  "b": {
+                    "util_pct": 0.0,
+                    "bp_pct": 0.0,
+                    "peak_occ": 0,
+                    "txns": 0
+                  }
+                },
+                "throughput": {
+                  "read_bps": 181476707.7886209,
+                  "write_bps": 181476707.7886209
+                },
+                "outstanding": {
+                  "read_peak": 1,
+                  "read_avg": 1.0,
+                  "write_peak": 1,
+                  "write_avg": 1.0
+                },
+                "latency_cycles": {
+                  "ar_to_r_first": {
+                    "p50": 50000000,
+                    "p95": 50000000,
+                    "p99": 50000000,
+                    "max": 50000000,
+                    "hist_log2": [
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      69
+                    ]
+                  },
+                  "aw_to_b": {
+                    "p50": 70000000,
+                    "p95": 170000000,
+                    "p99": 200000000,
+                    "max": 200000000,
+                    "hist_log2": [
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      0,
+                      69
+                    ]
+                  }
+                },
+                "errors": {
+                  "slverr": 0,
+                  "decerr": 0
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tb_axi_2x2.dut.i_xbar",
+      "module": "axi_xbar",
+      "instance_name": "i_xbar",
+      "is_blackbox": false,
+      "parameters": {
+        "Cfg": "XbarCfg",
+        "ATOPs": "1'b0",
+        "Connectivity": "'1",
+        "slv_aw_chan_t": "slv_aw_t",
+        "mst_aw_chan_t": "mst_aw_t",
+        "w_chan_t": "w_t",
+        "slv_b_chan_t": "slv_b_t",
+        "mst_b_chan_t": "mst_b_t",
+        "slv_ar_chan_t": "slv_ar_t",
+        "mst_ar_chan_t": "mst_ar_t",
+        "slv_r_chan_t": "slv_r_t",
+        "mst_r_chan_t": "mst_r_t",
+        "slv_req_t": "slv_req_t",
+        "slv_resp_t": "slv_resp_t",
+        "mst_req_t": "mst_req_t",
+        "mst_resp_t": "mst_resp_t",
+        "rule_t": "rule_32_t"
+      },
+      "ports": [
+        {
+          "name": "clk_i",
+          "dir": "input",
+          "expr": "clk",
+          "anchor": {
+            "line": 134,
+            "col": 29
+          }
+        },
+        {
+          "name": "rst_ni",
+          "dir": "input",
+          "expr": "rst_n",
+          "anchor": {
+            "line": 135,
+            "col": 29
+          }
+        },
+        {
+          "name": "test_i",
+          "dir": "input",
+          "expr": "test_en",
+          "anchor": {
+            "line": 136,
+            "col": 29
+          }
+        },
+        {
+          "name": "slv_ports_req_i",
+          "dir": "input",
+          "expr": "slv_reqs",
+          "anchor": {
+            "line": 137,
+            "col": 29
+          }
+        },
+        {
+          "name": "slv_ports_resp_o",
+          "dir": "output",
+          "expr": "slv_resps",
+          "anchor": {
+            "line": 138,
+            "col": 29
+          }
+        },
+        {
+          "name": "mst_ports_req_o",
+          "dir": "output",
+          "expr": "mst_reqs",
+          "anchor": {
+            "line": 139,
+            "col": 29
+          }
+        },
+        {
+          "name": "mst_ports_resp_i",
+          "dir": "input",
+          "expr": "mst_resps",
+          "anchor": {
+            "line": 140,
+            "col": 29
+          }
+        },
+        {
+          "name": "addr_map_i",
+          "dir": "input",
+          "expr": "AddrMap",
+          "anchor": {
+            "line": 141,
+            "col": 29
+          }
+        },
+        {
+          "name": "en_default_mst_port_i",
+          "dir": "input",
+          "expr": "'0",
+          "anchor": {
+            "line": 142,
+            "col": 29
+          }
+        },
+        {
+          "name": "default_mst_port_i",
+          "dir": "input",
+          "expr": "'0",
+          "anchor": {
+            "line": 143,
+            "col": 29
+          }
+        }
+      ],
+      "source": {
+        "file": "/Users/zloh/Work/claude_1/rtl-buddy-project-template/.worktrees/axi-demo/design/demo_axi_2x2/axi_2x2.sv",
+        "start_line": 133,
+        "start_column": 5,
+        "end_line": 144,
+        "end_column": 4,
+        "decl_line": 18,
+        "decl_col": 1
+      },
+      "link": "rtlbuddy://open?file=/Users/zloh/Work/claude_1/rtl-buddy-project-template/.worktrees/axi-demo/design/demo_axi_2x2/axi_2x2.sv&line=133&col=5",
+      "overlays": {}
+    },
+    {
+      "id": "tb_axi_2x2.dut.i_xbar.i_xbar_unmuxed",
+      "module": "axi_xbar_unmuxed",
+      "instance_name": "i_xbar_unmuxed",
+      "is_blackbox": false,
+      "parameters": {
+        "Cfg": "Cfg",
+        "ATOPs": "ATOPs",
+        "Connectivity": "Connectivity",
+        "aw_chan_t": "slv_aw_chan_t",
+        "w_chan_t": "w_chan_t",
+        "b_chan_t": "slv_b_chan_t",
+        "ar_chan_t": "slv_ar_chan_t",
+        "r_chan_t": "slv_r_chan_t",
+        "req_t": "slv_req_t",
+        "resp_t": "slv_resp_t",
+        "rule_t": "rule_t"
+      },
+      "ports": [
+        {
+          "name": "clk_i",
+          "dir": "input",
+          "expr": "",
+          "anchor": {
+            "line": 110,
+            "col": 5
+          }
+        },
+        {
+          "name": "rst_ni",
+          "dir": "input",
+          "expr": "",
+          "anchor": {
+            "line": 111,
+            "col": 5
+          }
+        },
+        {
+          "name": "test_i",
+          "dir": "input",
+          "expr": "",
+          "anchor": {
+            "line": 112,
+            "col": 5
+          }
+        },
+        {
+          "name": "slv_ports_req_i",
+          "dir": "input",
+          "expr": "",
+          "anchor": {
+            "line": 113,
+            "col": 5
+          }
+        },
+        {
+          "name": "slv_ports_resp_o",
+          "dir": "output",
+          "expr": "",
+          "anchor": {
+            "line": 114,
+            "col": 5
+          }
+        },
+        {
+          "name": "mst_ports_req_o",
+          "dir": "output",
+          "expr": "mst_reqs",
+          "anchor": {
+            "line": 115,
+            "col": 24
+          }
+        },
+        {
+          "name": "mst_ports_resp_i",
+          "dir": "input",
+          "expr": "mst_resps",
+          "anchor": {
+            "line": 116,
+            "col": 24
+          }
+        },
+        {
+          "name": "addr_map_i",
+          "dir": "input",
+          "expr": "",
+          "anchor": {
+            "line": 117,
+            "col": 5
+          }
+        },
+        {
+          "name": "en_default_mst_port_i",
+          "dir": "input",
+          "expr": "",
+          "anchor": {
+            "line": 118,
+            "col": 5
+          }
+        },
+        {
+          "name": "default_mst_port_i",
+          "dir": "input",
+          "expr": "",
+          "anchor": {
+            "line": 119,
+            "col": 5
+          }
+        }
+      ],
+      "source": {
+        "file": "/Users/zloh/Work/claude_1/rtl-buddy-project-template/.worktrees/axi-demo/vendor/pulp-platform/axi/src/axi_xbar.sv",
+        "start_line": 109,
+        "start_column": 5,
+        "end_line": 120,
+        "end_column": 4,
+        "decl_line": 18,
+        "decl_col": 1
+      },
+      "link": "rtlbuddy://open?file=/Users/zloh/Work/claude_1/rtl-buddy-project-template/.worktrees/axi-demo/vendor/pulp-platform/axi/src/axi_xbar.sv&line=109&col=5",
+      "overlays": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "tb_axi_2x2",
+      "to": "tb_axi_2x2.dut",
+      "port_pairs": [
+        [
+          "clk",
+          "clk"
+        ],
+        [
+          "rst_n",
+          "rst_n"
+        ],
+        [
+          "1'b0",
+          "test_en"
+        ]
+      ],
+      "overlays": {
+        "axi-perf": {
+          "name": "in0",
+          "protocol": "AXI4",
+          "data_width": 32,
+          "id_width": 4,
+          "default_view": "parent",
+          "channels": {
+            "ar": {
+              "util_pct": 0.0,
+              "bp_pct": 0.0,
+              "peak_occ": 0,
+              "txns": 0
+            },
+            "aw": {
+              "util_pct": 0.0,
+              "bp_pct": 0.0,
+              "peak_occ": 0,
+              "txns": 0
+            },
+            "r": {
+              "util_pct": 0.0,
+              "bp_pct": 0.0,
+              "peak_occ": 0,
+              "beats": 0
+            },
+            "w": {
+              "util_pct": 0.0,
+              "bp_pct": 0.0,
+              "peak_occ": 0,
+              "beats": 0
+            },
+            "b": {
+              "util_pct": 0.0,
+              "bp_pct": 0.0,
+              "peak_occ": 0,
+              "txns": 0
+            }
+          },
+          "throughput": {
+            "read_bps": 261189650.57348624,
+            "write_bps": 261189650.57348624
+          },
+          "outstanding": {
+            "read_peak": 1,
+            "read_avg": 1.0,
+            "write_peak": 1,
+            "write_avg": 1.0
+          },
+          "latency_cycles": {
+            "ar_to_r_first": {
+              "p50": 50000000,
+              "p95": 70000000,
+              "p99": 90000000,
+              "max": 90000000,
+              "hist_log2": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                68
+              ]
+            },
+            "aw_to_b": {
+              "p50": 105000000,
+              "p95": 496000000,
+              "p99": 582700000,
+              "max": 710000000,
+              "hist_log2": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                68
+              ]
+            }
+          },
+          "errors": {
+            "slverr": 0,
+            "decerr": 0
+          }
+        }
+      }
+    },
+    {
+      "from": "tb_axi_2x2.dut",
+      "to": "tb_axi_2x2.dut.i_xbar",
+      "port_pairs": [
+        [
+          "clk",
+          "clk_i"
+        ],
+        [
+          "rst_n",
+          "rst_ni"
+        ],
+        [
+          "test_en",
+          "test_i"
+        ],
+        [
+          "slv_reqs",
+          "slv_ports_req_i"
+        ],
+        [
+          "slv_resps",
+          "slv_ports_resp_o"
+        ],
+        [
+          "mst_reqs",
+          "mst_ports_req_o"
+        ],
+        [
+          "mst_resps",
+          "mst_ports_resp_i"
+        ],
+        [
+          "AddrMap",
+          "addr_map_i"
+        ],
+        [
+          "'0",
+          "en_default_mst_port_i"
+        ],
+        [
+          "'0",
+          "default_mst_port_i"
+        ]
+      ],
+      "overlays": {}
+    },
+    {
+      "from": "tb_axi_2x2.dut.i_xbar",
+      "to": "tb_axi_2x2.dut.i_xbar.i_xbar_unmuxed",
+      "port_pairs": [
+        [
+          "",
+          "clk_i"
+        ],
+        [
+          "",
+          "rst_ni"
+        ],
+        [
+          "",
+          "test_i"
+        ],
+        [
+          "",
+          "slv_ports_req_i"
+        ],
+        [
+          "",
+          "slv_ports_resp_o"
+        ],
+        [
+          "mst_reqs",
+          "mst_ports_req_o"
+        ],
+        [
+          "mst_resps",
+          "mst_ports_resp_i"
+        ],
+        [
+          "",
+          "addr_map_i"
+        ],
+        [
+          "",
+          "en_default_mst_port_i"
+        ],
+        [
+          "",
+          "default_mst_port_i"
+        ]
+      ],
+      "overlays": {}
+    }
+  ],
+  "overlays_present": [
+    "axi-perf"
+  ],
+  "axi_perf": {
+    "source": "/Users/zloh/Work/claude_1/rtl-buddy-project-template/.worktrees/axi-demo/verif/demo_axi_2x2/artefacts/axi/basic_traffic/axi-perf.json",
+    "test": "basic_traffic",
+    "suite_dir": "/Users/zloh/Work/claude_1/rtl-buddy-project-template/.worktrees/axi-demo/verif/demo_axi_2x2"
+  },
+  "layout": {
+    "engine": "dot",
+    "dot": "digraph hierarchy {\n  rankdir=\"LR\";\n  compound=true;\n  splines=\"ortho\";\n  nodesep=0.18;\n  ranksep=1.2;\n  fontname=\"Courier,monospace\";\n  node [shape=box, style=\"rounded,filled\", fillcolor=\"#f5f5f5\", fontname=\"Courier,monospace\", margin=\"0.4,0.06\"];\n  edge [fontname=\"Courier,monospace\"];\n\n  subgraph cluster_top {\n    label=\"tb_axi_2x2\";\n    labelloc=\"t\";\n    style=\"rounded\";\n    color=\"#94a3b8\";\n    penwidth=2;\n    margin=\"20,20\";\n  subgraph cluster_tb_axi_2x2_dut {\n    label=\"dut\\laxi_2x2\\l#(\\l  .ADDR_W(ADDR_W)\\l  .DATA_W(DATA_W)\\l  .ID_W  (SLV_ID_W)\\l)\\l\";\n    labelloc=\"t\";\n    labeljust=\"l\";\n    style=\"rounded\";\n    color=\"#94a3b8\";\n    penwidth=1;\n    \"tb_axi_2x2.dut\" [shape=point, style=invis, width=0, height=0, group=\"cluster_top\"];\n  subgraph cluster_tb_axi_2x2_dut_i_xbar {\n    label=\"i_xbar\\laxi_xbar\\l#(\\l  .Cfg          (XbarCfg)\\l  .ATOPs        (1'b0)\\l  .Connectivity ('1)\\l  .slv_aw_chan_t(slv_aw_t)\\l  .mst_aw_chan_t(mst_aw_t)\\l  .w_chan_t     (w_t)\\l  .slv_b_chan_t (slv_b_t)\\l  .mst_b_chan_t (mst_b_t)\\l  .slv_ar_chan_t(slv_ar_t)\\l  .mst_ar_chan_t(mst_ar_t)\\l  .slv_r_chan_t (slv_r_t)\\l  .mst_r_chan_t (mst_r_t)\\l  .slv_req_t    (slv_req_t)\\l  .slv_resp_t   (slv_resp_t)\\l  .mst_req_t    (mst_req_t)\\l  .mst_resp_t   (mst_resp_t)\\l  .rule_t       (rule_32_t)\\l)\\l\";\n    labelloc=\"t\";\n    labeljust=\"l\";\n    style=\"rounded\";\n    color=\"#94a3b8\";\n    penwidth=1;\n    \"tb_axi_2x2.dut.i_xbar\" [shape=point, style=invis, width=0, height=0, group=\"cluster_tb_axi_2x2_dut\"];\n  \"tb_axi_2x2.dut.i_xbar.i_xbar_unmuxed\" [label=\"i_xbar_unmuxed\\laxi_xbar_unmuxed\\l#(\\l  .Cfg         (Cfg)\\l  .ATOPs       (ATOPs)\\l  .Connectivity(Connectivity)\\l  .aw_chan_t   (slv_aw_chan_t)\\l  .w_chan_t    (w_chan_t)\\l  .b_chan_t    (slv_b_chan_t)\\l  .ar_chan_t   (slv_ar_chan_t)\\l  .r_chan_t    (slv_r_chan_t)\\l  .req_t       (slv_req_t)\\l  .resp_t      (slv_resp_t)\\l  .rule_t      (rule_t)\\l)\\l\", group=\"cluster_tb_axi_2x2_dut_i_xbar\"];\n  }\n  }\n  }\n}\n",
+    "cluster_lookup": {
+      "cluster_tb_axi_2x2": "tb_axi_2x2",
+      "cluster_tb_axi_2x2_dut": "tb_axi_2x2.dut",
+      "cluster_tb_axi_2x2_dut_i_xbar": "tb_axi_2x2.dut.i_xbar"
+    }
+  }
+}

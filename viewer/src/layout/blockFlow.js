@@ -99,6 +99,9 @@ function isOutputDir(d) {
 function interfacePortsFor(child) {
   if (!child || !child.ports) return []
   const out = []
+  const seen = new Set()
+  // 1. Native (unflattened) interface bundle ports — ``test_mem_if.sub m``
+  //    surfaces as a single ``port_kind:"interface"`` port.
   for (const port of child.ports) {
     if (port && port.port_kind === 'interface') {
       out.push({
@@ -106,7 +109,45 @@ function interfacePortsFor(child) {
         interface_type: port.interface_type || '',
         modport: port.modport || null,
       })
+      seen.add(port.name)
     }
+  }
+  // 2. Flattened interface signals (``m.req``, kind ``interface_signal``).
+  //    When the interface body is in scope the producer flattens the
+  //    bundle into one scalar port per modport signal. Re-group them by
+  //    the owning interface-port name (prefix before the first dot) so
+  //    the bundle STILL draws as a single ▶▶ interface pin — the anchor
+  //    the axi-perf overlay decorates. Without this, a real design
+  //    (AXI_BUS interface in scope) would show no interface pin at all.
+  for (const port of child.ports) {
+    if (!port || port.port_kind !== 'interface_signal') continue
+    const name = typeof port.name === 'string' ? port.name : ''
+    const base = name.split('.', 1)[0]
+    if (!base || seen.has(base)) continue
+    seen.add(base)
+    out.push({
+      name: base,
+      interface_type: port.interface_type || '',
+      modport: port.modport || null,
+    })
+  }
+  // 3. Manifest-described (synthesized) AXI bundle pins. When the AXI
+  //    ports aren't visible to the parser (macro-generated flat ports),
+  //    json_render attaches the bundle to this node from the
+  //    axi-bundles.yaml description as a synthetic ``bundle_pin``. Draw
+  //    each as a ▶▶ interface cell so the same axi-perf overlay paint
+  //    decorates it — no profiler-specific RTL stub required.
+  const axiPins = child.overlays && child.overlays['axi-perf']
+  const bundlePins = axiPins && Array.isArray(axiPins.bundle_pins) ? axiPins.bundle_pins : []
+  for (const pin of bundlePins) {
+    if (!pin || pin.synthetic !== true || typeof pin.port !== 'string') continue
+    if (seen.has(pin.port)) continue
+    seen.add(pin.port)
+    out.push({
+      name: pin.port,
+      interface_type: (pin.bundle && pin.bundle.protocol) || 'AXI',
+      modport: pin.role || null,
+    })
   }
   out.sort((a, b) => a.name.localeCompare(b.name))
   return out
