@@ -41,7 +41,7 @@ from rtl_buddy_view.annotations import (
 from rtl_buddy_view.extractor import ModuleTable
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.frontend.verible import VeribleParseError, VeribleUnavailable
-from rtl_buddy_view.graph import HierarchyError, build_hierarchy
+from rtl_buddy_view.graph import HierarchyError, build_hierarchy, find_tb_top
 from rtl_buddy_view.overlays import OverlayError, OverlayRegistry, default_registry
 from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.render import json_render
@@ -182,12 +182,6 @@ def main(
         typer.echo("error: --top or --tb-top is required", err=True)
         raise typer.Exit(code=2)
 
-    # The rendered root is whatever the user named with --tb-top; when
-    # only --top is supplied, fall back to DUT-rooted (today's
-    # byte-identical behaviour). Both flags survive into view.json as
-    # descriptive fields regardless of which was used as the root.
-    rendered_top = tb_top if tb_top is not None else top
-
     overlay_specs = _collect_overlays(overlays_flag, cdc_annotations, rdc_annotations)
 
     annotations: dict[str, object] = {}
@@ -226,6 +220,27 @@ def main(
     except NotImplementedError as e:
         typer.echo(f"frontend: {e}", err=True)
         raise typer.Exit(code=2) from None
+
+    # A ``--tb-top`` hint that doesn't name a real module is usually the
+    # testbench *config* name (e.g. ``tb_apb``) rather than the actual
+    # top module (commonly just ``tb_top``). Recover the real one from
+    # the elaborated design so a best-effort hint still produces a
+    # TB-rooted view instead of a "module not found" error.
+    if tb_top is not None and top is not None and tb_top not in table.modules_by_name:
+        detected = find_tb_top(table, top)
+        if detected is not None:
+            typer.echo(
+                f"tb-top: {tb_top!r} is not a module in the design; "
+                f"auto-detected {detected!r} as the testbench top.",
+                err=True,
+            )
+            tb_top = detected
+
+    # The rendered root is whatever ``--tb-top`` resolved to; when only
+    # --top is supplied, fall back to DUT-rooted (byte-identical to the
+    # pre-tb-top behaviour). Both names survive into view.json as
+    # descriptive fields regardless of which was used as the root.
+    rendered_top = tb_top if tb_top is not None else top
 
     try:
         root = build_hierarchy(table, rendered_top)

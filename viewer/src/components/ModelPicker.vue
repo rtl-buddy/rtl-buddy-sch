@@ -33,17 +33,17 @@
     <select
       v-if="store.viewModeTb"
       class="model-picker"
-      :value="store.activeTest ?? ''"
+      :value="activeTestKey"
       @change="onChangeTest"
       :title="title"
     >
       <option v-if="!store.activeTest" value="" disabled>(select a test)</option>
       <option
-        v-for="t in store.availableTests"
-        :key="(t.tests_file || '') + '::' + t.name"
-        :value="t.name"
+        v-for="t in sortedTests"
+        :key="testKey(t)"
+        :value="testKey(t)"
       >
-        {{ t.name }}{{ t.model ? `  — ${t.model}` : '' }}
+        {{ testLabel(t) }}
       </option>
     </select>
     <select
@@ -80,10 +80,13 @@
 //
 // #99 / 6c: when the hub advertises tests via ``GET /tests``, a
 // DUT|TB segmented control appears next to the picker and TB mode
-// swaps the picker contents to the test list. Tests carry their
-// resolved ``model`` for a small annotation; switching to a test
-// also implicitly switches the model. The toggle is hidden when no
-// tests are available so the existing DUT-only UI is unaffected.
+// swaps the picker contents to the test list. Each option reads
+// ``dut — tb_top — test``: the DUT (model) first, so every test for a
+// given design clusters together — a tb name like ``tb_top`` is reused
+// across many DUTs, so grouping by tb alone scatters them — then the
+// testbench top, then the test name. Switching to a test also
+// implicitly switches the model. The toggle is hidden when no tests
+// are available.
 import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
 
@@ -91,6 +94,38 @@ const store = useViewerStore()
 
 const showAny = computed(
   () => store.availableModels.length > 0 || store.availableTests.length > 0,
+)
+
+// A test name alone isn't unique (``smoke`` lives in several suites), so
+// the option value is the (tests_file, name) pair. ``switchTest`` sends
+// the file back to the hub to disambiguate.
+const testKey = (t) => `${t.tests_file || ''}::${t.name}`
+
+// Option label: ``dut — tb_top — test`` (see header comment), with
+// graceful fallbacks for entries missing a field.
+const testLabel = (t) =>
+  [t.model, t.tb, t.name].filter((s) => s != null && s !== '').join('  —  ')
+
+// TB-mode picker order matches the label: model (DUT) first, then the
+// testbench top, then the test name — so every test for a design
+// clusters together instead of scattering by a reused tb name. Sort a
+// copy; never mutate the store.
+const sortedTests = computed(() =>
+  [...store.availableTests].sort(
+    (a, b) =>
+      (a.model || '').localeCompare(b.model || '') ||
+      (a.tb || '').localeCompare(b.tb || '') ||
+      (a.name || '').localeCompare(b.name || ''),
+  ),
+)
+
+// The selected <option>'s value is its composite key; bind the select to
+// the active test's key so the right row shows as chosen (and so the
+// placeholder shows after a failed switch, which clears activeTest).
+const activeTestKey = computed(() =>
+  store.activeTest
+    ? `${store.activeTestFile || ''}::${store.activeTest}`
+    : '',
 )
 
 const title = computed(() => {
@@ -112,10 +147,15 @@ async function onChangeModel(event) {
 }
 
 async function onChangeTest(event) {
-  const next = event.target.value
-  if (!next || next === store.activeTest) return
+  const next = event.target.value // composite (tests_file::name) key
+  if (!next || next === activeTestKey.value) return
+  const entry = store.availableTests.find((t) => t && testKey(t) === next)
+  if (!entry) return
   try {
-    await store.switchTest(next, { updateUrl: true })
+    await store.switchTest(entry.name, {
+      updateUrl: true,
+      testsFile: entry.tests_file || null,
+    })
   } catch {
     /* see onChangeModel */
   }
@@ -151,7 +191,10 @@ async function onSelectMode(mode) {
     )
     if (match) {
       try {
-        await store.switchTest(match.name, { updateUrl: true })
+        await store.switchTest(match.name, {
+          updateUrl: true,
+          testsFile: match.tests_file || null,
+        })
       } catch {
         /* see onChangeModel */
       }

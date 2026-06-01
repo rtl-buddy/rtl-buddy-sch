@@ -375,7 +375,7 @@ describe('viewer store', () => {
     }
   })
 
-  it('switchModel does not flip activeModel on load failure', async () => {
+  it('switchModel clears activeModel on load failure (failure-page recovery)', async () => {
     const originalFetch = window.fetch
     window.fetch = async () => ({
       ok: false,
@@ -386,11 +386,18 @@ describe('viewer store', () => {
     try {
       const store = useViewerStore()
       store.activeModel = 'previous'
-      await store.switchModel('broken', { updateUrl: false })
-      // status flipped to error, activeModel preserved so the next
-      // view_changed echo isn't masked.
+      const ok = await store.switchModel('broken', { updateUrl: false })
+      // Returns false, flips to the error page, and resets activeModel
+      // to null (NOT the failed name) — so the picker drops to its
+      // placeholder and the user can re-select any model (including
+      // 'previous') without reloading. Using null rather than 'broken'
+      // also avoids masking a later view_changed echo for 'broken'.
+      expect(ok).toBe(false)
       expect(store.status).toBe('error')
-      expect(store.activeModel).toBe('previous')
+      expect(store.activeModel).toBeNull()
+      // The failure page gets the HTTP status + the hub's body message.
+      expect(store.errorMeta.status).toBe(500)
+      expect(store.error).toContain('boom')
     } finally {
       window.fetch = originalFetch
     }
@@ -1060,6 +1067,93 @@ describe('viewer store — disambiguation picker (rtl-buddy-view#55)', () => {
       expect(store.activeModel).toBe('alpha')
       expect(store.viewModeTb).toBe(true)
       expect(store.graph.top).toBe('tb_top')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('switchTest sends &tests_file= to disambiguate, and records it', async () => {
+    const originalFetch = window.fetch
+    const calls = []
+    window.fetch = async (url) => {
+      calls.push(url)
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify(tbPayload()),
+      }
+    }
+    try {
+      const store = useViewerStore()
+      store.availableTests = [
+        { name: 'smoke', model: 'apb', tb: 'tb_apb', tests_file: '/p/apb/tests.yaml' },
+      ]
+      await store.switchTest('smoke', {
+        updateUrl: false,
+        testsFile: '/p/apb/tests.yaml',
+      })
+      expect(calls[0]).toBe(
+        '/view.json?test=smoke&tests_file=%2Fp%2Fapb%2Ftests.yaml',
+      )
+      expect(store.activeTest).toBe('smoke')
+      expect(store.activeTestFile).toBe('/p/apb/tests.yaml')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('switchTest clears activeTest/activeTestFile on failure (recovery)', async () => {
+    const originalFetch = window.fetch
+    window.fetch = async () => ({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      text: async () => "test 'smoke' matches multiple tests.yaml files",
+    })
+    try {
+      const store = useViewerStore()
+      store.activeTest = 'basic_traffic'
+      store.activeTestFile = '/p/axi/tests.yaml'
+      store.viewModeTb = true
+      const ok = await store.switchTest('smoke', { updateUrl: false })
+      expect(ok).toBe(false)
+      expect(store.status).toBe('error')
+      // Reset so the (snap-back) <select> returns to its placeholder and
+      // re-picking any test — including the one we were on — re-fetches.
+      expect(store.activeTest).toBeNull()
+      expect(store.activeTestFile).toBeNull()
+      expect(store.error).toContain('multiple tests.yaml')
+    } finally {
+      window.fetch = originalFetch
+    }
+  })
+
+  it('applyViewChanged re-fetches a same-named test in a different suite', async () => {
+    const originalFetch = window.fetch
+    const calls = []
+    window.fetch = async (url) => {
+      calls.push(url)
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify(tbPayload()),
+      }
+    }
+    try {
+      const store = useViewerStore()
+      store.activeTest = 'smoke'
+      store.activeTestFile = '/p/apb/tests.yaml'
+      // Same name, different suite → genuinely different view, must not
+      // be deduped as a self-echo.
+      await store.applyViewChanged({
+        view_mode: 'tb',
+        test: 'smoke',
+        tests_file: '/p/cdc/tests.yaml',
+      })
+      expect(calls.some((u) => u.includes('tests_file=%2Fp%2Fcdc'))).toBe(true)
+      expect(store.activeTestFile).toBe('/p/cdc/tests.yaml')
     } finally {
       window.fetch = originalFetch
     }
