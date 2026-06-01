@@ -117,7 +117,31 @@
     </div>
     <div class="error" v-else-if="store.status === 'error'">
       <h2>Could not load this view</h2>
+      <p class="error-status" v-if="store.errorMeta && store.errorMeta.status">
+        The hub responded HTTP {{ store.errorMeta.status }}.
+      </p>
       <pre>{{ store.error }}</pre>
+      <div class="error-reasons">
+        <p class="error-reasons-title">Possible reasons:</p>
+        <ul>
+          <li>
+            The test or model name isn't unique across suites — pick the exact
+            row from the header selector (it disambiguates by testbench + DUT).
+          </li>
+          <li>
+            The name doesn't exist in any <code>tests.yaml</code> /
+            <code>models.yaml</code> the hub discovered.
+          </li>
+          <li>
+            The view build failed (filelist or parse error). Check the hub log
+            at <code>artefacts/hier/&lt;model&gt;/…/hier.log</code>.
+          </li>
+          <li>The hub isn't reachable — not started, restarted, or wrong port.</li>
+        </ul>
+        <p class="error-hint">
+          Pick a different view from the header selector — no reload needed.
+        </p>
+      </div>
     </div>
     <ToastHost />
   </div>
@@ -396,5 +420,42 @@ body, html, .app { margin: 0; height: 100%; }
   padding: 0.75rem;
   border-radius: 4px;
   color: #991b1b;
+}
+.error-status {
+  color: #991b1b;
+  font-weight: 600;
+  margin: 0;
+}
+.error-reasons {
+  max-width: 64ch;
+  text-align: left;
+  font-size: 0.85rem;
+  color: #475569;
+  background: #f1f5f9;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  line-height: 1.5;
+}
+.error-reasons-title {
+  margin: 0 0 0.4rem;
+  font-weight: 600;
+}
+.error-reasons ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+.error-reasons li {
+  margin: 0.2rem 0;
+}
+.error-reasons .error-hint {
+  margin: 0.6rem 0 0;
+  font-style: italic;
+}
+.error code {
+  font-family: ui-monospace, Menlo, monospace;
+  background: #e2e8f0;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.85em;
 }
 </style>
