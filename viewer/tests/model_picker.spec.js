@@ -1,12 +1,12 @@
 // ModelPicker component tests — TB-mode test list ordering + labels.
 //
 // In TB mode the picker lists tests. Each option reads
-// ``tb — model — test``: testbench top first (so same-tb tests cluster),
-// then the model/DUT (a tb name like ``tb_top`` is reused across DUTs),
-// then the test name. The list is sorted by the same key. The option
-// *value* is the (tests_file, name) composite because a test name can
-// repeat across suites, and switching sends the tests_file so the hub
-// resolves it unambiguously.
+// ``dut — tb_top — test``: the model/DUT first (so every test for a
+// design clusters — a tb name like ``tb_top`` is reused across DUTs),
+// then the testbench top, then the test name. The list is sorted by the
+// same key. The option *value* is the (tests_file, name) composite
+// because a test name can repeat across suites, and switching sends the
+// tests_file so the hub resolves it unambiguously.
 
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -31,9 +31,9 @@ describe('ModelPicker — TB-mode test list', () => {
     setActivePinia(createPinia())
   })
 
-  it('labels read tb — model — test, grouped by tb then model', () => {
+  it('labels read dut — tb_top — test, grouped by dut then tb', () => {
     const store = useViewerStore()
-    // Two DUTs share the tb name ``tb_top``; a third tb stands alone.
+    // Two DUTs share the tb name ``tb_top``; a third DUT stands alone.
     store.availableTests = [
       { name: 'basic', model: 'beta_dut', tb: 'tb_top', tests_file: 'b' },
       { name: 'smoke', model: 'apb_intf', tb: 'tb_apb', tests_file: 'a' },
@@ -46,11 +46,11 @@ describe('ModelPicker — TB-mode test list', () => {
 
     const wrapper = mount(ModelPicker)
     expect(tbOptionTexts(wrapper)).toEqual([
-      'tb_apb — apb_intf — smoke',
-      // tb_top: alpha_dut sorts before beta_dut; within beta_dut, aaa < basic
-      'tb_top — alpha_dut — basic',
-      'tb_top — beta_dut — aaa',
-      'tb_top — beta_dut — basic',
+      // sorted by model (DUT), then tb, then test name
+      'alpha_dut — tb_top — basic',
+      'apb_intf — tb_apb — smoke',
+      'beta_dut — tb_top — aaa',
+      'beta_dut — tb_top — basic',
     ])
   })
 

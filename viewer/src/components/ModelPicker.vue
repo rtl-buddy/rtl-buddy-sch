@@ -81,11 +81,12 @@
 // #99 / 6c: when the hub advertises tests via ``GET /tests``, a
 // DUT|TB segmented control appears next to the picker and TB mode
 // swaps the picker contents to the test list. Each option reads
-// ``tb — model — test``: the testbench top first (so same-tb tests
-// cluster), then the model (DUT) — a tb name like ``tb_top`` is reused
-// across many DUTs, so the model is what tells them apart — then the
-// test name. Switching to a test also implicitly switches the model.
-// The toggle is hidden when no tests are available.
+// ``dut — tb_top — test``: the DUT (model) first, so every test for a
+// given design clusters together — a tb name like ``tb_top`` is reused
+// across many DUTs, so grouping by tb alone scatters them — then the
+// testbench top, then the test name. Switching to a test also
+// implicitly switches the model. The toggle is hidden when no tests
+// are available.
 import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
 
@@ -100,19 +101,20 @@ const showAny = computed(
 // the file back to the hub to disambiguate.
 const testKey = (t) => `${t.tests_file || ''}::${t.name}`
 
-// Option label: ``tb — model — test`` (see header comment), with
+// Option label: ``dut — tb_top — test`` (see header comment), with
 // graceful fallbacks for entries missing a field.
 const testLabel = (t) =>
-  [t.tb, t.model, t.name].filter((s) => s != null && s !== '').join('  —  ')
+  [t.model, t.tb, t.name].filter((s) => s != null && s !== '').join('  —  ')
 
-// TB-mode picker order matches the label: tb, then model (DUT), then
-// test name — so tests cluster by testbench and then by DUT instead of
-// scattering by generic test names. Sort a copy; never mutate the store.
+// TB-mode picker order matches the label: model (DUT) first, then the
+// testbench top, then the test name — so every test for a design
+// clusters together instead of scattering by a reused tb name. Sort a
+// copy; never mutate the store.
 const sortedTests = computed(() =>
   [...store.availableTests].sort(
     (a, b) =>
-      (a.tb || '').localeCompare(b.tb || '') ||
       (a.model || '').localeCompare(b.model || '') ||
+      (a.tb || '').localeCompare(b.tb || '') ||
       (a.name || '').localeCompare(b.name || ''),
   ),
 )
