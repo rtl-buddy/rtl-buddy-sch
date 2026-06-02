@@ -6,14 +6,18 @@ Schema is owned by the profiler; this module is the consumer side
 and validates the version field on load so an incompatible producer
 fails loudly instead of silently misrendering.
 
-Phase 11 first slice:
+What this module does:
 
-- Load + structurally validate the v1.0 schema.
-- Build an in-memory ``AxiPerfMap`` keyed by ``(master_path, slave_path)``
-  with hierarchical child support.
-- Renderer integration (per-edge ``overlays.axi_perf`` in view.json
-  and ASCII annotations in the tree renderer) lands in a follow-up
-  PR once this loader is reviewed.
+- Load + structurally validate the v1.x schema.
+- Build an in-memory ``AxiPerfMap`` with two lookup indices — by
+  ``(master_path, slave_path)`` edge and by interface-instance path
+  (the #114 tb-top join) — with hierarchical child support.
+
+Renderers consume the map directly: ``json_render`` emits per-node /
+per-edge ``overlays.axi_perf`` plus a top-level ``axi_perf`` block,
+and the viewer's AXI tab renders from it. (The original #60 plan for
+per-edge styling + tree-mode ASCII annotations was superseded by the
+dedicated AXI tab in #69 — see ``docs/axi-perf-overlay.md``.)
 """
 
 from __future__ import annotations

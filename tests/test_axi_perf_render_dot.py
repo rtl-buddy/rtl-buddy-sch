@@ -2,11 +2,12 @@
 
 The DOT topology is parent → child by hierarchy. AXI bundles connect
 siblings (e.g. CPU and DRAM at the same hierarchy level) that DOT
-doesn't currently emit as explicit edges. Wiring per-edge bundle
-styling into DOT requires synthesizing sibling edges — tracked as a
-follow-up to #60.
+doesn't emit as explicit edges. The design pivoted away from per-edge
+styling (#69): AXI perf is surfaced in the viewer's AXI tab and in
+json_render, not on the DOT graph, so DOT intentionally leaves edges
+unstyled and accepts the map only for CLI uniformity.
 
-For now we just confirm:
+We confirm that contract holds:
 - The kwarg flows through `render(axi_perf_map=...)` without crash.
 - The DOT output is identical with or without a map (no surprise
   style changes).
@@ -137,6 +138,6 @@ def test_dot_accepts_axi_perf_map_kwarg(tmp_path: Path) -> None:
     sink_with_map = io.StringIO()
     dot_render.render(root, sink_with_map, axi_perf_map=axi)
 
-    # Until DOT sibling-edge synthesis lands (follow-up to #60), the
-    # axi-perf map is accepted but doesn't change DOT output.
+    # By design (#69 pivot to the AXI tab), the DOT renderer accepts
+    # the axi-perf map but never styles edges with it.
     assert sink_no_map.getvalue() == sink_with_map.getvalue()
