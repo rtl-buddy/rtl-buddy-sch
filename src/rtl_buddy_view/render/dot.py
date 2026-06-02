@@ -132,11 +132,12 @@ def render(
     active_reset_map = reset_map if reset_map is not None else None
     # DOT's edges are parent→child by hierarchy; AXI bundles
     # connect siblings (CPU↔DRAM at the same level) that DOT
-    # doesn't emit as explicit edges. Wiring the per-edge bundle
-    # styling into DOT requires a sibling-edge synthesis step;
-    # tracked as a follow-up to #60. For now the parameter is
-    # accepted so the CLI plumbing stays uniform with json_render.
-    del axi_perf_map  # see comment above
+    # doesn't emit as explicit edges. The design pivoted away from
+    # per-edge styling (#69) — AXI perf is surfaced in the viewer's
+    # AXI tab and in json_render, not on the DOT graph — so DOT
+    # intentionally leaves edges unstyled. The parameter is accepted
+    # only to keep the CLI plumbing uniform with json_render.
+    del axi_perf_map  # intentionally unused — see comment above
     out.write("digraph hierarchy {\n")
     # Left-to-right: input ports on the left rank, output ports on
     # the right rank.
@@ -1087,8 +1088,6 @@ def _emit_edges(
     domain_map: DomainMap | None = None,
     *,
     reset_map: ResetDomainMap | None = None,
-    axi_perf_map: AxiPerfMap | None = None,
-    parent_path: str | None = None,
 ) -> None:
     for child in node.children:
         attr_parts: list[str] = []
@@ -1125,25 +1124,11 @@ def _emit_edges(
             attr_parts.append(f'color="{_RDC_COLOR}"')
             attr_parts.append('style="dashed"')
             attr_parts.append(f'fontcolor="{_RDC_COLOR}"')
-        # AXI traffic: penwidth scales with throughput so a denser
-        # connection visually pops without colliding with CDC/RDC
-        # colors. Bundle name is appended to the label so the user
-        # can correlate to the JSON view.json.
-        if axi_perf_map is not None:
-            source_path = parent_path or node.instance_path
-            bundle = axi_perf_map.bundle_at_edge(source_path, child.instance_path)
-            if bundle is not None:
-                bps = bundle.throughput.read_bps + bundle.throughput.write_bps
-                pw = _axi_penwidth(bps)
-                attr_parts.append(f"penwidth={pw}")
-                # Append the bundle name to the label so the user
-                # can correlate with the json output.
-                if label:
-                    attr_parts[attr_parts.index(f'label="{label}"')] = (
-                        f'label="{label}\\nAXI {bundle.name}"'
-                    )
-                else:
-                    attr_parts.append(f'label="AXI {bundle.name}"')
+        # AXI bundles are intentionally NOT styled here: perf is
+        # surfaced in the viewer's AXI tab and in json_render, not on
+        # the DOT graph (the #69 pivot away from per-edge styling).
+        # ``render`` ``del``s its ``axi_perf_map`` and never forwards
+        # it to this function — see the note at the top of ``render``.
         attrs = f" [{', '.join(attr_parts)}]" if attr_parts else ""
         out.write(f'  "{node.instance_path}" -> "{child.instance_path}"{attrs};\n')
         _emit_edges(
@@ -1151,19 +1136,7 @@ def _emit_edges(
             out,
             domain_map,
             reset_map=reset_map,
-            axi_perf_map=axi_perf_map,
-            parent_path=node.instance_path,
         )
-
-
-def _axi_penwidth(bps: float) -> str:
-    """Map total throughput to a stroke penwidth in [1.0, 4.0]."""
-    if bps <= 0:
-        return "1.0"
-    import math
-
-    pw = 1.0 + min(3.0, max(0.0, math.log10(bps) - 5))
-    return f"{pw:.2f}"
 
 
 def _format_rdc_summary(child: HierNode, reset_map: ResetDomainMap | None) -> str:
