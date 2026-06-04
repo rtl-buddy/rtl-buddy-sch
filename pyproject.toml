@@ -1,6 +1,6 @@
 [project]
 name = "rtl-buddy-view"
-version = "0.2.0"
+dynamic = ["version"]
 description = "RTL hierarchy and connectivity visualization tool. Pluggable Verible (source CST) or slang (elaborated) frontend; renders Graphviz / ASCII / Mermaid / JSON; integrates with rtl-buddy."
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -31,8 +31,26 @@ slang = [
 rtl-buddy-view = "rtl_buddy_view:main"
 
 [build-system]
-requires = ["uv_build>=0.11.7,<0.12.0"]
-build-backend = "uv_build"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+# Version is derived from the git tag at build time (no static string in
+# this file), matching rtl_buddy. A release is cut by the label-driven
+# Release workflow, which computes + pushes the vX.Y.Z tag and builds
+# from it. The JSON renderer reads the result via
+# importlib.metadata.version("rtl-buddy-view") at runtime.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rtl_buddy_view"]
+# The compiled Vue SPA staged by scripts/prebuild_viewer.py lives at
+# src/rtl_buddy_view/_viewer_bundle/ and is VCS-ignored (.gitignore).
+# hatchling drops VCS-ignored files by default, so name the bundle as a
+# build artifact to force it into the wheel — without this the hub would
+# 404 on a missing SPA. The Wheel CI guard asserts index.html + a JS
+# asset are present.
+artifacts = ["src/rtl_buddy_view/_viewer_bundle/**"]
 
 [dependency-groups]
 lint = [
