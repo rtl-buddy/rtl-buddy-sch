@@ -1,6 +1,6 @@
 [project]
 name = "rtl-buddy-view"
-version = "0.2.0"
+version = "0.2.1"
 description = "RTL hierarchy and connectivity visualization tool. Pluggable Verible (source CST) or slang (elaborated) frontend; renders Graphviz / ASCII / Mermaid / JSON; integrates with rtl-buddy."
 readme = "README.md"
 license = "BSD-3-Clause"
