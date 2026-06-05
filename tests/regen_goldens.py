@@ -51,6 +51,16 @@ def _normalize_paths(text: str) -> str:
         "rtlbuddy://open?file=tests/fixtures/",
         text,
     )
+    # tool.version is derived from the git tag at build time (hatch-vcs),
+    # so it differs between an editable dev checkout and a tagged release
+    # build. Normalise it so the golden pins content, not the build's
+    # version string. Must stay in sync with the helper in
+    # tests/test_reset_overlay.py.
+    text = re.sub(
+        r'("name":\s*"rtl-buddy-view",\s*"version":\s*)"[^"]*"',
+        r'\1"<version>"',
+        text,
+    )
     return text
 
 

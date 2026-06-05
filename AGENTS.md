@@ -280,10 +280,16 @@ loader and `tests/fixtures/domain_maps/` in the same change set.
   release branch. Stacked PRs are fine — rebase the stack onto
   `origin/main` after each base merge to drop the cherry-picked
   commit (don't try to merge through the stack).
-- Versioning: bump `pyproject.toml` `[project].version` when cutting
-  a release. The JSON renderer reads it at runtime via
-  `importlib.metadata.version("rtl-buddy-view")`, so a single bump
-  flows through to the `tool.version` JSON field.
+- Versioning: **derived from the git tag** by `hatch-vcs` at build
+  time — there is no `[project].version` in `pyproject.toml`. Cut a
+  release the same way rtl_buddy does: merge a PR carrying a
+  `version/{patch,minor,major}` label and `.github/workflows/release.yml`
+  computes the next semver, tags it, creates a GitHub Release, and
+  builds + publishes the wheel to PyPI via Trusted Publishing. An
+  unlabeled merged PR cuts no release; `workflow_dispatch` is the manual
+  fallback. The JSON renderer reads the resulting version at runtime via
+  `importlib.metadata.version("rtl-buddy-view")`, so it flows through to
+  the `tool.version` JSON field with no manual edit.
 - **No CHANGELOG.** Release notes live on the GitHub Releases page
   (and in PR descriptions). A `CHANGELOG.md` was deliberately not
   introduced — it serializes every merge through one file and
