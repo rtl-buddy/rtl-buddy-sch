@@ -69,8 +69,32 @@ class OutputFormat(str, Enum):
     json = "json"
 
 
+def _version_callback(value: bool) -> None:
+    """Print ``rtl-buddy-view <X.Y.Z>`` and exit, for ``--version``.
+
+    Eager so it fires before the required-option validation in
+    ``main()``. Downstream consumers (rtl_buddy's tool_manifest)
+    probe this to enforce a version floor, so the format is a
+    contract: the literal ``rtl-buddy-view`` followed by the
+    importlib.metadata version string.
+    """
+    if not value:
+        return
+    from importlib.metadata import version as _v
+
+    typer.echo(f"rtl-buddy-view {_v('rtl-buddy-view')}")
+    raise typer.Exit(code=0)
+
+
 @app.callback(invoke_without_command=True)
 def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Print the rtl-buddy-view version and exit.",
+    ),
     top: str = typer.Option(
         None,
         "--top",

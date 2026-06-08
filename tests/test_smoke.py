@@ -12,6 +12,7 @@ implementation — see issue #1.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -50,6 +51,27 @@ def test_cli_help_exits_zero() -> None:
         )
     assert result.returncode == 0, result.stderr
     assert "rtl-buddy-view" in result.stdout.lower() or "top" in result.stdout.lower()
+
+
+def test_version_flag_prints_parseable_version() -> None:
+    """``--version`` is the contract rtl_buddy probes to enforce a floor.
+
+    Output is ``rtl-buddy-view <version>``, where the version is whatever
+    hatch-vcs stamps: a clean ``X.Y.Z`` on a tagged release, or a
+    ``X.Y[.Z].devN+g<sha>`` on an untagged/shallow CI build. Downstream
+    consumers extract the leading release component with
+    ``r"rtl-buddy-view\\s+(\\d+\\.\\d+(?:\\.\\d+)?)"`` (tolerates the dev
+    suffix). Keep this test in lockstep with that regex.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "rtl_buddy_view", "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    match = re.search(r"rtl-buddy-view\s+(\d+\.\d+(?:\.\d+)?)", result.stdout)
+    assert match is not None, f"unexpected --version output: {result.stdout!r}"
 
 
 def test_slang_frontend_stub_signals_clearly(tmp_path: Path) -> None:
