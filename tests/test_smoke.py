@@ -56,9 +56,12 @@ def test_cli_help_exits_zero() -> None:
 def test_version_flag_prints_parseable_version() -> None:
     """``--version`` is the contract rtl_buddy probes to enforce a floor.
 
-    The output is ``rtl-buddy-view <X.Y.Z>``; downstream consumers
-    extract the version with ``r"rtl-buddy-view\\s+(\\d+\\.\\d+\\.\\d+)"``.
-    Keep this test in lockstep with that regex.
+    Output is ``rtl-buddy-view <version>``, where the version is whatever
+    hatch-vcs stamps: a clean ``X.Y.Z`` on a tagged release, or a
+    ``X.Y[.Z].devN+g<sha>`` on an untagged/shallow CI build. Downstream
+    consumers extract the leading release component with
+    ``r"rtl-buddy-view\\s+(\\d+\\.\\d+(?:\\.\\d+)?)"`` (tolerates the dev
+    suffix). Keep this test in lockstep with that regex.
     """
     result = subprocess.run(
         [sys.executable, "-m", "rtl_buddy_view", "--version"],
@@ -67,7 +70,7 @@ def test_version_flag_prints_parseable_version() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    match = re.search(r"rtl-buddy-view\s+(\d+\.\d+\.\d+)", result.stdout)
+    match = re.search(r"rtl-buddy-view\s+(\d+\.\d+(?:\.\d+)?)", result.stdout)
     assert match is not None, f"unexpected --version output: {result.stdout!r}"
 
 

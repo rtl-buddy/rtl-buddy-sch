@@ -352,7 +352,7 @@ $ rtl-buddy-view --version
 rtl-buddy-view 0.2.1
 ```
 
-Consumers extract the version with `r"rtl-buddy-view\s+(\d+\.\d+\.\d+)"`; the same string is available in-process as `rtl_buddy_view.__version__`.
+Consumers extract the version with `r"rtl-buddy-view\s+(\d+\.\d+(?:\.\d+)?)"` (the optional third component + the trailing `.devN+g<sha>` tolerate untagged/shallow builds); the same string is available in-process as `rtl_buddy_view.__version__`.
 
 ## Roadmap
 
