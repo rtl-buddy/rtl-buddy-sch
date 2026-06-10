@@ -113,6 +113,36 @@ def test_both_flags_render_tb_root_and_record_dut_top() -> None:
     assert dut_anchors == ["tb_top.u_dut"]
 
 
+# --- auto-detect: a --tb-top hint that isn't a real module ------------------
+
+
+def test_tb_top_hint_not_a_module_auto_detects() -> None:
+    """When ``--tb-top`` names something that isn't a module in the
+    design (the common case: the testbench *config* name differs from
+    the actual top module), the renderer recovers the real TB top from
+    the elaborated design — the root containing the DUT — instead of
+    erroring. Models the hub passing a best-effort testbench name."""
+    result = _run(
+        "--top",
+        "dut",
+        "--tb-top",
+        "tb_apb",  # not a module here; real TB top is ``tb_top``
+        "--filelist",
+        str(FIXTURE_DIR / "files.f"),
+        "--format",
+        "json",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "auto-detected 'tb_top'" in result.stderr
+    payload = json.loads(result.stdout)
+    # Rendered + recorded as the real TB top, DUT still recorded.
+    assert payload["top"] == "tb_top"
+    assert payload["tb_top"] == "tb_top"
+    assert payload["dut_top"] == "dut"
+    dut_anchors = [n["id"] for n in payload["nodes"] if n["module"] == "dut"]
+    assert dut_anchors == ["tb_top.u_dut"]
+
+
 # --- negative: neither flag set --------------------------------------------
 
 

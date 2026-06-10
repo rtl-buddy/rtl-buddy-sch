@@ -6,14 +6,18 @@ Schema is owned by the profiler; this module is the consumer side
 and validates the version field on load so an incompatible producer
 fails loudly instead of silently misrendering.
 
-Phase 11 first slice:
+What this module does:
 
-- Load + structurally validate the v1.0 schema.
-- Build an in-memory ``AxiPerfMap`` keyed by ``(master_path, slave_path)``
-  with hierarchical child support.
-- Renderer integration (per-edge ``overlays.axi_perf`` in view.json
-  and ASCII annotations in the tree renderer) lands in a follow-up
-  PR once this loader is reviewed.
+- Load + structurally validate the v1.x schema.
+- Build an in-memory ``AxiPerfMap`` with two lookup indices — by
+  ``(master_path, slave_path)`` edge and by interface-instance path
+  (the #114 tb-top join) — with hierarchical child support.
+
+Renderers consume the map directly: ``json_render`` emits per-node /
+per-edge ``overlays.axi_perf`` plus a top-level ``axi_perf`` block,
+and the viewer's AXI tab renders from it. (The original #60 plan for
+per-edge styling + tree-mode ASCII annotations was superseded by the
+dedicated AXI tab in #69 — see ``docs/axi-perf-overlay.md``.)
 """
 
 from __future__ import annotations
@@ -93,6 +97,17 @@ class Bundle:
     aw_to_b: LatencyStats
     errors: Errors
     children: tuple["Bundle", ...] = ()
+    # Interface-connection identity (v1.x additive — populated by the
+    # producer's verible-interface detector). When set, the bundle is a
+    # true SV interface instance and the view can attach it to the
+    # matching interface-port pin (the "tb-top mechanism") instead of
+    # the brittle (master_path, slave_path) edge match. All optional so
+    # legacy regex-detected bundles (which omit them) keep working.
+    interface_instance: str | None = None
+    master_port: str | None = None
+    slave_port: str | None = None
+    master_modport: str | None = None
+    slave_modport: str | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +144,13 @@ class AxiPerfMap:
     _bundles_by_edge: dict[tuple[str, str], Bundle] = field(
         default_factory=dict, compare=False, repr=False
     )
+    # Parallel lookup keyed by the dotted interface-instance path
+    # (e.g. ``tb_axi_fifo_simple.slv``). Populated only for bundles that
+    # carry ``interface_instance``; lets the renderer attach a bundle to
+    # the interface-port pin on its endpoint without re-deriving paths.
+    _bundles_by_interface_instance: dict[str, Bundle] = field(
+        default_factory=dict, compare=False, repr=False
+    )
 
     @property
     def is_empty(self) -> bool:
@@ -140,11 +162,28 @@ class AxiPerfMap:
         """Return the bundle whose master/slave paths match, or None."""
         return self._bundles_by_edge.get((master_path, slave_path))
 
+    def bundle_at_interface_instance(self, interface_instance: str) -> Bundle | None:
+        """Return the bundle bound to the given interface-instance path,
+        or None. Only verible-interface bundles populate this index."""
+        return self._bundles_by_interface_instance.get(interface_instance)
+
     def interconnect_at(self, node_path: str) -> Interconnect | None:
         for ic in self.interconnects:
             if ic.node_path == node_path:
                 return ic
         return None
+
+    def iter_bundles(self):
+        """Yield every bundle, flattening one level of ``children``.
+
+        Renderers that attach a bundle to the node named by its
+        ``master_path`` / ``slave_path`` (rather than to an interface
+        pin) iterate this so child sub-bundles of an interconnect are
+        reachable too."""
+        for bundle in self.bundles:
+            yield bundle
+            for child in bundle.children:
+                yield child
 
 
 def load_axi_perf_map(path: Path) -> AxiPerfMap:
@@ -188,8 +227,9 @@ def _parse_payload(payload: dict, *, source_path: Path) -> AxiPerfMap:
     )
 
     edge_index: dict[tuple[str, str], Bundle] = {}
+    iface_index: dict[str, Bundle] = {}
     for bundle in bundles:
-        _index_bundle(bundle, edge_index)
+        _index_bundle(bundle, edge_index, iface_index)
 
     return AxiPerfMap(
         schema_version=version,
@@ -202,6 +242,7 @@ def _parse_payload(payload: dict, *, source_path: Path) -> AxiPerfMap:
         bundles=bundles,
         interconnects=interconnects,
         _bundles_by_edge=edge_index,
+        _bundles_by_interface_instance=iface_index,
     )
 
 
@@ -238,6 +279,11 @@ def _parse_bundle(raw: dict, source_path: Path) -> Bundle:
             decerr=_require_int(errors_raw, "decerr", source_path),
         ),
         children=children,
+        interface_instance=_opt_str(raw, "interface_instance"),
+        master_port=_opt_str(raw, "master_port"),
+        slave_port=_opt_str(raw, "slave_port"),
+        master_modport=_opt_str(raw, "master_modport"),
+        slave_modport=_opt_str(raw, "slave_modport"),
     )
 
 
@@ -299,7 +345,11 @@ def _parse_interconnect(raw: dict, source_path: Path) -> Interconnect:
     )
 
 
-def _index_bundle(bundle: Bundle, index: dict[tuple[str, str], Bundle]) -> None:
+def _index_bundle(
+    bundle: Bundle,
+    index: dict[tuple[str, str], Bundle],
+    iface_index: dict[str, Bundle],
+) -> None:
     key = (bundle.master_path, bundle.slave_path)
     if key in index:
         # Duplicate (master, slave) at the same hierarchy level — keep
@@ -309,8 +359,19 @@ def _index_bundle(bundle: Bundle, index: dict[tuple[str, str], Bundle]) -> None:
         pass
     else:
         index[key] = bundle
+    # First-wins on the interface-instance key too, mirroring the edge
+    # index — two bundles claiming the same interface instance is a
+    # producer bug; the renderer paints the first deterministically.
+    if bundle.interface_instance and bundle.interface_instance not in iface_index:
+        iface_index[bundle.interface_instance] = bundle
     for child in bundle.children:
-        _index_bundle(child, index)
+        _index_bundle(child, index, iface_index)
+
+
+def _opt_str(payload: dict, key: str) -> str | None:
+    """Read an optional string field; None when absent or not a string."""
+    value = payload.get(key)
+    return value if isinstance(value, str) else None
 
 
 def _require_str(payload: dict, key: str, source_path: Path) -> str:

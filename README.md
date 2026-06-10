@@ -318,6 +318,7 @@ rtl-buddy-view [OPTIONS]
 --clock-legend          Dot-format only: emit a side legend mapping
                         clocks → palette colors. Requires a clock
                         overlay.
+--version               Print `rtl-buddy-view <X.Y.Z>` and exit.
 ```
 
 ### `view.json` v1 (`--format json`)
@@ -376,6 +377,31 @@ The cache directory is a **shared resource** across any rtl-buddy tool that impo
 If only the legacy `<xdg-cache>/rtl-buddy-view/cst/` directory exists on disk, it is read as a one-time fallback with a `DeprecationWarning`. New writes always go to the new path.
 
 `RTL_BUDDY_NO_CACHE=1` disables caching entirely (useful for CI and Verible-overhead measurement); `RTL_BUDDY_VIEW_NO_CACHE` is honoured as a deprecated alias.
+
+## Versioning & compatibility
+
+Two contracts are versioned independently:
+
+- **The `view.json` payload** is versioned by its `schema_version` field (`schemas/view-v1.json`). `1.x` is backward-compatible: minor bumps only *add* fields, never rename or retype existing ones, so any `1.x` consumer can rely on field presence + type per the schema.
+- **The Python API** in [Public API](#public-api) is treated as stable and follows SemVer once the package reaches `1.0`.
+
+While `rtl-buddy-view` is pre-`1.0`, downstream consumers (rtl_buddy, the axi-profiler, xeno) should **pin a floor and guard at runtime rather than cap the upper bound**:
+
+```toml
+# good — floor only, no speculative upper cap
+rtl-buddy-view >= 0.2.1
+```
+
+`0.2.1` is the first PyPI release that clears the `0.2.0` filelist `IsADirectoryError` and ships the compiled SPA. An upper cap like `< 0.3.0` would be a *guess* at where a break lands; pin the known-good floor instead and let the consumer enforce it at runtime by probing `rtl-buddy-view --version` (or `importlib.metadata.version("rtl-buddy-view")`) and raising a clear upgrade error when it sees something older than its floor. Once this package cuts `1.0`, the SemVer-safe range becomes the conventional `>=1,<2`.
+
+The CLI exposes the probe directly:
+
+```console
+$ rtl-buddy-view --version
+rtl-buddy-view 0.2.1
+```
+
+Consumers extract the version with `r"rtl-buddy-view\s+(\d+\.\d+(?:\.\d+)?)"` (the optional third component + the trailing `.devN+g<sha>` tolerate untagged/shallow builds); the same string is available in-process as `rtl_buddy_view.__version__`.
 
 ## Roadmap
 

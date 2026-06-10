@@ -339,10 +339,14 @@ function applySelectionHighlight(selectedId) {
     el.setAttribute('data-rb-selected', 'true')
     if (first === null) first = el
   }
-  // Pan + zoom on selection so the user (or a hub-driven peer) can
-  // actually see where the focus moved — without this, the highlight
-  // sits offscreen when the node isn't already in view.
-  if (first !== null) zoomToElement(first)
+  // Bring the selection into view WITHOUT changing zoom, and only when
+  // it's actually off-screen. Selecting a node must not rescale the
+  // canvas — clicking a large block (e.g. the DUT) used to zoom out to
+  // "fit" it, which reads as a disorienting jump. A node already in
+  // view (the common case for a local click) leaves the viewport
+  // untouched; an off-screen selection (e.g. a hub-driven peer) is
+  // recentred at the current zoom.
+  if (first !== null) bringSelectionIntoView(first)
 }
 
 // Block-flow edges carry a stable ``id="bf-edge:<src>:<srcPort>:
@@ -416,15 +420,15 @@ watch(
   },
 )
 
-// Pan + zoom so the element fills roughly 30% of the viewport.
-// Distinct from ``panToElement`` (used by port-cell clicks) which
-// deliberately preserves the current zoom; on a fresh "fit to
-// window" scale a typical sub-module is too small to read, so for
-// selection we want zoom-in as well. ``applySelectionHighlight``
-// invokes us alongside marking the data-rb-selected attribute, so
-// both local clicks and inbound hub ``selection_changed`` events
-// produce the same visible reaction.
-function zoomToElement(el) {
+// Recentre the selected element WITHOUT changing zoom, and only when
+// its centre is currently off-screen. Selecting a node must never
+// rescale the canvas: clicking a large block (e.g. the DUT) used to
+// zoom out to "fit" it, which read as a disorienting jump. An
+// already-visible selection (the common local-click case) is left
+// untouched; an off-screen one (e.g. a hub-driven ``selection_changed``
+// peer) is panned into view at the current zoom. Port-cell clicks use
+// ``panToElement`` directly (also zoom-preserving).
+function bringSelectionIntoView(el) {
   if (!el || !_svgEl || !svgHostEl.value) return
   let bb
   try {
@@ -434,22 +438,13 @@ function zoomToElement(el) {
   }
   if (!bb || !bb.width || !bb.height) return
   const rect = svgHostEl.value.getBoundingClientRect()
-  // Want the element to occupy ~1 / MARGIN_FACTOR of the viewport on
-  // its limiting axis — i.e. ~30% with a 3.3× margin. Lots of context
-  // around the selected node, not "fill the screen".
-  const MARGIN_FACTOR = 3.3
-  const fitW = rect.width / (bb.width * MARGIN_FACTOR)
-  const fitH = rect.height / (bb.height * MARGIN_FACTOR)
-  // Clamp: lower bound so the top-level cluster doesn't zoom out
-  // below a useful overview; upper bound so a tiny leaf node doesn't
-  // jump to an aggressive close-up.
-  const scale = Math.max(0.4, Math.min(1.5, Math.min(fitW, fitH)))
-  transform.value = {
-    scale,
-    x: rect.width / 2 - (bb.x + bb.width / 2) * scale,
-    y: rect.height / 2 - (bb.y + bb.height / 2) * scale,
-  }
-  applyTransform()
+  const { scale, x, y } = transform.value
+  const cx = (bb.x + bb.width / 2) * scale + x
+  const cy = (bb.y + bb.height / 2) * scale + y
+  // Centre already within the viewport → leave the view as-is.
+  if (cx >= 0 && cx <= rect.width && cy >= 0 && cy <= rect.height) return
+  // Off-screen → recentre at the current zoom (no rescale).
+  panToElement(el)
 }
 
 // ---------------------------------------------------------------
@@ -665,6 +660,18 @@ function onClick(e) {
   // ``HREF`` on the HTML-table cell makes viz.js wrap the cell in
   // an ``<a>`` with a relative href — without preventDefault the
   // browser would try to navigate to ``bf-in:...``.
+  // AXI aggregate badge → jump to the AXI Performance tab. The badge
+  // (painted by the axi-perf overlay) carries ``data-axi-open=<nodeId>``
+  // and re-enables pointer events, so it intercepts the click before
+  // node selection. Also select the node so context carries over.
+  const axiBadge = e.target.closest('[data-axi-open]')
+  if (axiBadge) {
+    e.preventDefault()
+    const nodeId = axiBadge.getAttribute('data-axi-open')
+    if (nodeId) store.select(nodeId)
+    store.setActiveTab('axi-perf')
+    return
+  }
   const bfHit = blockFlowHitFromEvent(e)
   // Reset any previous port-edge highlight on every click so it
   // doesn't accumulate as the user clicks around.

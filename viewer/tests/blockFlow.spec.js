@@ -117,6 +117,41 @@ describe('buildBlockFlowDot', () => {
     expect(dot).toContain('bf-ctr:top.u_a')
   })
 
+  it('re-groups flattened interface_signal ports into one ▶▶ interface pin cell', () => {
+    // When the interface body is in scope the producer flattens a
+    // bundle into per-signal interface_signal ports (``m.req`` ...).
+    // Block-flow must still draw ONE interface pin so the axi-perf
+    // overlay (and the reader) sees the bundle, not loose signals.
+    const graph = {
+      schema_version: '1.0',
+      top: 'top',
+      overlays_present: [],
+      nodes: [
+        { id: 'top', module: 'top', instance_name: 'top', is_blackbox: false, ports: [] },
+        {
+          id: 'top.dut',
+          module: 'mem_dut',
+          instance_name: 'dut',
+          is_blackbox: false,
+          ports: [
+            { name: 'm.req', dir: 'input', expr: 'u_if.sub', port_kind: 'interface_signal', interface_type: 'test_mem_if', modport: 'sub' },
+            { name: 'm.addr', dir: 'input', expr: 'u_if.sub', port_kind: 'interface_signal', interface_type: 'test_mem_if', modport: 'sub' },
+          ],
+        },
+        { id: 'top.u_if', module: 'test_mem_if', instance_name: 'u_if', is_blackbox: true, ports: [] },
+      ],
+      edges: [
+        { from: 'top', to: 'top.dut', port_pairs: [] },
+        { from: 'top', to: 'top.u_if', port_pairs: [] },
+      ],
+    }
+    const dot = buildBlockFlowDot(graph, 'top')
+    // One grouped interface pin, not per-signal cells.
+    expect(dot).toContain('bf-iface:top.dut:m')
+    expect(dot).not.toContain('bf-iface:top.dut:m.req')
+    expect(dot).not.toContain('bf-in:top.dut:m.req')
+  })
+
   it('falls back to a placeholder when scope id is unknown', () => {
     const dot = buildBlockFlowDot(makeGraph(), 'top.no_such_node')
     expect(dot).toMatch(/not in graph/)

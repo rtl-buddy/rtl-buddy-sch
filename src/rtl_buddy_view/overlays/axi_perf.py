@@ -5,12 +5,17 @@ Loads an ``axi-perf.json`` artifact produced by
 into an :class:`AxiPerfMap`, registered on the Phase 4 plugin
 protocol so the CLI can dispatch via ``--overlay axi-perf=path``.
 
-This first slice lands the load + protocol registration. Renderer
-integration (per-edge ``overlays.axi_perf`` in view.json, ASCII
-edge annotations in tree mode, ``DOT`` edge styling for backpressure
-heatmap) lands in follow-up PRs to #60 — those touch the renderer
-chain and require a small amendment to the overlay framework so
-``Overlay.contribute(ctx)`` can write to ``ctx.edges[i]``.
+The shipped design surfaces AXI performance in a dedicated **AXI
+tab** in the viewer (``viewer/src/components/AxiPerfView.vue``), not
+as per-edge styling on the hierarchy. #69 dropped the original
+per-edge stroke/colour plan in favour of that tab, and #114 unified
+the bundle→hierarchy join onto the interface-port / tb-top
+mechanism. Renderers therefore read the :class:`AxiPerfMap` directly
+— ``json_render`` emits per-node / per-edge ``overlays.axi_perf``
+plus a top-level ``axi_perf`` block, and the viewer renders the tab
+from it. ``contribute()`` and ``join()`` are deliberate no-ops: the
+edge-contribution framework amendment once mooted for #60 was never
+needed. See ``docs/axi-perf-overlay.md``.
 """
 
 from __future__ import annotations
@@ -47,8 +52,8 @@ class AxiPerfOverlay:
         return None
 
     def contribute(self, ctx) -> None:
-        # Renderer integration lands in a follow-up to #60 — see the
-        # module docstring. Phase 11's first slice is the loader +
-        # protocol registration; renderer contributions arrive once
-        # the per-edge overlay framework seam is added.
+        # Deliberate no-op. Perf is surfaced by the viewer's AXI tab
+        # and by json_render reading the AxiPerfMap directly (see the
+        # module docstring); the design pivoted away from edge styling
+        # (#69), so there is no edge contribution to make.
         return None

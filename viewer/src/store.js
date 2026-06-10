@@ -124,6 +124,11 @@ export const useViewerStore = defineStore('viewer', {
     graph: null,
     status: 'idle',
     error: null,
+    // Structured context for the failure page: ``{ status, url }`` of
+    // the last failed load (HTTP code + the URL that failed), so the
+    // error view can show actionable reasons. ``null`` outside the
+    // error state.
+    errorMeta: null,
     selection: null,
     // Currently-selected edge as ``{from, to}`` or null. Mutually
     // exclusive with ``selection`` so the sidebar shows one detail
@@ -221,6 +226,13 @@ export const useViewerStore = defineStore('viewer', {
     // implicitly fixes the model as well — but the SPA still records
     // the resolved model name in ``activeModel`` for the picker.
     activeTest: null,
+    // Owning ``tests.yaml`` of the active test. A test name can repeat
+    // across suites (``smoke`` lives in several), so the name alone is
+    // ambiguous — this pins the exact entry for both the ``?test=``
+    // request (sent as ``&tests_file=``) and the picker's selected-option
+    // binding. ``null`` when no test is active or a deep-link gave only a
+    // name.
+    activeTestFile: null,
     // Current view orientation: ``'dut'`` = the rendered tree is
     // rooted at the DUT (today's only behaviour), ``'tb'`` = rooted
     // at the testbench top with the DUT called out as a subtree.
@@ -394,12 +406,16 @@ export const useViewerStore = defineStore('viewer', {
       // by the time the first frame renders.
       const params = new URLSearchParams(window.location.search)
       const testParam = params.get('test')
+      const testsFileParam = params.get('tests_file')
       const modelParam = params.get('model')
       const viewUrl = params.get('view')
       if (testParam) {
         this.loadAvailableModels().catch(() => {})
         this.loadAvailableTests().catch(() => {})
-        await this.switchTest(testParam, { updateUrl: false })
+        await this.switchTest(testParam, {
+          updateUrl: false,
+          testsFile: testsFileParam,
+        })
         return
       }
       if (modelParam) {
@@ -530,21 +546,23 @@ export const useViewerStore = defineStore('viewer', {
      * switch are deduped by comparing against ``activeModel``.
      */
     async switchModel(name, { updateUrl = true } = {}) {
-      if (!name) return
+      if (!name) return false
       const url = `/view.json?model=${encodeURIComponent(name)}`
-      await this.loadFromUrl(url)
+      const ok = await this.loadFromUrl(url)
       // Only flip activeModel + URL after the load actually succeeded
       // — a 400/500 leaves us pointed at the previous model so the
       // next view_changed echo doesn't get masked.
-      if (this.status === 'ready') {
+      if (ok) {
         this.activeModel = name
         this.activeTest = null
+        this.activeTestFile = null
         this.viewModeTb = false
         if (updateUrl && typeof window !== 'undefined' && window.history) {
           const params = new URLSearchParams(window.location.search)
           params.set('model', name)
           params.delete('view')
           params.delete('test')
+          params.delete('tests_file')
           const newQuery = params.toString()
           const newUrl =
             window.location.pathname +
@@ -556,7 +574,15 @@ export const useViewerStore = defineStore('viewer', {
             /* security-restricted environments — best effort only */
           }
         }
+      } else {
+        // Recovery: clear the active selection so the picker returns to
+        // its placeholder. A native <select> fires no change event when
+        // the chosen option already equals the bound value, so without
+        // this the user would be stranded on the failure page — unable
+        // to re-select the model they were on.
+        this.activeModel = null
       }
+      return ok
     },
 
     /**
@@ -569,15 +595,27 @@ export const useViewerStore = defineStore('viewer', {
      * Dedupes the ``view_changed`` echo via ``activeTest`` so the
      * initiator doesn't re-fetch from its own broadcast.
      */
-    async switchTest(name, { updateUrl = true } = {}) {
-      if (!name) return
-      const url = `/view.json?test=${encodeURIComponent(name)}`
-      await this.loadFromUrl(url)
-      if (this.status === 'ready') {
+    async switchTest(name, { updateUrl = true, testsFile = null } = {}) {
+      if (!name) return false
+      // A test name can repeat across suites, so pass the owning
+      // ``tests_file`` (when known) to disambiguate — the hub resolves
+      // ``?test=NAME`` ambiguously otherwise (400 "matches multiple
+      // tests.yaml files").
+      let url = `/view.json?test=${encodeURIComponent(name)}`
+      if (testsFile) url += `&tests_file=${encodeURIComponent(testsFile)}`
+      const ok = await this.loadFromUrl(url)
+      if (ok) {
         this.activeTest = name
         // The test pins both a model and a TB; surface the resolved
         // model name in the picker so the user sees what's loaded.
-        const entry = this.availableTests.find((t) => t && t.name === name)
+        // Match on tests_file too so duplicate names resolve to the
+        // right entry; fall back to the entry's file when the caller
+        // didn't supply one (e.g. a ``?test=`` deep-link).
+        const entry = this.availableTests.find(
+          (t) =>
+            t && t.name === name && (!testsFile || t.tests_file === testsFile),
+        )
+        this.activeTestFile = testsFile || (entry && entry.tests_file) || null
         if (entry && typeof entry.model === 'string') {
           this.activeModel = entry.model
         }
@@ -585,6 +623,8 @@ export const useViewerStore = defineStore('viewer', {
         if (updateUrl && typeof window !== 'undefined' && window.history) {
           const params = new URLSearchParams(window.location.search)
           params.set('test', name)
+          if (this.activeTestFile) params.set('tests_file', this.activeTestFile)
+          else params.delete('tests_file')
           params.delete('model')
           params.delete('view')
           const newQuery = params.toString()
@@ -598,7 +638,14 @@ export const useViewerStore = defineStore('viewer', {
             /* security-restricted environments — best effort only */
           }
         }
+      } else {
+        // Recovery: clear the active test so the picker drops back to
+        // its placeholder and the user can re-pick any test (including
+        // the one they were on) from the failure page without reloading.
+        this.activeTest = null
+        this.activeTestFile = null
       }
+      return ok
     },
 
     /**
@@ -620,9 +667,19 @@ export const useViewerStore = defineStore('viewer', {
       const mode = typeof payload.view_mode === 'string' ? payload.view_mode : null
       const test = typeof payload.test === 'string' ? payload.test : null
       const model = typeof payload.model === 'string' ? payload.model : null
+      const testsFile =
+        typeof payload.tests_file === 'string' ? payload.tests_file : null
       if (mode === 'tb' && test) {
-        if (test === this.activeTest) return
-        await this.switchTest(test, { updateUrl: true })
+        // Dedupe on (test, tests_file): a duplicate test name in a
+        // different suite is a genuinely different view, so only skip
+        // the re-fetch when both match what's already active.
+        if (
+          test === this.activeTest &&
+          (!testsFile || testsFile === this.activeTestFile)
+        ) {
+          return
+        }
+        await this.switchTest(test, { updateUrl: true, testsFile })
         return
       }
       if (model) {
@@ -640,12 +697,22 @@ export const useViewerStore = defineStore('viewer', {
       try {
         const response = await fetch(url)
         if (!response.ok) {
-          throw new Error(`fetch failed: ${response.status} ${response.statusText}`)
+          // The hub puts the actionable reason in the response body
+          // (e.g. an ambiguous-test or unknown-model message). Prefer
+          // it over the bare status text so the failure page is useful.
+          const body = (await response.text().catch(() => '')).trim()
+          const detail = body || response.statusText || 'request failed'
+          this._fail(detail, { status: response.status, url })
+          return false
         }
         const text = await response.text()
         this.loadFromText(text, url)
+        return this.status === 'ready'
       } catch (e) {
-        this._fail(`Could not load ${url}: ${e.message}`)
+        // Network-level failure (hub down / restarted / CORS). No HTTP
+        // status to report.
+        this._fail(`Could not reach the hub: ${e.message}`, { url })
+        return false
       }
     },
     async loadFromFile(file) {
@@ -673,6 +740,7 @@ export const useViewerStore = defineStore('viewer', {
       this.graph = graph
       this.status = 'ready'
       this.error = null
+      this.errorMeta = null
       this.selection = null
       this.selectedEdge = null
       // Scope state is per-graph. Carrying ``rootInstancePath`` /
@@ -695,9 +763,10 @@ export const useViewerStore = defineStore('viewer', {
       // the user sees the full overlay decoration on first open.
       this.enabledOverlays = new Set(graph.overlays_present)
     },
-    _fail(message) {
+    _fail(message, meta = {}) {
       this.status = 'error'
       this.error = message
+      this.errorMeta = meta
       this.graph = null
     },
     select(id) {

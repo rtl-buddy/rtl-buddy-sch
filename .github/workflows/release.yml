@@ -1,0 +1,278 @@
+name: Release
+
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+    && format('Release ({0}{1}) from {2}', inputs.bump, inputs.pre_release == 'true' && ', pre-release' || '', github.ref_name)
+    || format('Release from PR #{0} ({1})', github.event.pull_request.number, github.head_ref) }}
+
+# Cut a PyPI release of rtl-buddy-view, label-driven like rtl_buddy's
+# release-on-merge workflow.
+#
+# A merged PR carrying a `version/{patch,minor,major}` label computes the
+# next semver, tags it, and creates a GitHub Release; the build job then
+# checks out that tag and the version flows from it via hatch-vcs (no
+# static version in pyproject.toml). A `workflow_dispatch` is the manual
+# escape hatch with the same bump choices.
+#
+# Two deliberate differences from rtl_buddy's workflow:
+#   * No docs job and no GH_PAGES_TOKEN. rtl_buddy needs a PAT so the
+#     pushed tag re-triggers a separate docs-publish workflow; view has
+#     no such downstream workflow (build + publish are jobs in THIS run),
+#     so the default GITHUB_TOKEN with `contents: write` suffices to push
+#     the tag and create the release.
+#   * The build is wheel-only and runs the npm SPA prebuild first. The
+#     wheel embeds the compiled Vue SPA (scripts/prebuild_viewer.py); an
+#     sdist built without npm would ship without it, and pip can't run
+#     npm at install time.
+#
+# Publishing uses PyPI Trusted Publishing (OIDC) -- no API token. Before
+# the first run a maintainer must (see also the PR checklist):
+#   1. Register a PyPI Trusted Publisher (a "pending publisher" until the
+#      project exists on PyPI -- https://docs.pypi.org/trusted-publishers/):
+#        owner: rtl-buddy  repo: rtl-buddy-view
+#        workflow: release.yml  environment: pypi
+#   2. Create the `pypi` GitHub environment on this repo.
+#   3. Create the `version/patch`, `version/minor`, `version/major`
+#      labels -- an unlabeled merged PR is a no-op (no release cut).
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      pre_release:
+        description: 'Mark as pre-release (appends rcN suffix, PEP 440)'
+        required: false
+        type: boolean
+        default: false
+      description:
+        description: 'Release description (optional)'
+        required: false
+        type: string
+
+jobs:
+  release:
+    if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    outputs:
+      new_tag: ${{ steps.version.outputs.new_tag }}
+      latest_tag: ${{ steps.version.outputs.latest_tag }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+
+    steps:
+      - name: Checkout merged commit
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.pull_request.merge_commit_sha }}
+
+      - name: Compute next version
+        id: version
+        run: |
+          LATEST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$LATEST" ]; then
+            LATEST="v0.0.0"
+          fi
+
+          VERSION=${LATEST#v}
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+          IS_PRERELEASE=false
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BUMP_TYPE="${{ inputs.bump }}"
+            if [ "${{ inputs.pre_release }}" = "true" ]; then
+              IS_PRERELEASE=true
+            fi
+          else
+            LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
+            if echo "$LABELS" | grep -qi '"version/major"'; then
+              BUMP_TYPE="major"
+            elif echo "$LABELS" | grep -qi '"version/minor"'; then
+              BUMP_TYPE="minor"
+            elif echo "$LABELS" | grep -qi '"version/patch"'; then
+              BUMP_TYPE="patch"
+            else
+              echo "No version label found, skipping release."
+              echo "new_tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          if [ "$BUMP_TYPE" = "major" ]; then
+            BASE_TAG="v$((MAJOR + 1)).0.0"
+          elif [ "$BUMP_TYPE" = "minor" ]; then
+            BASE_TAG="v${MAJOR}.$((MINOR + 1)).0"
+          else
+            BASE_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            RC_COUNT=$(git tag --list "${BASE_TAG}rc*" | wc -l | tr -d ' ')
+            RC_NUM=$((RC_COUNT + 1))
+            NEW_TAG="${BASE_TAG}rc${RC_NUM}"
+          else
+            NEW_TAG="${BASE_TAG}"
+          fi
+
+          echo "latest_tag=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "new_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "Bumping ${LATEST} -> ${NEW_TAG}"
+
+      - name: Log release parameters
+        run: |
+          echo "Version : ${{ steps.version.outputs.new_tag || '(none — no version label on PR)' }}"
+          echo "Branch  : ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.head_ref }}"
+          echo "Trigger : ${{ github.event_name }}"
+
+      - name: Create and push tag
+        if: steps.version.outputs.new_tag != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          TAG="${{ steps.version.outputs.new_tag }}"
+          if git tag -l "$TAG" | grep -q "$TAG"; then
+            echo "Tag $TAG already exists, skipping tag creation."
+          else
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Create GitHub release
+        if: steps.version.outputs.new_tag != ''
+        uses: actions/github-script@v8
+        env:
+          TAG: ${{ steps.version.outputs.new_tag }}
+          PREV_TAG: ${{ steps.version.outputs.latest_tag }}
+          IS_PRERELEASE: ${{ steps.version.outputs.is_prerelease }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_USER: ${{ github.event.pull_request.user.login }}
+          DESCRIPTION: ${{ inputs.description }}
+          ACTOR: ${{ github.actor }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+        with:
+          script: |
+            const tag = process.env.TAG;
+            const prevTag = process.env.PREV_TAG;
+            const isPrerelease = process.env.IS_PRERELEASE === 'true';
+            let body;
+            if (context.eventName === 'workflow_dispatch') {
+              body = process.env.DESCRIPTION || `Manual release triggered by @${process.env.ACTOR}`;
+            } else {
+              body = `**PR #${process.env.PR_NUMBER}** by @${process.env.PR_USER}: ${process.env.PR_TITLE}`;
+            }
+
+            if (prevTag && prevTag !== 'v0.0.0') {
+              body += `\n\n**Full changelog:** ${process.env.SERVER_URL}/${process.env.REPO}/compare/${prevTag}...${tag}`;
+            }
+
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Release ${tag}`,
+              body,
+              draft: false,
+              prerelease: isPrerelease,
+            });
+
+  build:
+    name: Build wheel
+    needs: release
+    if: needs.release.outputs.new_tag != ''
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # fetch-depth: 0 + the freshly pushed tag is the linchpin:
+          # hatch-vcs derives the version from `git describe`, so a
+          # shallow checkout or a missing tag would stamp the wheel as a
+          # .devN+g<sha> version instead of the clean release version.
+          fetch-depth: 0
+          ref: ${{ needs.release.outputs.new_tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: viewer/package-lock.json
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Build SPA bundle
+        # Canonical pre-build step: npm ci && npm run build in viewer/,
+        # then stage the bundle into src/rtl_buddy_view/_viewer_bundle/.
+        run: uv run python scripts/prebuild_viewer.py
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - name: Verify bundle is in the wheel
+        # Same guard wheel.yml uses: never publish a wheel that the hub
+        # would then 404 on for a missing SPA.
+        run: |
+          wheel=$(ls dist/rtl_buddy_view-*.whl)
+          echo "Built: $wheel"
+          if ! unzip -l "$wheel" | grep -q 'rtl_buddy_view/_viewer_bundle/index.html'; then
+            echo "::error::wheel is missing _viewer_bundle/index.html"
+            unzip -l "$wheel"
+            exit 1
+          fi
+          if ! unzip -l "$wheel" | grep -q 'rtl_buddy_view/_viewer_bundle/assets/.*\.js$'; then
+            echo "::error::wheel ships index.html but no JS bundle"
+            unzip -l "$wheel"
+            exit 1
+          fi
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: dist
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rtl-buddy-view
+    permissions:
+      id-token: write # OIDC token for trusted publishing
+
+    steps:
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

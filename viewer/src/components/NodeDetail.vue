@@ -95,7 +95,35 @@
           >Open in Coverview ↗</a>
         </dd>
       </template>
-      <template v-for="(payload, name) in genericOverlays" :key="name">
+      <template v-if="axiPins.length || axiInterconnect">
+        <dt>AXI performance</dt>
+        <dd>
+          <table class="axi-table" v-if="axiPins.length">
+            <thead>
+              <tr><th>bundle</th><th>role</th><th>throughput</th><th>bp</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in axiPins" :key="p.port">
+                <td>
+                  <code>{{ p.port }}</code>
+                  <span v-if="p.errors" class="axi-err" :title="p.errors + ' AXI error response(s)'">⚠</span>
+                </td>
+                <td><span class="axi-role" :data-role="p.role">{{ p.role || '—' }}</span></td>
+                <td class="axi-tput" :title="'peer: ' + (p.peer || '—')">
+                  <span class="rd">R {{ p.rd }}</span> <span class="wr">W {{ p.wr }}</span>
+                </td>
+                <td :class="bpClass(p.bp)">{{ p.bp.toFixed(0) }}%</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="axiInterconnect" class="axi-ic">
+            interconnect — read {{ fmtBps(axiInterconnect.total_read_bps) }}, write
+            {{ fmtBps(axiInterconnect.total_write_bps) }}; hottest master
+            <code>{{ axiInterconnect.hottest_master }}</code>
+          </div>
+        </dd>
+      </template>
+      <template v-for="(payload, name) in otherOverlays" :key="name">
         <dt>overlay: {{ name }}</dt>
         <dd><pre>{{ JSON.stringify(payload, null, 2) }}</pre></dd>
       </template>
@@ -128,8 +156,8 @@ const hasParameters = computed(
 )
 // Coverage gets a dedicated section (progress bars + Coverview deep
 // link) instead of the raw-JSON fallback the generic loop renders;
-// everything else stays on the generic path so unknown / future
-// overlays remain inspectable.
+// everything without a dedicated section stays on the generic path
+// so unknown / future overlays remain inspectable.
 const coverage = computed(
   () => (node.value && node.value.overlays && node.value.overlays.coverage) || null,
 )
@@ -154,12 +182,63 @@ const coverageRows = computed(() => {
   }
   return rows
 })
-const genericOverlays = computed(() => {
-  if (!node.value || !node.value.overlays) return {}
+
+// --- axi-perf: render the overlay human-readably instead of raw JSON.
+function fmtBps(v) {
+  if (!v || v <= 0) return '0'
+  if (v >= 1e9) return (v / 1e9).toFixed(1) + 'G'
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M'
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k'
+  return String(Math.round(v))
+}
+function axiMaxBp(block) {
+  const ch = block && block.channels
+  if (!ch) return 0
+  let best = 0
+  for (const r of ['ar', 'aw', 'r', 'w', 'b']) {
+    const c = ch[r]
+    if (c && typeof c.bp_pct === 'number' && c.bp_pct > best) best = c.bp_pct
+  }
+  return best
+}
+function bpClass(bp) {
+  if (bp > 15) return 'bp-hi'
+  if (bp > 5) return 'bp-mid'
+  return 'bp-lo'
+}
+// Initiator (master) first, then target (slave), then by name —
+// matching the AXI Performance tab's ordering.
+const axiPins = computed(() => {
+  const ov = node.value?.overlays?.['axi-perf']
+  const pins = ov && Array.isArray(ov.bundle_pins) ? ov.bundle_pins : []
+  const rank = (r) => (r === 'master' ? 0 : r === 'slave' ? 1 : 2)
+  return pins
+    .map((p) => {
+      const b = p.bundle || {}
+      const t = b.throughput || {}
+      const e = b.errors || {}
+      return {
+        port: p.port,
+        role: p.role,
+        peer: p.peer,
+        rd: fmtBps(t.read_bps),
+        wr: fmtBps(t.write_bps),
+        bp: axiMaxBp(b),
+        errors: (e.slverr || 0) + (e.decerr || 0),
+      }
+    })
+    .sort((a, b) => rank(a.role) - rank(b.role) || a.port.localeCompare(b.port))
+})
+const axiInterconnect = computed(
+  () => node.value?.overlays?.['axi-perf']?.interconnect || null,
+)
+// Every overlay WITHOUT a dedicated section above (axi-perf,
+// coverage) falls back to the raw-JSON renderer.
+const otherOverlays = computed(() => {
+  const ov = node.value?.overlays || {}
   const out = {}
-  for (const [name, payload] of Object.entries(node.value.overlays)) {
-    if (name === 'coverage') continue
-    out[name] = payload
+  for (const k of Object.keys(ov)) {
+    if (k !== 'axi-perf' && k !== 'coverage') out[k] = ov[k]
   }
   return out
 })
@@ -399,5 +478,44 @@ function openInEditor() {
   font-size: 0.85em;
   padding: 0 0.3em;
   border-radius: 3px;
+}
+.axi-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+.axi-table th {
+  text-align: left;
+  font-weight: 600;
+  color: #64748b;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0 0.4em 0.1em 0;
+}
+.axi-table td {
+  padding: 0.1em 0.4em 0.1em 0;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.axi-err { color: #dc2626; margin-left: 0.25em; }
+.axi-role {
+  font-size: 0.7rem;
+  padding: 0 0.35em;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.axi-role[data-role='master'] { background: #dbeafe; color: #1e40af; }  /* blue — initiator */
+.axi-role[data-role='slave'] { background: #ede9fe; color: #5b21b6; }   /* violet — target */
+.axi-tput .rd { color: #0369a1; }
+.axi-tput .wr { color: #9a3412; margin-left: 0.4em; }
+.bp-lo { color: #16a34a; }
+.bp-mid { color: #f59e0b; }
+.bp-hi { color: #dc2626; font-weight: 600; }
+.axi-ic {
+  margin-top: 0.3em;
+  font-size: 0.75rem;
+  color: #475569;
 }
 </style>

@@ -196,7 +196,12 @@ def _build_payload(
             "metric": coverage_metric,
         }
     if axi_perf_source is not None:
-        payload["axi_perf"] = _axi_perf_source_block(axi_perf_source)
+        block = _axi_perf_source_block(axi_perf_source)
+        # Carry the clock period so the SPA can compute each bundle's
+        # theoretical max throughput (data_width × clock frequency).
+        if axi_perf_map is not None and axi_perf_map.clock_period_ns:
+            block["clock_period_ns"] = axi_perf_map.clock_period_ns
+        payload["axi_perf"] = block
     if embed_layout:
         payload["layout"] = _layout_block(
             node,
@@ -681,13 +686,23 @@ def _format_sv_literal(value: str) -> str:
 
 
 def _axi_perf_node_contribution(node: HierNode, axi_perf_map: AxiPerfMap) -> dict:
-    """Surface the interconnect roll-up when ``node`` is one of the
-    producer's named interconnect nodes."""
+    """The ``axi-perf`` overlay's per-node contribution.
+
+    Two independent slices, either of which may be present:
+
+    * ``interconnect`` — the producer's roll-up when ``node`` is one of
+      the named interconnect nodes.
+    * ``bundle_pins`` — one entry per interface port on this node that a
+      verible-interface bundle binds to. This is the "tb-top mechanism"
+      attach point: the SPA decorates the existing interface-port pin
+      with the bundle's perf stats instead of drawing a parallel
+      (master, slave) edge. Empty for regex-detected bundles (which
+      carry no ``interface_instance``).
+    """
+    out: dict = {}
     ic = axi_perf_map.interconnect_at(node.instance_path)
-    if ic is None:
-        return {}
-    return {
-        "interconnect": {
+    if ic is not None:
+        out["interconnect"] = {
             "total_read_bps": ic.total_read_bps,
             "total_write_bps": ic.total_write_bps,
             "hottest_master": ic.hottest_master,
@@ -697,7 +712,155 @@ def _axi_perf_node_contribution(node: HierNode, axi_perf_map: AxiPerfMap) -> dic
                 "starved_masters": list(ic.arbitration.starved_masters),
             },
         }
-    }
+    pins = _axi_perf_bundle_pins(node, axi_perf_map)
+    if pins:
+        out["bundle_pins"] = pins
+    return out
+
+
+# Modport-name → endpoint-role mapping. AXI_BUS uses Master/Slave;
+# AMBA-5 style uses Manager/Subordinate; some IPs abbreviate. Anything
+# unrecognised yields role=None (the pin still renders, just without a
+# resolved peer endpoint).
+_SLAVE_MODPORTS = frozenset({"slave", "subordinate", "sub", "sbd", "s"})
+_MASTER_MODPORTS = frozenset({"master", "manager", "mgr", "mst", "m"})
+
+
+def _role_for_modport(modport: str | None) -> str | None:
+    if modport is None:
+        return None
+    m = modport.lower()
+    if m in _SLAVE_MODPORTS:
+        return "slave"
+    if m in _MASTER_MODPORTS:
+        return "master"
+    return None
+
+
+def _interface_instance_for_port(
+    node: HierNode, port: Port, expr_by_name: dict[str, PortConnection]
+) -> str | None:
+    """Resolve the dotted interface-instance path an interface port binds.
+
+    The interface instance lives in the *parent* scope; the DUT's
+    interface port carries ``expr`` like ``"slv.Slave"``, so the
+    instance's local name is ``expr.split('.')[0]`` and its absolute
+    path is the parent prefix of this node plus that name — e.g. for
+    node ``tb_axi_fifo_simple.i_dut`` binding ``slv.Slave`` the bundle
+    lives on ``tb_axi_fifo_simple.slv``. Returns None when the port has
+    no parent-side binding to derive the instance from.
+    """
+    conn = expr_by_name.get(port.name)
+    if conn is None or not conn.net_expr_text:
+        return None
+    local = conn.net_expr_text.split(".", 1)[0].strip()
+    if not local:
+        return None
+    parent_prefix = (
+        node.instance_path.rsplit(".", 1)[0] if "." in node.instance_path else ""
+    )
+    return f"{parent_prefix}.{local}" if parent_prefix else local
+
+
+def _is_ancestor_scope(ancestor: str, descendant: str) -> bool:
+    """True when ``ancestor`` is ``descendant`` or one of its parent
+    scopes (``a`` == ``b`` or ``b`` starts with ``a.``)."""
+    return descendant == ancestor or descendant.startswith(f"{ancestor}.")
+
+
+def _axi_perf_bundle_pins(node: HierNode, axi_perf_map: AxiPerfMap) -> list[dict]:
+    """The AXI bundle pins that decorate ``node``.
+
+    Two resolution passes, both keyed so a bundle attaches to the node
+    that actually *owns* its AXI ports:
+
+    1. **Interface pins** — for each ``port_kind == "interface"`` port on
+       the node, resolve its interface-instance path and match a
+       verible-interface bundle. The pin anchors to the parsed interface
+       port (the "tb-top mechanism").
+    2. **Manifest-described pins (synthesized)** — for any other bundle
+       whose ``master_path`` / ``slave_path`` names this node, synthesize
+       a pin from the manifest. This is the escape hatch for designs
+       whose AXI ports the CST can't see (macro-generated flat ports):
+       the ``axi-bundles.yaml`` *describes* the ports, so the bundle is
+       drawn from that description instead of a parsed port. The pin
+       attaches to the endpoint node that is **not** an ancestor scope of
+       the other endpoint, so a bundle between a procedural-TB scope and
+       its DUT lands on the DUT (the real port owner), with the scope as
+       the boundary ``peer``.
+
+    Each pin carries ``role`` (master/slave), ``peer`` (the other
+    endpoint), and ``synthetic`` so the SPA knows whether to anchor on a
+    real interface cell or draw a synthesized bundle pin.
+    """
+    pins: list[dict] = []
+    seen: set[str] = set()
+
+    # Pass 1 — real interface ports.
+    if node.module is not None and node.module.ports:
+        expr_by_name = _expr_by_port(node)
+        for port in node.module.ports:
+            if port.port_kind != "interface":
+                continue
+            iface_inst = _interface_instance_for_port(node, port, expr_by_name)
+            if iface_inst is None:
+                continue
+            bundle = axi_perf_map.bundle_at_interface_instance(iface_inst)
+            if bundle is None:
+                continue
+            role = _role_for_modport(port.modport)
+            peer: str | None = None
+            if role == "slave":
+                peer = bundle.master_path or None
+            elif role == "master":
+                peer = bundle.slave_path or None
+            pins.append(
+                {
+                    "port": port.name,
+                    "modport": port.modport,
+                    "interface_instance": iface_inst,
+                    "role": role,
+                    "peer": peer,
+                    "synthetic": False,
+                    "bundle": _axi_perf_bundle_block(bundle),
+                }
+            )
+            seen.add(bundle.name)
+
+    # Pass 2 — manifest-described (synthesized) pins by endpoint path.
+    path = node.instance_path
+    for bundle in axi_perf_map.iter_bundles():
+        if bundle.name in seen:
+            continue
+        role = None
+        peer = None
+        modport = None
+        if path == bundle.slave_path and not _is_ancestor_scope(
+            path, bundle.master_path
+        ):
+            role, peer, modport = "slave", bundle.master_path, bundle.slave_modport
+        elif path == bundle.master_path and not _is_ancestor_scope(
+            path, bundle.slave_path
+        ):
+            role, peer, modport = "master", bundle.slave_path, bundle.master_modport
+        else:
+            continue
+        seen.add(bundle.name)
+        pins.append(
+            {
+                "port": bundle.name,
+                "modport": modport,
+                "interface_instance": bundle.interface_instance or None,
+                "role": role,
+                "peer": peer or None,
+                "synthetic": True,
+                "bundle": _axi_perf_bundle_block(bundle),
+            }
+        )
+
+    # Deterministic order: alphabetical by the pin's port/bundle name.
+    pins.sort(key=lambda p: p["port"])
+    return pins
 
 
 def _clock_node_contribution(node: HierNode, domain_map: DomainMap) -> dict:
