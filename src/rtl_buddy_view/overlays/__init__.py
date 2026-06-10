@@ -270,6 +270,7 @@ def default_registry(*, warn_stream: IO[str] | None = None) -> OverlayRegistry:
     from rtl_buddy_view.overlays.axi_perf import AxiPerfOverlay
     from rtl_buddy_view.overlays.clock import ClockOverlay
     from rtl_buddy_view.overlays.clock_tb import ClockTbOverlay
+    from rtl_buddy_view.overlays.coverage import CoverageOverlay
     from rtl_buddy_view.overlays.reset import ResetOverlay
     from rtl_buddy_view.overlays.wave import WaveOverlay
 
@@ -279,6 +280,7 @@ def default_registry(*, warn_stream: IO[str] | None = None) -> OverlayRegistry:
     registry.register(AxiPerfOverlay())
     registry.register(WaveOverlay())
     registry.register(ClockTbOverlay())
+    registry.register(CoverageOverlay())
 
     for instance, source in _discover_external_overlays(stream):
         if instance.name in registry.names():

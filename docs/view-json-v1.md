@@ -270,7 +270,19 @@ A flavour:
 "clock":  { "clock": "core_clk", "group": "g0" }
 "reset":  { "reset": "rst_n", "polarity": "low",
             "synchroniser": false }
+"coverage": { "lines":    { "covered": 124, "total": 138, "pct": 89.9 },
+              "branches": { "covered": 22,  "total": 30,  "pct": 73.3 },
+              "toggles":  { "covered": 78,  "total": 96,  "pct": 81.3 },
+              "coverview_link": "http://localhost:5173/#/file/blk/fifo.sv?line=42" }
 ```
+
+The `coverage` block (Phase 6, #20) is joined by the defining
+module's source range, so all instances of one module share a
+rollup; channels with no LCOV units in range are omitted, and a
+node with no data at all carries no block. The companion
+`overlay_meta.coverage` envelope block records `source`,
+`url_base`, and the `metric` channel the viewer's heatmap tint
+should use.
 
 Third-party overlays own their own per-node and per-edge key
 shapes — keep them stable across `schema_version` minors.

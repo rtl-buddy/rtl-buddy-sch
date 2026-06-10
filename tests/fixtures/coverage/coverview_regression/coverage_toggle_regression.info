@@ -1,0 +1,14 @@
+TN:regression
+SF:tests/fixtures/counter_with_subs/counter.sv
+DA:7,2
+DA:8,0
+DA:9,4
+LF:3
+LH:2
+end_of_record
+SF:tests/fixtures/counter_with_subs/counter_ff.sv
+DA:3,0
+DA:4,2
+LF:2
+LH:1
+end_of_record

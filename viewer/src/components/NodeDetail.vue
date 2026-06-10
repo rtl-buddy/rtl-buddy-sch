@@ -72,7 +72,30 @@
           </table>
         </dd>
       </template>
-      <template v-for="(payload, name) in node.overlays" :key="name">
+      <template v-if="coverage">
+        <dt>Coverage</dt>
+        <dd class="coverage-block">
+          <div v-for="row in coverageRows" :key="row.label" class="cov-row">
+            <span class="cov-label">{{ row.label }}</span>
+            <span class="cov-bar" :title="`${row.covered}/${row.total}`">
+              <span
+                class="cov-bar-fill"
+                :style="{ width: row.pct + '%', background: row.color }"
+              ></span>
+            </span>
+            <span class="cov-nums">{{ row.covered }}/{{ row.total }} ({{ row.pct }}%)</span>
+          </div>
+          <a
+            v-if="coverage.coverview_link"
+            class="coverview-link"
+            :href="coverage.coverview_link"
+            target="_blank"
+            rel="noopener"
+            title="Open this module's source file in Coverview"
+          >Open in Coverview ↗</a>
+        </dd>
+      </template>
+      <template v-for="(payload, name) in genericOverlays" :key="name">
         <dt>overlay: {{ name }}</dt>
         <dd><pre>{{ JSON.stringify(payload, null, 2) }}</pre></dd>
       </template>
@@ -94,6 +117,7 @@
 import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
 import { useHub } from '../composables/useHub.js'
+import { heatColor } from '../overlays/coverage.js'
 
 const store = useViewerStore()
 const hub = useHub()
@@ -102,6 +126,43 @@ const pathSegments = computed(() => (node.value?.id || '').split('.'))
 const hasParameters = computed(
   () => node.value && node.value.parameters && Object.keys(node.value.parameters).length > 0,
 )
+// Coverage gets a dedicated section (progress bars + Coverview deep
+// link) instead of the raw-JSON fallback the generic loop renders;
+// everything else stays on the generic path so unknown / future
+// overlays remain inspectable.
+const coverage = computed(
+  () => (node.value && node.value.overlays && node.value.overlays.coverage) || null,
+)
+const COVERAGE_CHANNELS = [
+  ['lines', 'lines'],
+  ['branches', 'branches'],
+  ['toggles', 'toggles'],
+]
+const coverageRows = computed(() => {
+  if (!coverage.value) return []
+  const rows = []
+  for (const [key, label] of COVERAGE_CHANNELS) {
+    const ch = coverage.value[key]
+    if (!ch || typeof ch.pct !== 'number') continue
+    rows.push({
+      label,
+      covered: ch.covered,
+      total: ch.total,
+      pct: ch.pct,
+      color: heatColor(ch.pct),
+    })
+  }
+  return rows
+})
+const genericOverlays = computed(() => {
+  if (!node.value || !node.value.overlays) return {}
+  const out = {}
+  for (const [name, payload] of Object.entries(node.value.overlays)) {
+    if (name === 'coverage') continue
+    out[name] = payload
+  }
+  return out
+})
 // Group ports by direction so the panel reads like a port list in
 // an SV declaration — inputs first, then outputs, then inout /
 // other. Interface bundles (``port_kind === 'interface'``) have no
@@ -276,6 +337,41 @@ function openInEditor() {
   color: #64748b;
 }
 .blackbox { color: #b45309; }
+.coverage-block { font-size: 0.78rem; }
+.cov-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.15rem 0;
+}
+.cov-label {
+  width: 4.5rem;
+  color: #475569;
+}
+.cov-bar {
+  flex: 1;
+  height: 0.55rem;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+  overflow: hidden;
+  display: inline-block;
+}
+.cov-bar-fill {
+  display: block;
+  height: 100%;
+}
+.cov-nums {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.coverview-link {
+  display: inline-block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: #2563eb;
+}
 .ports-table {
   width: 100%;
   border-collapse: collapse;

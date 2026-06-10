@@ -174,6 +174,7 @@ def test_no_externals_no_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
         "axi-perf",
         "clock",
         "clock-tb",
+        "coverage",
         "reset",
         "wave",
     )

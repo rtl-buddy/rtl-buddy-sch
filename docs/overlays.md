@@ -36,7 +36,7 @@ your class.
 ## 2. Minimal example
 
 ```python
-# my_overlay_pkg/coverage_overlay.py
+# my_overlay_pkg/phys_overlay.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -44,25 +44,25 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
-class CoverageMap:
+class AreaMap:
     schema_version: str
-    per_instance: dict[str, float]  # instance_path -> hit ratio
+    per_instance: dict[str, float]  # instance_path -> area (um^2)
 
 
-class CoverageOverlay:
-    name = "coverage"
+class PhysOverlay:
+    name = "phys"
     schema_version = "1.0"
 
-    def load(self, path: Path) -> CoverageMap:
+    def load(self, path: Path) -> AreaMap:
         import json
         data = json.loads(path.read_text())
-        return CoverageMap(
+        return AreaMap(
             schema_version=data["schema_version"],
             per_instance=data["per_instance"],
         )
 
     def join(self, graph, annotation) -> None:
-        # No-op for now; renderers read CoverageMap directly.
+        # No-op for now; renderers read AreaMap directly.
         return None
 
     def contribute(self, ctx) -> None:
@@ -74,14 +74,15 @@ Once registered (§3), users invoke it with:
 
 ```
 rtl-buddy-view --top top --filelist files.f \
-    --overlay coverage=path/to/coverage.json
+    --overlay phys=path/to/area.json
 ```
 
 And see it in `--list-overlays`:
 
 ```
 clock     1.0    (built-in)
-coverage  1.0    (my-overlay-pkg)
+coverage  1.0    (built-in)
+phys      1.0    (my-overlay-pkg)
 reset     1.0    (built-in)
 ```
 
@@ -97,7 +98,7 @@ version = "0.1.0"
 dependencies = ["rtl-buddy-view>=0.1"]
 
 [project.entry-points."rtl_buddy_view.overlays"]
-coverage = "my_overlay_pkg.coverage_overlay:CoverageOverlay"
+phys = "my_overlay_pkg.phys_overlay:PhysOverlay"
 ```
 
 The entry-point value resolves to a no-arg callable — almost always
@@ -131,12 +132,13 @@ user-facing identifier (`--overlay name=path`), the key under
 
 Pick something that describes the *domain*, not the *analysis*.
 The built-ins are `clock` and `reset` (the domains the user
-thinks in), not `cdc` and `rdc` (the crossing analyses). For
-coverage, prefer `coverage` over `cov` or `lcov`.
+thinks in), not `cdc` and `rdc` (the crossing analyses); the
+Phase-6 built-in is `coverage`, not `cov` or `lcov`.
 
 Collisions with a built-in name are detected at registry build
 time and resolved in favour of the built-in, with a stderr
-warning naming your package. Don't use `clock` or `reset`.
+warning naming your package. Don't use a built-in name
+(`clock`, `clock-tb`, `reset`, `coverage`, `wave`, `axi-perf`).
 
 ### `schema_version`
 

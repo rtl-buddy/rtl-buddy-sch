@@ -1,0 +1,11 @@
+TN:merged
+SF:tests/fixtures/counter_with_subs/counter.sv
+DA:10,4
+DA:11,0
+BRDA:10,0,0,3
+BRDA:10,0,1,-
+LF:2
+LH:1
+BRF:2
+BRH:1
+end_of_record
