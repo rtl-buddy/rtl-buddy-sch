@@ -1,0 +1,4 @@
+TN:regression
+SF:tests/fixtures/counter_with_subs/counter.sv
+DA:10,1
+end_of_record

@@ -42,6 +42,7 @@ from urllib.parse import quote
 
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.axi_perf_annotations import AxiPerfMap, Bundle as AxiPerfBundle
+from rtl_buddy_view.coverage_annotations import CoverageMap
 from rtl_buddy_view.extractor import (
     ModuleTable,
     Port,
@@ -65,6 +66,8 @@ def render(
     reset_map: ResetDomainMap | None = None,
     axi_perf_map: AxiPerfMap | None = None,
     wave_map: WaveMap | None = None,
+    coverage_map: CoverageMap | None = None,
+    coverage_metric: str = "lines",
     axi_perf_source: Path | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
@@ -73,6 +76,12 @@ def render(
     tb_top: str | None = None,
 ) -> None:
     """Render ``node`` and its subtree as ``view.json`` v1.
+
+    ``coverage_map`` (Phase 6 — #20) contributes per-node
+    ``overlays.coverage`` rollups joined by the defining module's
+    source range, plus an ``overlay_meta.coverage`` block carrying
+    the source path, Coverview URL base, and the ``--coverage-metric``
+    channel the viewer should drive its heatmap tint from.
 
     ``embed_layout`` (default True) bakes the same DOT string the
     ``--format dot`` renderer would emit into a top-level ``layout``
@@ -109,6 +118,8 @@ def render(
         reset_map,
         axi_perf_map,
         wave_map,
+        coverage_map=coverage_map,
+        coverage_metric=coverage_metric,
         axi_perf_source=axi_perf_source,
         with_legend=with_legend,
         embed_layout=embed_layout,
@@ -127,6 +138,8 @@ def _build_payload(
     axi_perf_map: AxiPerfMap | None,
     wave_map: WaveMap | None = None,
     *,
+    coverage_map: CoverageMap | None = None,
+    coverage_metric: str = "lines",
     axi_perf_source: Path | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
@@ -136,7 +149,15 @@ def _build_payload(
 ) -> dict:
     nodes = sorted(
         (
-            _node_dict(n, domain_map, reset_map, axi_perf_map, wave_map, module_table)
+            _node_dict(
+                n,
+                domain_map,
+                reset_map,
+                axi_perf_map,
+                wave_map,
+                module_table,
+                coverage_map=coverage_map,
+            )
             for n in _walk(node)
         ),
         key=lambda d: d["id"],
@@ -145,7 +166,9 @@ def _build_payload(
         _walk_edges(node, domain_map, reset_map, axi_perf_map),
         key=lambda d: (d["from"], d["to"]),
     )
-    overlays_present = _overlays_present(domain_map, reset_map, axi_perf_map, wave_map)
+    overlays_present = _overlays_present(
+        domain_map, reset_map, axi_perf_map, wave_map, coverage_map
+    )
     payload: dict = {
         "schema_version": SCHEMA_VERSION,
         "top": node.module_name,
@@ -165,6 +188,12 @@ def _build_payload(
         payload.setdefault("overlay_meta", {})["wave"] = {
             "t_fs": str(wave_map.t_fs),
             "source_file": wave_map.source_file,
+        }
+    if coverage_map is not None and not coverage_map.is_empty:
+        payload.setdefault("overlay_meta", {})["coverage"] = {
+            "source": coverage_map.source,
+            "url_base": coverage_map.url_base,
+            "metric": coverage_metric,
         }
     if axi_perf_source is not None:
         block = _axi_perf_source_block(axi_perf_source)
@@ -271,6 +300,7 @@ def _overlays_present(
     reset_map: ResetDomainMap | None,
     axi_perf_map: AxiPerfMap | None,
     wave_map: WaveMap | None = None,
+    coverage_map: CoverageMap | None = None,
 ) -> list[str]:
     """Sorted list of overlay names whose payloads contributed to this view.
 
@@ -300,6 +330,8 @@ def _overlays_present(
         present.append("axi-perf")
     if wave_map is not None and not wave_map.is_empty:
         present.append("wave")
+    if coverage_map is not None and not coverage_map.is_empty:
+        present.append("coverage")
     return sorted(present)
 
 
@@ -323,6 +355,8 @@ def _node_dict(
     axi_perf_map: AxiPerfMap | None,
     wave_map: WaveMap | None = None,
     module_table: ModuleTable | None = None,
+    *,
+    coverage_map: CoverageMap | None = None,
 ) -> dict:
     """One ``view.json`` v1 node entry.
 
@@ -340,7 +374,14 @@ def _node_dict(
         "ports": _ports_for_node(node, module_table),
         "source": _source_block(node),
         "link": _link_for(node),
-        "overlays": _node_overlays(node, domain_map, reset_map, axi_perf_map, wave_map),
+        "overlays": _node_overlays(
+            node,
+            domain_map,
+            reset_map,
+            axi_perf_map,
+            wave_map,
+            coverage_map=coverage_map,
+        ),
     }
     return out
 
@@ -530,6 +571,8 @@ def _node_overlays(
     reset_map: ResetDomainMap | None,
     axi_perf_map: AxiPerfMap | None,
     wave_map: WaveMap | None = None,
+    *,
+    coverage_map: CoverageMap | None = None,
 ) -> dict:
     """Per-overlay contributions for ``node``.
 
@@ -559,7 +602,34 @@ def _node_overlays(
         wave_block = _wave_node_contribution(node, wave_map)
         if wave_block:
             overlays["wave"] = wave_block
+    if coverage_map is not None and not coverage_map.is_empty:
+        coverage_block = _coverage_node_contribution(node, coverage_map)
+        if coverage_block:
+            overlays["coverage"] = coverage_block
     return overlays
+
+
+def _coverage_node_contribution(
+    node: HierNode, coverage_map: CoverageMap
+) -> dict | None:
+    """Per-node coverage rollup, joined by the *defining module's*
+    source range — not the instance anchor.
+
+    ``node.source`` points at the instantiation site in the parent's
+    file, which is the right anchor for "jump to this instance" but
+    the wrong one for coverage: LCOV records live in the module
+    body's own file. ``node.module.location`` spans exactly that
+    body, so every DA/BRDA unit inside lands in this node's bucket.
+    Consequence worth naming: all instances of one module share a
+    rollup, because merged LCOV has no per-instance resolution.
+
+    Blackboxes (no module) and modules without a recorded location
+    contribute nothing — the viewer renders those gray.
+    """
+    if node.module is None or node.module.location is None:
+        return None
+    loc = node.module.location
+    return coverage_map.rollup(loc.file, loc.start_line, loc.end_line)
 
 
 def _wave_node_contribution(node: HierNode, wave_map: WaveMap) -> dict:

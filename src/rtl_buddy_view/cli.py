@@ -38,6 +38,11 @@ from rtl_buddy_view.annotations import (
     AnnotationsError,
     DomainMap,
 )
+from rtl_buddy_view.coverage_annotations import (
+    DEFAULT_URL_BASE as COVERAGE_DEFAULT_URL_BASE,
+    CoverageAnnotationsError,
+    CoverageMap,
+)
 from rtl_buddy_view.extractor import ModuleTable
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.frontend.verible import VeribleParseError, VeribleUnavailable
@@ -67,6 +72,14 @@ class OutputFormat(str, Enum):
     dot = "dot"
     mermaid = "mermaid"
     json = "json"
+
+
+class CoverageMetric(str, Enum):
+    """Which coverage channel drives the viewer's heatmap tint."""
+
+    lines = "lines"
+    branches = "branches"
+    toggles = "toggles"
 
 
 def _version_callback(value: bool) -> None:
@@ -178,6 +191,22 @@ def main(
         "JSON from `rtl-buddy-cdc --emit-reset-domain-map`.",
         hidden=True,
     ),
+    coverage_metric: CoverageMetric = typer.Option(
+        CoverageMetric.lines,
+        "--coverage-metric",
+        case_sensitive=False,
+        help="Coverage overlay only: which channel (lines, branches, "
+        "toggles) drives the heatmap tint. Recorded in "
+        "view.json::overlay_meta.coverage.metric for the web viewer. "
+        "No effect without --overlay coverage=PATH.",
+    ),
+    coverage_url_base: str = typer.Option(
+        COVERAGE_DEFAULT_URL_BASE,
+        "--coverage-url-base",
+        help="Coverage overlay only: Coverview server base URL used "
+        "to build per-node deep links (default: the Coverview dev "
+        "server address).",
+    ),
     clock_legend: bool = typer.Option(
         False,
         "--clock-legend",
@@ -222,6 +251,7 @@ def main(
             ResetAnnotationsError,
             AxiPerfAnnotationsError,
             WaveAnnotationsError,
+            CoverageAnnotationsError,
         ) as e:
             # Loader exceptions carry the overlay's own prefix in
             # their message; we just qualify with the overlay name
@@ -276,6 +306,13 @@ def main(
     reset_map: ResetDomainMap | None = annotations.get("reset")  # type: ignore[assignment]
     axi_perf_map: AxiPerfMap | None = annotations.get("axi-perf")  # type: ignore[assignment]
     wave_map: WaveMap | None = annotations.get("wave")  # type: ignore[assignment]
+    coverage_map: CoverageMap | None = annotations.get("coverage")  # type: ignore[assignment]
+
+    # The overlay protocol's load(path) has no channel for CLI knobs,
+    # so the Coverview URL base is assigned post-load. Deep links in
+    # view.json and the overlay_meta block both read it from the map.
+    if coverage_map is not None:
+        coverage_map.url_base = coverage_url_base
 
     # Phase 6e (#99): TB-context clock + reset map. When a
     # ``tb_clock_map.json`` is loaded via ``--overlay clock-tb=…``,
@@ -336,6 +373,8 @@ def main(
             tb_top,
             axi_perf_source=axi_perf_source,
             module_table=table,
+            coverage_map=coverage_map,
+            coverage_metric=coverage_metric.value,
         )
     else:
         with output_path.open("w") as sink:
@@ -352,6 +391,8 @@ def main(
                 tb_top,
                 axi_perf_source=axi_perf_source,
                 module_table=table,
+                coverage_map=coverage_map,
+                coverage_metric=coverage_metric.value,
             )
 
 
@@ -445,7 +486,12 @@ def _render(
     *,
     axi_perf_source: Path | None = None,
     module_table: ModuleTable | None = None,
+    coverage_map: CoverageMap | None = None,
+    coverage_metric: str = "lines",
 ) -> None:
+    # The coverage overlay contributes to view.json only (the web
+    # viewer paints the heatmap); tree/dot/mermaid output is
+    # byte-identical with or without it.
     if fmt is OutputFormat.tree:
         tree_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
     elif fmt is OutputFormat.dot:
@@ -468,6 +514,8 @@ def _render(
             reset_map=reset_map,
             axi_perf_map=axi_perf_map,
             wave_map=wave_map,
+            coverage_map=coverage_map,
+            coverage_metric=coverage_metric,
             axi_perf_source=axi_perf_source,
             with_legend=clock_legend,
             module_table=module_table,

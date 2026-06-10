@@ -11,12 +11,14 @@
 
 import { axiPerfOverlay } from './axi_perf.js'
 import { clockOverlay } from './clock.js'
+import { coverageOverlay } from './coverage.js'
 import { resetOverlay } from './reset.js'
 import { waveOverlay } from './wave.js'
 
 const BUILTINS = {
   'axi-perf': axiPerfOverlay,
   clock: clockOverlay,
+  coverage: coverageOverlay,
   reset: resetOverlay,
   wave: waveOverlay,
 }

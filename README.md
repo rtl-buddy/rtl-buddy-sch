@@ -244,6 +244,82 @@ on the label. The other warning still surfaces — nothing is hidden.
 Without `--rdc-annotations`, no reset decoration is emitted; the
 output is byte-identical to the clock-only / un-annotated case.
 
+### Coverage overlay (consuming `--overlay coverage=…`)
+
+When rtl_buddy's Verilator coverage flow has produced LCOV data
+(`rb -M cov regression --coverage-merge --coverage-coverview`), the
+`coverage` overlay rolls it up per module and ships the result in
+`view.json` for the web viewer, which tints each node red→green by
+covered percentage (gray = no data) and shows per-node progress bars
+for lines / branches / toggles plus a [Coverview](https://github.com/rtl-buddy/coverview)
+deep link. The path argument accepts any of the three shapes that
+flow leaves on disk:
+
+```bash
+# a Coverview-typed directory (coverage_line_*.info, coverage_branch_*.info, ...)
+uv run rtl-buddy-view \
+    --top counter \
+    --filelist tests/fixtures/counter_with_subs/files.f \
+    --overlay coverage=tests/fixtures/coverage/coverview_regression \
+    --format json --output view.json
+
+# ... or the packed archive            --overlay coverage=coverview_regression.zip
+# ... or a single combined LCOV file   --overlay coverage=cov_dir/coverage_merged.info
+```
+
+Each node whose defining module has LCOV data in range gets an
+`overlays.coverage` block:
+
+```json
+{
+  "lines":    {"covered": 1, "total": 2, "pct": 50.0},
+  "branches": {"covered": 1, "total": 2, "pct": 50.0},
+  "toggles":  {"covered": 2, "total": 3, "pct": 66.7},
+  "coverview_link": "http://localhost:5173/#/verif%2Fblk%2Fcounter.sv?L=5"
+}
+```
+
+The join is by **source range, not instance path** — LCOV knows
+files and lines, never elaborated instances — so all instances of a
+module share one rollup. Channels without data are omitted; modules
+with no LCOV data at all carry no block and render gray. Two knobs:
+`--coverage-metric lines|branches|toggles` selects which channel
+drives the viewer's heatmap tint (default `lines`), and
+`--coverage-url-base URL` points the deep links at a non-default
+Coverview server.
+
+The overlay contributes to `--format json` only — tree / dot /
+mermaid output stays byte-identical with or without it. Heatmap
+rendering on the desktop formats and coverage diffing against a
+baseline are out of scope for v1 (see #20).
+
+To try the full loop in a browser using only in-tree fixtures:
+
+```bash
+# 1. produce a view.json the dev viewer can fetch
+mkdir -p viewer/public
+uv run rtl-buddy-view --top counter \
+    --filelist tests/fixtures/counter_with_subs/files.f \
+    --overlay coverage=tests/fixtures/coverage/coverview_regression \
+    --coverage-url-base http://localhost:5174/ \
+    --format json --output viewer/public/coverage_demo_view.json
+
+# 2. serve the viewer and open it
+cd viewer && npm install && npm run dev
+# → http://localhost:5173/?view=coverage_demo_view.json
+#   tick "coverage" in the Overlays panel for the heatmap
+```
+
+The hub chip will sit at "connecting…" under plain `npm run dev` —
+that's expected (there's no `rb hub` behind the Vite origin) and
+nothing coverage-related needs it. For the "Open in Coverview ↗"
+deep links to land, run [Coverview](https://github.com/rtl-buddy/coverview)
+at the `--coverage-url-base` address **with the matching archive
+loaded** — either drop the `coverview_regression.zip` into its file
+picker once per tab, or bake the data in the way deployments do
+(`embed.py --inject-data <archive>.zip`, then serve `dist/`), which
+makes cold deep links resolve with no interaction.
+
 ## CLI
 
 ```

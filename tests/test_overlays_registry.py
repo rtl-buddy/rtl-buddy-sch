@@ -41,6 +41,7 @@ def test_default_registry_has_clock_and_reset() -> None:
         "axi-perf",
         "clock",
         "clock-tb",
+        "coverage",
         "reset",
         "wave",
     )
@@ -58,7 +59,7 @@ def test_get_unknown_raises_with_known_list() -> None:
     registry = default_registry()
     with pytest.raises(
         OverlayError,
-        match=r"unknown overlay 'cov'.*\['axi-perf', 'clock', 'clock-tb', 'reset', 'wave'\]",
+        match=r"unknown overlay 'cov'.*\['axi-perf', 'clock', 'clock-tb', 'coverage', 'reset', 'wave'\]",
     ):
         registry.get("cov")
 
@@ -76,7 +77,7 @@ def test_iteration_is_name_sorted() -> None:
     registry = default_registry()
     yielded = [o.name for o in registry]
     assert yielded == sorted(yielded)
-    assert yielded == ["axi-perf", "clock", "clock-tb", "reset", "wave"]
+    assert yielded == ["axi-perf", "clock", "clock-tb", "coverage", "reset", "wave"]
 
 
 # --- protocol structural typing ---------------------------------------------

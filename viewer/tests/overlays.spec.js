@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { getOverlay, overlaySummary, applyOverlays } from '../src/overlays/index.js'
+import { heatColor, tintMetric } from '../src/overlays/coverage.js'
 import { resolvePortValues } from '../src/overlays/wave.js'
 
 describe('overlay registry', () => {
@@ -472,6 +473,78 @@ describe('built-in overlays', () => {
       { waveValuesByKey: {}, selectedSignal: { wave_scope: 'tb.dut', signal: 'other' } },
     )
     expect(group.attrs['data-wave-selected']).toBeUndefined()
+  })
+
+  it('coverage overlay is registered and exposes a heat-ramp legend', () => {
+    const overlay = getOverlay('coverage')
+    expect(overlay).not.toBeNull()
+    expect(overlay.name).toBe('coverage')
+    const legend = overlay.legend({ overlay_meta: { coverage: { metric: 'branches' } } })
+    expect(legend.map((e) => e.label)).toEqual([
+      '0% branches',
+      '50% branches',
+      '100% branches',
+      'no coverage data',
+    ])
+  })
+
+  it('coverage heatColor ramps red→green and clamps out-of-range pct', () => {
+    expect(heatColor(0)).toBe('hsl(0, 70%, 82%)')
+    expect(heatColor(50)).toBe('hsl(60, 70%, 82%)')
+    expect(heatColor(100)).toBe('hsl(120, 70%, 82%)')
+    expect(heatColor(-5)).toBe(heatColor(0))
+    expect(heatColor(140)).toBe(heatColor(100))
+  })
+
+  it('tintMetric defaults to lines and honours overlay_meta.coverage.metric', () => {
+    expect(tintMetric({})).toBe('lines')
+    expect(tintMetric({ overlay_meta: { coverage: { metric: 'toggles' } } })).toBe('toggles')
+  })
+
+  it('coverage overlay tints by the configured metric, grays no-data nodes, clears on toggle-off', () => {
+    const overlay = getOverlay('coverage')
+    const graph = {
+      overlays_present: ['coverage'],
+      overlay_meta: { coverage: { metric: 'lines' } },
+      nodes: [
+        {
+          id: 'top.u_covered',
+          overlays: { coverage: { lines: { covered: 9, total: 10, pct: 90.0 } } },
+        },
+        { id: 'top.u_nodata', overlays: {} },
+      ],
+      edges: [],
+    }
+    const groups = {}
+    const svgRoot = {
+      querySelector(sel) {
+        const m = sel.match(/data-node-id="([^"]+)"/)
+        if (!m) return null
+        const id = m[1].replace(/\\/g, '')
+        if (!groups[id]) {
+          const shape = { style: { fill: '' } }
+          groups[id] = {
+            shape,
+            attrs: {},
+            setAttribute(k, v) { this.attrs[k] = v },
+            removeAttribute(k) { delete this.attrs[k] },
+            querySelector() { return shape },
+          }
+        }
+        return groups[id]
+      },
+    }
+    overlay.apply(svgRoot, graph, true)
+    expect(groups['top.u_covered'].shape.style.fill).toBe(heatColor(90))
+    expect(groups['top.u_covered'].attrs['data-overlay-coverage']).toBe('90')
+    // No coverage block → explicit "no data" gray while enabled.
+    expect(groups['top.u_nodata'].shape.style.fill).toBe('#e5e7eb')
+    expect(groups['top.u_nodata'].attrs['data-overlay-coverage']).toBe('no-data')
+
+    overlay.apply(svgRoot, graph, false)
+    expect(groups['top.u_covered'].shape.style.fill).toBe('')
+    expect(groups['top.u_covered'].attrs['data-overlay-coverage']).toBeUndefined()
+    expect(groups['top.u_nodata'].shape.style.fill).toBe('')
   })
 
   it('clock overlay legend reads top-level overlay_meta.clock.clocks when present', () => {
