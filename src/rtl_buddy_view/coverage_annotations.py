@@ -163,10 +163,19 @@ class CoverageMap:
         return block
 
     def _link(self, sf: str, start_line: int | None) -> str:
+        """Deep link into Coverview for ``sf``.
+
+        Matches Coverview's actual routing (verified against the
+        rtl-buddy/coverview source, not the sketch in issue #20):
+        hash history with a single ``/:path`` route whose param is
+        the ``encodeURIComponent``-encoded project-relative source
+        path — slashes encoded too, one route segment — and a ``L``
+        query param for the line highlight.
+        """
         base = self.url_base if self.url_base.endswith("/") else self.url_base + "/"
-        link = f"{base}#/file/{quote(sf, safe='/')}"
+        link = f"{base}#/{quote(sf, safe='')}"
         if start_line is not None:
-            link += f"?line={start_line}"
+            link += f"?L={start_line}"
         return link
 
     def _match_file(self, file: str) -> str | None:

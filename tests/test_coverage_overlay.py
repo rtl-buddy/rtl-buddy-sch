@@ -236,12 +236,12 @@ def test_coverview_link_uses_url_base_and_start_line(tmp_path):
     cmap = _single_info(tmp_path, "SF:design/a.sv\nDA:6,1\nend_of_record\n")
     assert cmap.url_base == DEFAULT_URL_BASE
     block = cmap.rollup("/x/design/a.sv", 5, 12)
-    assert block["coverview_link"] == "http://localhost:5173/#/file/design/a.sv?line=5"
+    assert block["coverview_link"] == "http://localhost:5173/#/design%2Fa.sv?L=5"
     # Post-load reconfiguration (what --coverage-url-base does), with
     # or without trailing slash; None start_line drops the ?line=.
     cmap.url_base = "http://cov.example:9999"
     block = cmap.rollup("/x/design/a.sv", None, None)
-    assert block["coverview_link"] == "http://cov.example:9999/#/file/design/a.sv"
+    assert block["coverview_link"] == "http://cov.example:9999/#/design%2Fa.sv"
 
 
 # ---------------------------------------------------------------------------
@@ -387,8 +387,8 @@ def test_cli_renders_coverage_overlay_into_view_json(tmp_path):
     assert counter["branches"] == {"covered": 1, "total": 2, "pct": 50.0}
     assert counter["toggles"] == {"covered": 2, "total": 3, "pct": 66.7}
     assert counter["coverview_link"] == (
-        "http://cov.example:9999/#/file/tests/fixtures/counter_with_subs/"
-        "counter.sv?line=5"
+        "http://cov.example:9999/"
+        "#/tests%2Ffixtures%2Fcounter_with_subs%2Fcounter.sv?L=5"
     )
 
     # u_ff joins by its *defining module's* file (counter_ff.sv), not
@@ -397,7 +397,7 @@ def test_cli_renders_coverage_overlay_into_view_json(tmp_path):
     assert u_ff["lines"] == {"covered": 2, "total": 2, "pct": 100.0}
     assert u_ff["toggles"] == {"covered": 1, "total": 2, "pct": 50.0}
     assert "branches" not in u_ff
-    assert "counter_ff.sv" in u_ff["coverview_link"]
+    assert "counter_ff.sv?L=2" in u_ff["coverview_link"]
 
     # Blackbox leaf: no coverage data, no crash.
     assert "coverage" not in nodes["counter.u_x"]["overlays"]

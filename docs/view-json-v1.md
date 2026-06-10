@@ -273,7 +273,7 @@ A flavour:
 "coverage": { "lines":    { "covered": 124, "total": 138, "pct": 89.9 },
               "branches": { "covered": 22,  "total": 30,  "pct": 73.3 },
               "toggles":  { "covered": 78,  "total": 96,  "pct": 81.3 },
-              "coverview_link": "http://localhost:5173/#/file/blk/fifo.sv?line=42" }
+              "coverview_link": "http://localhost:5173/#/blk%2Ffifo.sv?L=42" }
 ```
 
 The `coverage` block (Phase 6, #20) is joined by the defining

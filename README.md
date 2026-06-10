@@ -275,7 +275,7 @@ Each node whose defining module has LCOV data in range gets an
   "lines":    {"covered": 1, "total": 2, "pct": 50.0},
   "branches": {"covered": 1, "total": 2, "pct": 50.0},
   "toggles":  {"covered": 2, "total": 3, "pct": 66.7},
-  "coverview_link": "http://localhost:5173/#/file/verif/blk/counter.sv?line=5"
+  "coverview_link": "http://localhost:5173/#/verif%2Fblk%2Fcounter.sv?L=5"
 }
 ```
 
