@@ -348,6 +348,42 @@ rtl-buddy-view [OPTIONS]
 --version               Print `rtl-buddy-view <X.Y.Z>` and exit.
 ```
 
+### `query` subcommands
+
+A thin CLI over the [`rtl_buddy_view.query`](src/rtl_buddy_view/query.py)
+Python API, so shell pipelines, agents, and non-Python tooling can ask
+the same questions without a Python harness
+([rtl_buddy#198](https://github.com/rtl-buddy/rtl_buddy/issues/198)).
+Every subcommand takes the same design-loading options as the renderer
+(`--top`, `--filelist`, `--frontend`) and prints JSON to stdout —
+except `source-snippet`, whose output *is* the line-number-prefixed
+citation text.
+
+```sh
+rtl-buddy-view query find-module <name>           --top T -f files.f
+rtl-buddy-view query subtree <instance.path>      --top T -f files.f [--format json|tree]
+rtl-buddy-view query instances-of <module-name>   --top T -f files.f
+rtl-buddy-view query port-connections <inst.path> --top T -f files.f
+rtl-buddy-view query source-snippet <inst.path>   --top T -f files.f [--context N] [--no-line-numbers]
+```
+
+```sh
+# every instance of a module, piped through jq
+rtl-buddy-view query instances-of counter_ff -t counter -f files.f \
+  | jq -r '.[].instance_path'
+
+# cite the module body of an instance, ±2 lines of context
+rtl-buddy-view query source-snippet counter.u_ff -t counter -f files.f
+```
+
+Exit codes: `0` success (an empty `instances-of` list is a valid
+answer), `1` lookup miss / parse failure, `2` usage errors. Node
+objects reuse the view.json v1 per-node vocabulary (`instance_path`,
+`module_name`, `instance_name`, `is_blackbox`, `param_overrides`,
+`location`); `find-module` / `port-connections` serialize the
+`extractor` dataclasses verbatim. Consumed downstream by
+`rb hier-query` in [rtl_buddy](https://github.com/rtl-buddy/rtl_buddy).
+
 ### `view.json` v1 (`--format json`)
 
 The JSON output is the locked v1 contract that the Phase 5 web

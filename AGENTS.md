@@ -230,6 +230,14 @@ The contract:
   `--output`, `--frontend`, `--cdc-annotations`, `--clock-legend`.
   Renaming or removing any of these will break the `rtl_buddy`
   wrapper.
+- **`query` subcommands consumed by `rb hier-query`**
+  ([rtl_buddy#198](https://github.com/rtl-buddy/rtl_buddy/issues/198)):
+  `find-module`, `subtree`, `instances-of`, `port-connections`,
+  `source-snippet`, each taking `--top`/`--filelist`/`--frontend`
+  plus `subtree --format` and `source-snippet --context` /
+  `--no-line-numbers`. JSON (or snippet text) on stdout; renaming a
+  verb, an emitted JSON key, or an exit code breaks the wrapper the
+  same way the render flags do.
 - **JSON output schema** (pinned by `render.json_render.JSON_CONTRACT`
   + `tests/test_render_json.py::test_json_contract_keys_present_and_typed`):
   - `schema_version` (str) — currently `"1.0"`.
