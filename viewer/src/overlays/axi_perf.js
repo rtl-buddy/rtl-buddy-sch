@@ -21,6 +21,8 @@
 // overlay off restores the pristine canvas — same discipline as the
 // wave overlay.
 
+import { formatBandwidth } from '../format.js'
+
 const PIN_CLASS = 'rb-axi-pin' // outline rect around the decorated pin
 const BADGE_CLASS = 'rb-axi-badge' // throughput / error text badge
 const STUB_CLASS = 'rb-axi-stub' // boundary-peer stub marker
@@ -64,19 +66,11 @@ function hasErrors(perfBlock) {
   return (perfBlock.errors.slverr || 0) + (perfBlock.errors.decerr || 0) > 0
 }
 
-// Human-readable bandwidth. Pure; tested directly.
-function formatBps(bps) {
-  if (!bps || bps <= 0) return '0'
-  const units = [
-    ['G', 1e9],
-    ['M', 1e6],
-    ['k', 1e3],
-  ]
-  for (const [u, d] of units) {
-    if (bps >= d) return `${(bps / d).toFixed(1)}${u}`
-  }
-  return `${bps.toFixed(0)}`
-}
+// Human-readable bandwidth — bytes/s, decimal (MB/s, GB/s), shared with the
+// AXI Performance tab and node detail so all views agree. `read_bps` is
+// bits/s (profiler convention); formatBandwidth does the bits->bytes +
+// decimal scale and returns a unit-suffixed string ("2.20 GB/s").
+const formatBps = formatBandwidth
 
 // Collapse a bundle_pin into the visual primitives the canvas paints.
 // Pure (no DOM) so the colour/width/label mapping is unit-testable.
@@ -284,12 +278,12 @@ function aggregateTooltip(pins, agg) {
   )) {
     const v = bundlePinVisual(pin)
     lines.push(
-      `  ${pin.port} (${pin.role || '—'}): ${formatBps(v.totalBps)}bps` +
+      `  ${pin.port} (${pin.role || '—'}): ${formatBps(v.totalBps)}` +
         ` · bp ${v.bpPct.toFixed(0)}%${v.hasErrors ? ' ⚠ errors' : ''}`,
     )
   }
   lines.push(
-    `Total ${formatBps(agg.totalBps)}bps · worst bp ${agg.worstBp.toFixed(0)}%`,
+    `Total ${formatBps(agg.totalBps)} · worst bp ${agg.worstBp.toFixed(0)}%`,
   )
   lines.push('Click to open AXI Performance')
   return lines.join('\n')

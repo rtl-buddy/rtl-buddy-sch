@@ -105,12 +105,12 @@ describe('nodeAxiPerfInterconnect', () => {
 })
 
 describe('axi-perf pure helpers', () => {
-  it('formatBps scales to k/M/G', () => {
-    expect(formatBps(0)).toBe('0')
-    expect(formatBps(512)).toBe('512')
-    expect(formatBps(2_500)).toBe('2.5k')
-    expect(formatBps(7.6e8)).toBe('760.0M')
-    expect(formatBps(2e9)).toBe('2.0G')
+  it('formatBps reports bytes/s in decimal MB/s, GB/s (read_bps is bits/s)', () => {
+    expect(formatBps(0)).toBe('0 B/s')
+    expect(formatBps(512)).toBe('64.00 B/s') // 512 bit/s = 64 B/s
+    expect(formatBps(7.6e8)).toBe('95.00 MB/s') // /8 = 95e6 B/s (decimal MB)
+    expect(formatBps(2e9)).toBe('250.00 MB/s') // /8 = 250e6 B/s
+    expect(formatBps(8e9)).toBe('1.00 GB/s') // /8 = 1e9 B/s = 1 GB/s
   })
 
   it('bundlePinVisual maps backpressure → colour and role → arrow', () => {
@@ -257,7 +257,7 @@ describe('axiPerfOverlay.apply (interface-pin paint)', () => {
       // slave role → ◀ arrow; boundary peer → ·ext tag.
       expect(badge.textContent).toContain('◀')
       expect(badge.textContent).toContain('·ext')
-      expect(badge.textContent).toContain('G') // 1e9 + 5e8 = 1.5G throughput
+      expect(badge.textContent).toContain('MB/s') // 1e9+5e8 bit/s = 187.50 MB/s
       // Boundary peer → dashed stub.
       const stub = created.find((e) => e.attrs.class === 'rb-axi-stub')
       expect(stub).toBeTruthy()
@@ -320,7 +320,7 @@ describe('axiPerfOverlay.apply (interface-pin paint)', () => {
       const badge = created.find((e) => e.attrs.class === 'rb-axi-badge')
       expect(badge).toBeTruthy()
       expect(badge.textContent).toContain('AXI')
-      expect(badge.textContent).toContain('G') // 1.5G aggregate throughput
+      expect(badge.textContent).toContain('MB/s') // 1.5e9 bit/s aggregate = 187.50 MB/s
       // Interactive: stamped for the click-to-open handler + a <title>
       // tooltip child carrying the per-bundle breakdown.
       expect(badge.attrs['data-axi-open']).toBe('tb.i_dut')
