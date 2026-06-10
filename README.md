@@ -293,6 +293,33 @@ mermaid output stays byte-identical with or without it. Heatmap
 rendering on the desktop formats and coverage diffing against a
 baseline are out of scope for v1 (see #20).
 
+To try the full loop in a browser using only in-tree fixtures:
+
+```bash
+# 1. produce a view.json the dev viewer can fetch
+mkdir -p viewer/public
+uv run rtl-buddy-view --top counter \
+    --filelist tests/fixtures/counter_with_subs/files.f \
+    --overlay coverage=tests/fixtures/coverage/coverview_regression \
+    --coverage-url-base http://localhost:5174/ \
+    --format json --output viewer/public/coverage_demo_view.json
+
+# 2. serve the viewer and open it
+cd viewer && npm install && npm run dev
+# → http://localhost:5173/?view=coverage_demo_view.json
+#   tick "coverage" in the Overlays panel for the heatmap
+```
+
+The hub chip will sit at "connecting…" under plain `npm run dev` —
+that's expected (there's no `rb hub` behind the Vite origin) and
+nothing coverage-related needs it. For the "Open in Coverview ↗"
+deep links to land, run [Coverview](https://github.com/rtl-buddy/coverview)
+at the `--coverage-url-base` address **with the matching archive
+loaded** — either drop the `coverview_regression.zip` into its file
+picker once per tab, or bake the data in the way deployments do
+(`embed.py --inject-data <archive>.zip`, then serve `dist/`), which
+makes cold deep links resolve with no interaction.
+
 ## CLI
 
 ```
