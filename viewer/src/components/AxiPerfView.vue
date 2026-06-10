@@ -174,6 +174,7 @@ import {
 
 import { useViewerStore } from '../store.js'
 import { useEventSync } from '../composables/useEventSync.js'
+import { formatBandwidth as fmtBps } from '../format.js'
 
 ChartJS.register(BarElement, CategoryScale, LinearScale, Title, Tooltip, Legend)
 
@@ -373,18 +374,6 @@ function bpClass(bp) {
   if (bp > 15) return 'bp-bad'
   if (bp > 5) return 'bp-warn'
   return 'bp-ok'
-}
-
-function fmtBps(bps) {
-  if (!bps || bps <= 0) return '0'
-  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s']
-  let i = 0
-  let v = bps / 8
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  return `${v.toFixed(2)} ${units[i]}`
 }
 
 // "Open in marimo" — auto-fills test + suite_dir from view.json's

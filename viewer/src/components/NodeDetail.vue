@@ -146,6 +146,7 @@ import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
 import { useHub } from '../composables/useHub.js'
 import { heatColor } from '../overlays/coverage.js'
+import { formatBandwidth as fmtBps } from '../format.js'
 
 const store = useViewerStore()
 const hub = useHub()
@@ -184,13 +185,7 @@ const coverageRows = computed(() => {
 })
 
 // --- axi-perf: render the overlay human-readably instead of raw JSON.
-function fmtBps(v) {
-  if (!v || v <= 0) return '0'
-  if (v >= 1e9) return (v / 1e9).toFixed(1) + 'G'
-  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M'
-  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k'
-  return String(Math.round(v))
-}
+// (throughput formatting shared via ../format.js — bytes/s, decimal MB/GB)
 function axiMaxBp(block) {
   const ch = block && block.channels
   if (!ch) return 0
