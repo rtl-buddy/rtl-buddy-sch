@@ -22,10 +22,12 @@ reset=…``. They'll be removed in the next major bump.
 
 from __future__ import annotations
 
+import json
 import sys
+from dataclasses import asdict
 from enum import Enum
 from pathlib import Path
-from typing import IO
+from typing import IO, Annotated
 
 import typer
 
@@ -43,10 +45,16 @@ from rtl_buddy_view.coverage_annotations import (
     CoverageAnnotationsError,
     CoverageMap,
 )
+from rtl_buddy_view import query
 from rtl_buddy_view.extractor import ModuleTable
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.frontend.verible import VeribleParseError, VeribleUnavailable
-from rtl_buddy_view.graph import HierarchyError, build_hierarchy, find_tb_top
+from rtl_buddy_view.graph import (
+    HierarchyError,
+    HierNode,
+    build_hierarchy,
+    find_tb_top,
+)
 from rtl_buddy_view.overlays import OverlayError, OverlayRegistry, default_registry
 from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.render import json_render
@@ -101,6 +109,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
@@ -215,6 +224,12 @@ def main(
     ),
 ) -> None:
     """Render the hierarchy of ``--top`` to ``--format``."""
+    # A subcommand (``query``) is being dispatched — the render
+    # options on this callback are unused defaults, so the required-
+    # option validation below must not fire.
+    if ctx.invoked_subcommand is not None:
+        return
+
     registry = default_registry()
 
     if list_overlays:
@@ -260,20 +275,7 @@ def main(
             typer.echo(f"overlay {name}: {e}", err=True)
             raise typer.Exit(code=1) from None
 
-    try:
-        files = parse_filelist(filelist)
-    except FilelistError as e:
-        typer.echo(f"filelist: {e}", err=True)
-        raise typer.Exit(code=1) from None
-
-    try:
-        table = parse_to_modules(files, frontend=frontend)
-    except (VeribleUnavailable, VeribleParseError) as e:
-        typer.echo(f"verible: {e}", err=True)
-        raise typer.Exit(code=1) from None
-    except NotImplementedError as e:
-        typer.echo(f"frontend: {e}", err=True)
-        raise typer.Exit(code=2) from None
+    table = _parse_design_or_exit(filelist, frontend)
 
     # A ``--tb-top`` hint that doesn't name a real module is usually the
     # testbench *config* name (e.g. ``tb_apb``) rather than the actual
@@ -296,11 +298,7 @@ def main(
     # descriptive fields regardless of which was used as the root.
     rendered_top = tb_top if tb_top is not None else top
 
-    try:
-        root = build_hierarchy(table, rendered_top)
-    except HierarchyError as e:
-        typer.echo(f"hierarchy: {e}", err=True)
-        raise typer.Exit(code=1) from None
+    root = _build_hierarchy_or_exit(table, rendered_top)
 
     domain_map: DomainMap | None = annotations.get("clock")  # type: ignore[assignment]
     reset_map: ResetDomainMap | None = annotations.get("reset")  # type: ignore[assignment]
@@ -524,6 +522,283 @@ def _render(
         )
     else:  # pragma: no cover
         raise ValueError(f"Unknown format: {fmt}")
+
+
+def _parse_design_or_exit(filelist: Path, frontend: Frontend) -> ModuleTable:
+    """Filelist → ModuleTable with the CLI's error/exit-code contract.
+
+    Shared by the render path (``main``) and every ``query``
+    subcommand so both surfaces fail with identical stderr text and
+    exit codes: 1 for filelist/parse errors, 2 for a frontend that
+    isn't implemented.
+    """
+    try:
+        files = parse_filelist(filelist)
+    except FilelistError as e:
+        typer.echo(f"filelist: {e}", err=True)
+        raise typer.Exit(code=1) from None
+
+    try:
+        return parse_to_modules(files, frontend=frontend)
+    except (VeribleUnavailable, VeribleParseError) as e:
+        typer.echo(f"verible: {e}", err=True)
+        raise typer.Exit(code=1) from None
+    except NotImplementedError as e:
+        typer.echo(f"frontend: {e}", err=True)
+        raise typer.Exit(code=2) from None
+
+
+def _build_hierarchy_or_exit(table: ModuleTable, top: str) -> HierNode:
+    try:
+        return build_hierarchy(table, top)
+    except HierarchyError as e:
+        typer.echo(f"hierarchy: {e}", err=True)
+        raise typer.Exit(code=1) from None
+
+
+# --- `query` subcommands (#198 in rtl_buddy) --------------------------------
+#
+# Thin CLI over :mod:`rtl_buddy_view.query` so shell pipelines, agents,
+# and non-Python tooling can hit the same surface Python consumers get
+# from ``import rtl_buddy_view.query`` — without a Python harness.
+# Output is JSON on stdout (``source-snippet`` emits plain text: its
+# whole point is the line-number-prefixed citation format).
+
+query_app = typer.Typer(
+    help="Query the elaborated hierarchy: JSON answers on stdout, "
+    "for shell pipelines and agent tool use. Thin wrapper over the "
+    "rtl_buddy_view.query Python API.",
+    no_args_is_help=True,
+)
+app.add_typer(query_app, name="query")
+
+
+_QueryTop = Annotated[
+    str,
+    typer.Option(
+        "--top",
+        "-t",
+        help="Top module the queried hierarchy is rooted at.",
+    ),
+]
+_QueryFilelist = Annotated[
+    Path,
+    typer.Option(
+        "--filelist",
+        "-f",
+        exists=True,
+        readable=True,
+        help="Path to a filelist (one source file per line).",
+    ),
+]
+_QueryFrontend = Annotated[
+    Frontend,
+    typer.Option(
+        "--frontend",
+        case_sensitive=False,
+        help="Parser frontend (verible|slang).",
+    ),
+]
+
+
+class QueryFormat(str, Enum):
+    json = "json"
+    tree = "tree"
+
+
+def _location_payload(node: HierNode) -> dict | None:
+    """The module-definition anchor for ``node`` (None for blackboxes)."""
+    if node.module is None or node.module.location is None:
+        return None
+    return asdict(node.module.location)
+
+
+def _node_payload(node: HierNode, *, with_children: bool = True) -> dict:
+    """JSON projection of one :class:`HierNode`.
+
+    Mirrors the per-node field names of view.json v1 (instance_path,
+    module_name, instance_name, is_blackbox, param_overrides,
+    location) so consumers that already read ``rb hier --format
+    json`` output don't learn a second vocabulary. ``children`` is
+    nested recursively for ``subtree``; ``instances-of`` omits it.
+    """
+    payload: dict = {
+        "instance_path": node.instance_path,
+        "module_name": node.module_name,
+        "instance_name": node.instance.name if node.instance is not None else None,
+        "is_blackbox": node.is_blackbox,
+        "param_overrides": [asdict(po) for po in node.instance.param_overrides]
+        if node.instance is not None
+        else [],
+        "location": _location_payload(node),
+    }
+    if with_children:
+        payload["children"] = [_node_payload(c) for c in node.children]
+    return payload
+
+
+def _emit_json(payload: object) -> None:
+    typer.echo(json.dumps(payload, indent=2))
+
+
+def _subtree_or_exit(root: HierNode, instance_path: str) -> HierNode:
+    node = query.subtree(root, instance_path)
+    if node is None:
+        typer.echo(
+            f"query: instance path {instance_path!r} not found "
+            f"(hierarchy is rooted at {root.instance_path!r})",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return node
+
+
+@query_app.command("find-module")
+def query_find_module(
+    name: Annotated[str, typer.Argument(help="Module name to look up.")],
+    top: _QueryTop,
+    filelist: _QueryFilelist,
+    frontend: _QueryFrontend = Frontend.verible,
+) -> None:
+    """Print the module definition (ports, parameters, instances) as JSON.
+
+    Exits 1 with a message on stderr when the module is not defined
+    in the filelist's sources. ``--top`` is accepted for surface
+    uniformity but module lookup is hierarchy-independent.
+    """
+    table = _parse_design_or_exit(filelist, frontend)
+    module = query.find_module(table, name)
+    if module is None:
+        typer.echo(f"query: module {name!r} not found", err=True)
+        raise typer.Exit(code=1)
+    _emit_json(asdict(module))
+
+
+@query_app.command("subtree")
+def query_subtree(
+    instance_path: Annotated[
+        str,
+        typer.Argument(
+            help="Dot-separated absolute instance path from the top "
+            "(e.g. 'counter.u_ff')."
+        ),
+    ],
+    top: _QueryTop,
+    filelist: _QueryFilelist,
+    frontend: _QueryFrontend = Frontend.verible,
+    output_format: Annotated[
+        QueryFormat,
+        typer.Option(
+            "--format",
+            case_sensitive=False,
+            help="json = nested node objects; tree = the ASCII renderer "
+            "rooted at the matched instance.",
+        ),
+    ] = QueryFormat.json,
+) -> None:
+    """Print the hierarchy subtree rooted at an instance path.
+
+    Exits 1 when the path doesn't resolve.
+    """
+    table = _parse_design_or_exit(filelist, frontend)
+    root = _build_hierarchy_or_exit(table, top)
+    node = _subtree_or_exit(root, instance_path)
+    if output_format is QueryFormat.tree:
+        tree_render.render(node, sys.stdout)
+    else:
+        _emit_json(_node_payload(node))
+
+
+@query_app.command("instances-of")
+def query_instances_of(
+    module_name: Annotated[
+        str, typer.Argument(help="Module name to find instances of.")
+    ],
+    top: _QueryTop,
+    filelist: _QueryFilelist,
+    frontend: _QueryFrontend = Frontend.verible,
+) -> None:
+    """Print every instance of a module across the hierarchy as a JSON list.
+
+    Blackbox instances are included. An empty list is a valid answer
+    (exit 0) — the module exists nowhere under ``--top``.
+    """
+    table = _parse_design_or_exit(filelist, frontend)
+    root = _build_hierarchy_or_exit(table, top)
+    nodes = query.instances_of(root, module_name)
+    _emit_json([_node_payload(n, with_children=False) for n in nodes])
+
+
+@query_app.command("port-connections")
+def query_port_connections(
+    instance_path: Annotated[
+        str,
+        typer.Argument(help="Dot-separated absolute instance path from the top."),
+    ],
+    top: _QueryTop,
+    filelist: _QueryFilelist,
+    frontend: _QueryFrontend = Frontend.verible,
+) -> None:
+    """Print the port-connection list of one instance as JSON.
+
+    The top node has no instantiation site, so querying it yields
+    ``[]`` (exit 0). An unresolvable path exits 1.
+    """
+    table = _parse_design_or_exit(filelist, frontend)
+    root = _build_hierarchy_or_exit(table, top)
+    _subtree_or_exit(root, instance_path)
+    conns = query.port_connections(root, instance_path)
+    _emit_json([asdict(c) for c in conns])
+
+
+@query_app.command("source-snippet")
+def query_source_snippet(
+    instance_path: Annotated[
+        str,
+        typer.Argument(help="Dot-separated absolute instance path from the top."),
+    ],
+    top: _QueryTop,
+    filelist: _QueryFilelist,
+    frontend: _QueryFrontend = Frontend.verible,
+    context: Annotated[
+        int,
+        typer.Option(
+            "--context",
+            min=0,
+            help="Lines of surrounding context on each side.",
+        ),
+    ] = 2,
+    line_numbers: Annotated[
+        bool,
+        typer.Option(
+            "--line-numbers/--no-line-numbers",
+            help="Prefix each line with its 1-indexed source line number "
+            "(the LLM-citation format).",
+        ),
+    ] = True,
+) -> None:
+    """Print the module-definition source of an instance, with context.
+
+    Plain text on stdout, line-number-prefixed by default — the same
+    citation contract as the Python API's ``source_snippet``. Exits 1
+    when the path doesn't resolve or no source is available (blackbox,
+    or the file vanished between parse and read).
+    """
+    table = _parse_design_or_exit(filelist, frontend)
+    root = _build_hierarchy_or_exit(table, top)
+    node = _subtree_or_exit(root, instance_path)
+    loc = node.module.location if node.module is not None else None
+    snippet = query.source_snippet(
+        loc, context_lines=context, with_line_numbers=line_numbers
+    )
+    if not snippet:
+        suffix = " (blackbox — no module definition)" if node.is_blackbox else ""
+        typer.echo(
+            f"query: no source available for {instance_path!r}{suffix}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.echo(snippet)
 
 
 # Quiet unused-import warning for the type-only re-export the docstring references.
