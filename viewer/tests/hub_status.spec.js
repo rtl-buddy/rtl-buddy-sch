@@ -231,4 +231,32 @@ describe('HubStatus strip', () => {
     expect(w.get('.hub-message').attributes('data-severity')).toBe('error')
     expect(w.get('.superseded-banner button').text()).toBe('Take back')
   })
+
+  // rtl-buddy-view#130 — the strip's half of the three-way rank. The
+  // full-pane HubGoneOverlay asserts the other half (it stays hidden
+  // when superseded is set); together they are the guarantee that a
+  // user is never given two different reasons for one dead socket.
+  it('hub-gone outranks reconnecting: the strip stops promising a retry', () => {
+    hub.state.value = 'disconnected'
+    hub.wasEverReady.value = true
+    hub.hubGone.value = true
+    const w = mount(HubStatus)
+    expect(w.find('.hub-gone-banner').exists()).toBe(true)
+    expect(w.find('.reconnecting-banner').exists()).toBe(false)
+    expect(w.get('.hub-message').attributes('data-severity')).toBe('error')
+    expect(w.get('.hub-gone-banner').text()).toContain('stopped answering')
+  })
+
+  it('superseded outranks hub-gone — the hub is alive, it evicted us', () => {
+    // Both latches can be set at once (the socket dropped, reconnects
+    // failed, and then a welcome-time error named us superseded). The
+    // actionable verdict wins, and it is the one with a button.
+    hub.state.value = 'disconnected'
+    hub.wasEverReady.value = true
+    hub.hubGone.value = true
+    hub.superseded.value = true
+    const w = mount(HubStatus)
+    expect(w.find('.superseded-banner').exists()).toBe(true)
+    expect(w.find('.hub-gone-banner').exists()).toBe(false)
+  })
 })

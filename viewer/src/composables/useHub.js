@@ -13,6 +13,8 @@
 //   - lastError: ref<{code,message,at}|null>  — sticky, popover log
 //   - errorNotice: ref<same|null>   — the expiring copy the status
 //                                     strip's message slot renders
+//   - hubGone: ref<boolean>          — was live, dropped, and N
+//                                      reconnects in a row failed
 //   - lastClick: ref<Node|null>     — Phase 5 surface, kept for compat
 //   - notifyClick(node)             — primary action: send selection_changed
 //                                     when live; fall back to opening
@@ -61,6 +63,13 @@ const HUB_ERROR_STRIP_TTL_MS = 8000
 // the alternative (a picker nobody asked for on every page load) was
 // the reported defect.
 const HUB_REPLAY_SETTLE_MS = 1500
+// How many consecutive failed reconnect attempts we tolerate before
+// declaring the hub *gone* rather than merely blinking
+// (rtl-buddy-view#130 state 4). With the 500 ms / ×1.8 backoff, three
+// attempts spans ~3 s — long enough to ride out a hub restart's
+// socket churn, short enough that a user who just hit Ctrl-C isn't
+// left staring at a "reconnecting…" banner that will never resolve.
+const HUB_GONE_ATTEMPTS = 3
 
 const state = ref('disconnected')
 const peers = ref([])
@@ -86,10 +95,19 @@ const superseded = ref(false)
 // explicit ``disconnect()`` so a user-initiated stop doesn't keep
 // showing the banner.
 const wasEverReady = ref(false)
+// The hub was up and is now gone: we reached ``welcome`` at least
+// once, the socket has since dropped, and ``HUB_GONE_ATTEMPTS``
+// reconnects in a row have failed. Distinct from ``superseded``
+// (another tab evicted us — the hub is alive and well) and from the
+// transient reconnect window HubStatus already banners. Cleared on
+// the next welcome and on an explicit reconnect().
+const hubGone = ref(false)
 
 let _socket = null
 let _reconnectTimer = null
 let _reconnectDelay = RECONNECT_INITIAL_MS
+// Consecutive reconnect attempts since the last successful welcome.
+let _reconnectAttempts = 0
 let _autoReconnect = true
 let _wsFactory = (url) => new WebSocket(url)
 let _store = null
@@ -237,6 +255,13 @@ function clearReconnectTimer() {
 function scheduleReconnect() {
   if (!_autoReconnect) return
   clearReconnectTimer()
+  _reconnectAttempts += 1
+  // Only a session that was live can have *lost* the hub; a first
+  // connect that never landed is "no hub here", which is the
+  // drop-a-file placeholder's business, not a full-pane alarm.
+  if (wasEverReady.value && _reconnectAttempts >= HUB_GONE_ATTEMPTS) {
+    hubGone.value = true
+  }
   _reconnectTimer = setTimeout(connect, _reconnectDelay)
   _reconnectDelay = Math.min(_reconnectDelay * RECONNECT_FACTOR, RECONNECT_MAX_MS)
 }
@@ -369,6 +394,11 @@ function applyEnvelope(env) {
       // connect in progress" (no banner) from "lost the hub mid-
       // session" (banner).
       wasEverReady.value = true
+      // The hub answered — clear the "gone" alarm and the attempt
+      // counter so a later drop starts counting from zero.
+      hubGone.value = false
+      _reconnectAttempts = 0
+      _store?.markHubDetected?.()
       // Hello accepted — clear the takeover-retry flag so the next
       // reconnect starts polite again.
       _pendingTakeover = false
@@ -671,8 +701,11 @@ function disconnect() {
   // User-initiated stop — don't show the reconnecting banner. The
   // socket close handler would otherwise leave ``wasEverReady`` set
   // and the banner would linger on a tab the user explicitly took
-  // offline.
+  // offline. Same reasoning for the ``hub is gone`` full-pane
+  // placeholder — the user knows; don't shout at them.
   wasEverReady.value = false
+  hubGone.value = false
+  _reconnectAttempts = 0
 }
 
 // Initialise the hub composable. Idempotent — calling twice is safe
@@ -810,6 +843,7 @@ export function useHub() {
     disconnect,
     superseded,
     wasEverReady,
+    hubGone,
     /**
      * Lock the user's pick from the multi-match disambiguation popover
      * (rtl-buddy-view#55). Updates the store (selection + clears the
@@ -848,6 +882,8 @@ export function useHub() {
       const takeover = opts.takeover === true || superseded.value
       _autoReconnect = true
       _reconnectDelay = RECONNECT_INITIAL_MS
+      _reconnectAttempts = 0
+      hubGone.value = false
       superseded.value = false
       // A deliberate reconnect retires the strip's complaint: the
       // user has acted on it.
@@ -884,8 +920,10 @@ export const _testing = {
     lastClick.value = null
     superseded.value = false
     wasEverReady.value = false
+    hubGone.value = false
     _autoReconnect = true
     _reconnectDelay = RECONNECT_INITIAL_MS
+    _reconnectAttempts = 0
     _initialised = false
     _store = null
     _pendingTakeover = false
@@ -895,6 +933,8 @@ export const _testing = {
   // Constants tests / docs reference rather than duplicating.
   HUB_ERROR_STRIP_TTL_MS,
   HUB_REPLAY_SETTLE_MS,
+  HUB_GONE_ATTEMPTS,
+  scheduleReconnect,
   setStore(store) { _store = store },
   setWsFactory(factory) { _wsFactory = factory },
   getSocket() { return _socket },

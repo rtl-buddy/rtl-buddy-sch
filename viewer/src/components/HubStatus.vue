@@ -48,10 +48,20 @@
     >
 
     <!-- right slot: message area, on the shared severity tokens
-         (--err errors, --warn warnings, --fg-muted notes). The two
+         (--err errors, --warn warnings, --fg-muted notes). The
          banners live HERE rather than as separate floating bars —
          a strip with a dedicated message slot is the place a message
-         belongs, and one home means they can't disagree. -->
+         belongs, and one home means they can't disagree.
+
+         RANK, worst-and-most-specific first:
+           superseded  — the hub is ALIVE and evicted us; there is a
+                         button that fixes it, so it outranks
+                         everything (rtl-buddy-view#129);
+           hub gone    — the hub process stopped answering
+                         (rtl-buddy-view#130); HubGoneOverlay says the
+                         same thing full-pane, and the strip must not
+                         contradict it with cheerful "reconnecting";
+           reconnecting— the transient window before either verdict. -->
     <div class="hub-message" :data-severity="messageSeverity" role="status" aria-live="polite">
       <template v-if="hub.superseded.value">
         <span class="superseded-banner">
@@ -60,6 +70,17 @@
             another tab took over this hub
           </span>
           <button type="button" class="msg-action" @click="takeBack">Take back</button>
+        </span>
+      </template>
+      <template v-else-if="hub.hubGone.value">
+        <span class="hub-gone-banner">
+          <strong>hub gone</strong>
+          <span
+            class="msg-text"
+            title="The hub was up, the socket dropped, and several reconnects in a row failed. Restart the hub and reload."
+          >
+            the hub stopped answering
+          </span>
         </span>
       </template>
       <template v-else-if="isReconnecting">
@@ -241,12 +262,16 @@ const displayState = computed(
 // "first connect in progress" (no banner; we haven't been online
 // yet) from "lost the hub mid-session" (show banner so the user
 // knows the wave-value badges they're looking at are frozen at the
-// last-known sample). Suppressed when ``superseded`` is set so the
-// two banners don't fight for the same slot.
+// last-known sample). Suppressed when ``superseded`` or ``hubGone`` is
+// set: both are verdicts, "reconnecting" is a question, and the three
+// banners share one slot. Once the composable has given up
+// (rtl-buddy-view#130) a strip still promising a reconnect is the
+// chrome disagreeing with the full-pane overlay.
 const isReconnecting = computed(
   () =>
     hub.wasEverReady.value &&
     !hub.superseded.value &&
+    !hub.hubGone.value &&
     (hub.state.value === 'disconnected' || hub.state.value === 'connecting'),
 )
 
@@ -254,6 +279,7 @@ const isReconnecting = computed(
 // --warn for warnings, --fg-muted for notes.
 const messageSeverity = computed(() => {
   if (hub.superseded.value) return 'error'
+  if (hub.hubGone.value) return 'error'
   if (isReconnecting.value) return 'warning'
   if (hub.errorNotice.value) return 'error'
   return 'note'
@@ -498,10 +524,11 @@ function takeBack() {
   color: var(--fg-muted);
   font-family: var(--font-sans);
 }
-/* Both banners are message-area content, so they inherit the slot's
-   severity colour and only add the tint that makes them read as a
-   state rather than a note. */
+/* All three banners are message-area content, so they inherit the
+   slot's severity colour and only add the tint that makes them read as
+   a state rather than a note. */
 .superseded-banner,
+.hub-gone-banner,
 .reconnecting-banner {
   display: inline-flex;
   align-items: center;
@@ -512,6 +539,7 @@ function takeBack() {
   color: inherit;
 }
 .superseded-banner { background: var(--err-bg); }
+.hub-gone-banner { background: var(--err-bg); }
 .reconnecting-banner { background: var(--warn-bg); }
 .banner-dot {
   width: 0.6rem;

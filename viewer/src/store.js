@@ -36,6 +36,61 @@ import { loadCovData, moduleCoverage } from './covData.js'
 
 
 // -------------------------------------------------------------------
+// Structured hub error envelopes (rtl-buddy-view#130)
+// -------------------------------------------------------------------
+//
+// A hub that implements the #130 contract answers a failing
+// ``GET /view.json`` with ``application/json``:
+//
+//   {"error": {"kind": "view_generation_failed", "model": "...",
+//              "message": "...", "log_path": "...",
+//              "log_tail": ["...", "..."]}}
+//
+// plus ``unknown_model`` (404) and ``no_active_model`` (409). Older
+// hubs return a bare ``text/plain`` 500 — we must keep working
+// against those, so parsing is strictly best-effort: anything that
+// isn't a recognisable envelope degrades to "quote the body text"
+// (the generic failure placeholder).
+const KNOWN_ERROR_KINDS = new Set([
+  'view_generation_failed',
+  'unknown_model',
+  'no_active_model',
+])
+
+/**
+ * Best-effort parse of a hub failure body into the structured shape
+ * the placeholder renders. Returns ``null`` when the body isn't a
+ * #130 envelope (old hub, proxy error page, empty body) — callers
+ * then fall back to the raw text.
+ */
+export function parseHubError(text) {
+  if (typeof text !== 'string' || text.length === 0) return null
+  let payload
+  try {
+    payload = JSON.parse(text)
+  } catch {
+    return null
+  }
+  const err = payload && typeof payload === 'object' ? payload.error : null
+  if (!err || typeof err !== 'object') return null
+  if (typeof err.kind !== 'string' || !KNOWN_ERROR_KINDS.has(err.kind)) return null
+  return {
+    kind: err.kind,
+    model: typeof err.model === 'string' ? err.model : null,
+    message:
+      typeof err.message === 'string' && err.message.length > 0
+        ? err.message
+        : err.kind.replace(/_/g, ' '),
+    logPath: typeof err.log_path === 'string' ? err.log_path : null,
+    logTail: Array.isArray(err.log_tail)
+      ? err.log_tail.filter((l) => typeof l === 'string')
+      : [],
+    modelsUrl: typeof err.models_url === 'string' ? err.models_url : null,
+  }
+}
+
+
+// -------------------------------------------------------------------
 // Diagnostic → node mapping
 // -------------------------------------------------------------------
 //
@@ -129,11 +184,22 @@ export const useViewerStore = defineStore('viewer', {
     graph: null,
     status: 'idle',
     error: null,
-    // Structured context for the failure page: ``{ status, url }`` of
-    // the last failed load (HTTP code + the URL that failed), so the
-    // error view can show actionable reasons. ``null`` outside the
-    // error state.
+    // Structured context for the failure page. Always carries
+    // ``{ status, url }`` (HTTP code + the URL that failed) and, when
+    // the hub speaks the rtl-buddy-view#130 error contract, the
+    // decoded envelope: ``{ kind, model, message, logPath, logTail,
+    // modelsUrl }``. ``kind`` is null against an older hub that
+    // answers with a bare text/plain body — the placeholder then
+    // falls back to quoting ``error``. ``null`` outside the error
+    // state.
     errorMeta: null,
+    // True once we have positive evidence that the page is being
+    // served by (or is talking to) an rtl-buddy hub: ``GET /models``
+    // answered, ``GET /view.json`` returned a #130 envelope, or the
+    // /ws handshake completed. Drives the "the hub IS reachable —
+    // this just means no view has been requested" variant of the
+    // drop-a-file placeholder (rtl-buddy-view#130 state 1).
+    hubDetected: false,
     selection: null,
     // Currently-selected edge as ``{from, to}`` or null. Mutually
     // exclusive with ``selection`` so the sidebar shows one detail
@@ -597,7 +663,12 @@ export const useViewerStore = defineStore('viewer', {
       //      the empty drag-drop screen.
       //   5. ``window.__RTL_BUDDY_VIEW_DATA__`` — embed.py inject
       //      (single-file standalone HTML build).
-      //   6. Stay idle and wait for drag-drop / file picker.
+      //   6. Probe ``GET /view.json`` (rtl-buddy-view#130). A hub
+      //      serving the SPA with no active model answers 409
+      //      ``no_active_model``; that's the only way to tell "hub up,
+      //      nothing selected" from "no hub at all", and the two want
+      //      very different placeholders.
+      //   7. Stay idle and wait for drag-drop / file picker.
       //
       // In hub mode (priority 1-4), we also fire-and-forget a
       // ``GET /models`` + ``GET /tests`` so the picker is populated
@@ -640,7 +711,65 @@ export const useViewerStore = defineStore('viewer', {
         } catch (e) {
           this._fail(`Embedded payload: ${e.message}`)
         }
+        return
       }
+      await this.probeHubView()
+    },
+
+    /**
+     * Last-resort bootstrap step (rtl-buddy-view#130): ask the origin
+     * for ``/view.json`` with no query and see what comes back.
+     *
+     *   - 200 + a valid payload → a hub with an active model served
+     *     us but didn't inject ``__RTL_BUDDY_VIEW_URL__`` (older
+     *     index.html renderer). Install it.
+     *   - a #130 error envelope (409 no_active_model, 500
+     *     view_generation_failed, …) → surface the matching
+     *     placeholder.
+     *   - anything else (network error, a static file server's 404,
+     *     an index.html fallback body, a bare text/plain 500 from an
+     *     old hub) → stay ``idle`` so the user still gets the
+     *     drop-a-file screen instead of a scary parse error for a
+     *     request they never made.
+     */
+    async probeHubView() {
+      let response
+      try {
+        response = await fetch('/view.json')
+      } catch {
+        return
+      }
+      if (response.ok) {
+        const text = await response.text().catch(() => '')
+        let payload
+        try {
+          payload = JSON.parse(text)
+        } catch {
+          // Not JSON — almost certainly a static server handing back
+          // index.html for an unknown path. Not a hub.
+          return
+        }
+        this.hubDetected = true
+        this.loadAvailableModels().catch(() => {})
+        this.loadAvailableTests().catch(() => {})
+        try {
+          this._installGraph(payload)
+        } catch (e) {
+          this._fail(`/view.json: ${e.message}`, { status: 200, url: '/view.json' })
+        }
+        return
+      }
+      const body = (await response.text().catch(() => '')).trim()
+      const structured = parseHubError(body)
+      if (!structured) return
+      this.hubDetected = true
+      this.loadAvailableModels().catch(() => {})
+      this.loadAvailableTests().catch(() => {})
+      this._fail(structured.message, {
+        status: response.status,
+        url: '/view.json',
+        ...structured,
+      })
     },
 
     /**
@@ -706,6 +835,15 @@ export const useViewerStore = defineStore('viewer', {
           return
         }
         const payload = await response.json()
+        // ``/models`` answering at all is proof there's a hub on this
+        // origin — the drop-a-file placeholder uses that to say "the
+        // hub is up; you just haven't asked for a view yet".
+        this.hubDetected = true
+        // Entries may carry ``view_status`` ('ok' | 'failed' |
+        // 'never_built') and an ``error`` one-liner per
+        // rtl-buddy-view#130; they're passed through verbatim and the
+        // picker badges them. Older hubs omit both and every model
+        // renders unbadged.
         this.availableModels = Array.isArray(payload.models) ? payload.models : []
         this.activeModel =
           typeof payload.active === 'string' ? payload.active : null
@@ -899,6 +1037,20 @@ export const useViewerStore = defineStore('viewer', {
           // (e.g. an ambiguous-test or unknown-model message). Prefer
           // it over the bare status text so the failure page is useful.
           const body = (await response.text().catch(() => '')).trim()
+          // rtl-buddy-view#130: a current hub answers with a JSON
+          // error envelope carrying the hier.log tail; an older one
+          // with bare text. ``parseHubError`` returns null for the
+          // latter and we degrade to quoting the body.
+          const structured = parseHubError(body)
+          if (structured) {
+            this.hubDetected = true
+            this._fail(structured.message, {
+              status: response.status,
+              url,
+              ...structured,
+            })
+            return false
+          }
           const detail = body || response.statusText || 'request failed'
           this._fail(detail, { status: response.status, url })
           return false
@@ -971,6 +1123,29 @@ export const useViewerStore = defineStore('viewer', {
       this.error = message
       this.errorMeta = meta
       this.graph = null
+    },
+    /**
+     * Latch "there is a hub on this origin". Called by the /ws
+     * handshake (useHub's ``welcome``) as well as by the HTTP paths
+     * that get hub-shaped answers, so the placeholder's wording is
+     * right regardless of which one wins the race.
+     */
+    markHubDetected() {
+      this.hubDetected = true
+    },
+    /**
+     * Re-run the request that produced the current failure page —
+     * the "Retry" button on the view-generation-failed placeholder
+     * (rtl-buddy-view#130). View generation is retried hub-side on a
+     * cache miss, so this is the cheap way to pick up a fix (init the
+     * submodules, add ``frontend: slang``) without reloading the tab
+     * and losing hub state. No-op when we have no URL to retry (a
+     * drag-dropped file, an embedded payload).
+     */
+    async retryLastLoad() {
+      const url = this.errorMeta && this.errorMeta.url
+      if (!url) return false
+      return await this.loadFromUrl(url)
     },
     select(id) {
       this.selection = id
