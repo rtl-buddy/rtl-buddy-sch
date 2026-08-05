@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rtl-buddy.dev/schemas/graph-v1.json",
+  "title": "rtl-buddy design graph graph.json v1",
+  "description": "Locked schema for the design tier of the rtl-buddy knowledge graph (rtl-buddy-view#126, epic rtl_buddy#375). Producer is rtl-buddy-view's `graph` verb. The envelope is NetworkX node-link JSON so `graphify merge-graphs` / `graphify query` and `networkx.node_link_graph(data, edges=\"links\")` accept the file as-is. Other tiers (config: rtl_buddy#376, binding: rtl_buddy#378) emit the same envelope with their own node/edge vocabulary; merging is a node-id union, so identical ids across tiers are deliberate stitch points.",
+  "type": "object",
+  "required": ["directed", "multigraph", "graph", "nodes", "links"],
+  "additionalProperties": true,
+  "properties": {
+    "directed": {
+      "const": true,
+      "description": "Always true — every relation in the vocabulary is directional."
+    },
+    "multigraph": {
+      "const": true,
+      "description": "Always true — parallel edges are normal (a module instantiating the same child twice, an instance overriding several parameters)."
+    },
+    "graph": {
+      "type": "object",
+      "description": "Graph-level attributes: schema version, generator provenance, and where node file paths are anchored.",
+      "required": ["schema_version", "generator", "project_root_rel"],
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "description": "Schema major version. 1 today; a bump means the node/edge vocabulary changed incompatibly."
+        },
+        "generator": {
+          "type": "object",
+          "required": ["tool", "version", "tier"],
+          "additionalProperties": true,
+          "properties": {
+            "tool": {"type": "string", "description": "Emitting tool, e.g. 'rtl-buddy-view'."},
+            "version": {"type": "string", "description": "Emitting tool's version."},
+            "tier": {
+              "type": "string",
+              "enum": ["design", "config", "binding"],
+              "description": "Which tier of the graph this file carries. rtl-buddy-view emits 'design'."
+            }
+          }
+        },
+        "project_root_rel": {
+          "type": "string",
+          "description": "Path of the design project root relative to the directory holding this file. Node `file` paths resolve as dirname(graph.json)/project_root_rel/<file>. '.' when the graph was streamed to stdout (no anchor)."
+        },
+        "design": {
+          "type": "object",
+          "description": "Which elaboration this graph is of. Descriptive: consumers key on node ids, not on these.",
+          "required": ["top"],
+          "additionalProperties": true,
+          "properties": {
+            "top": {"type": "string", "description": "Module the export was rooted at (the TB top when --tb-top was used)."},
+            "dut_top": {"type": ["string", "null"], "description": "Module supplied via --top; null when only --tb-top was passed."},
+            "tb_top": {"type": ["string", "null"], "description": "Module supplied via --tb-top; null for a DUT-rooted export."},
+            "frontend": {"type": ["string", "null"], "description": "Parser frontend that produced the module table ('verible' | 'slang')."}
+          }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/node"},
+      "description": "All design entities reachable from the root, sorted by id. The id prefix encodes the type, so the sort groups by kind."
+    },
+    "links": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/link"},
+      "description": "Typed relations, sorted by (source, target, type, payload)."
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["id", "type", "label", "tier", "file", "line"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable identity: module:<name> | inst:<top>/<instance path> | port:<owner>.<port> | param:<owner>.<name> | iface:<name> | modport:<iface>.<name>."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["module", "instance", "port", "parameter", "interface", "modport"],
+          "description": "Design-tier node kinds. Other tiers add their own values."
+        },
+        "label": {"type": "string", "description": "Short human-readable name — the bare entity name, not the id."},
+        "tier": {"type": "string", "description": "Tier that emitted the node; 'design' for everything in this file."},
+        "file": {"type": ["string", "null"], "description": "Source file, relative to the project root (absolute when the file lies outside it). Null when the entity has no source anchor (blackbox)."},
+        "line": {"type": ["integer", "null"], "description": "1-indexed line of the declaration / instantiation. Null when unknown."},
+        "is_blackbox": {"type": "boolean", "description": "Module / instance / interface / modport nodes: the definition was not in the filelist."},
+        "is_interface": {"type": "boolean", "description": "Instance nodes: the instantiated name is a SystemVerilog interface, not a module."},
+        "is_top": {"type": "boolean", "description": "Instance nodes: this is the root of the export (no instantiation site)."},
+        "instance_path": {"type": "string", "description": "Instance nodes: dot-separated hub-resolver path including the top segment — the same string view.json uses as nodes[].id."},
+        "instance_name": {"type": ["string", "null"], "description": "Instance nodes: source-level instance name; null at the root."},
+        "module": {"type": "string", "description": "Instance nodes: name of the instantiated module or interface."},
+        "depth": {"type": "integer", "description": "Instance nodes: hierarchy depth, 0 at the root."},
+        "owner": {"type": "string", "description": "Port / parameter nodes: the module or interface that declares them (or, for a node recovered from a binding site, that the binding names)."},
+        "dir": {"type": ["string", "null"], "description": "Port nodes: input | output | inout, or null when unknown (blackbox / interface bundle)."},
+        "width": {"type": ["integer", "null"], "description": "Port nodes: bit width when it is a literal packed range, or 1 for a bare scalar keyword (logic/wire/reg/bit, optionally signed/unsigned). Null when parameterized, when the type is anything else (int/byte/chandle, a typedef, a package-scoped struct), or when port_kind is not 'wire'. Never evaluated and never type-resolved — a wrong width is worse than a missing one."},
+        "type_text": {"type": ["string", "null"], "description": "Port nodes: verbatim source slice of the declared type."},
+        "port_kind": {"type": "string", "enum": ["wire", "interface", "interface_signal"], "description": "Port nodes: scalar wire, interface bundle, or a flattened per-signal port."},
+        "interface_type": {"type": ["string", "null"], "description": "Port nodes: interface name for interface ports."},
+        "modport": {"type": ["string", "null"], "description": "Port nodes: modport name pinned by the port declaration."},
+        "default": {"type": ["string", "null"], "description": "Parameter nodes: verbatim default-value expression; null for a blackbox's inferred parameter."},
+        "doc": {"type": ["string", "null"], "description": "Module nodes: leading documentation comment, when the frontend captured one."},
+        "signals": {"type": "array", "items": {"type": "string"}, "description": "Interface nodes: names of the signals declared in the interface body."},
+        "interface": {"type": "string", "description": "Modport nodes: the owning interface name."},
+        "inputs": {"type": "array", "items": {"type": "string"}, "description": "Modport nodes: signals the modport declares as inputs."},
+        "outputs": {"type": "array", "items": {"type": "string"}, "description": "Modport nodes: signals the modport declares as outputs."},
+        "inouts": {"type": "array", "items": {"type": "string"}, "description": "Modport nodes: signals the modport declares as inouts."}
+      }
+    },
+    "link": {
+      "type": "object",
+      "required": ["source", "target", "type", "confidence"],
+      "additionalProperties": true,
+      "properties": {
+        "source": {"type": "string", "description": "Node id the relation starts at."},
+        "target": {"type": "string", "description": "Node id the relation ends at."},
+        "type": {
+          "type": "string",
+          "enum": ["instantiates", "child_of", "instance_of", "connects", "implements", "overrides"],
+          "description": "Design-tier relations: instantiates (module→module|interface), child_of (instance→parent instance), instance_of (instance→module|interface), connects (instance→port), implements (module→modport), overrides (instance→parameter)."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["EXTRACTED", "INFERRED", "AMBIGUOUS"],
+          "description": "Always EXTRACTED for this tier — every relation comes from a deterministic CST walk."
+        },
+        "instance": {"type": "string", "description": "instantiates: the source-level instance name that creates the edge."},
+        "formal": {"type": ["string", "null"], "description": "connects: the formal port name being bound."},
+        "actual": {"type": "string", "description": "connects: verbatim net expression at the parent. Empty string for the implicit `.port` shorthand."},
+        "parameter": {"type": ["string", "null"], "description": "overrides: the parameter name being overridden."},
+        "value": {"type": "string", "description": "overrides: verbatim override expression."},
+        "positional": {"type": "boolean", "description": "connects / overrides: the binding was positional and the name was resolved from the child's declaration order."},
+        "index": {"type": "integer", "description": "connects / overrides: 0-based position in the instantiation's binding list."},
+        "port": {"type": "string", "description": "implements: the interface port that pins the modport."},
+        "file": {"type": ["string", "null"], "description": "Source file of the binding site, project-relative."},
+        "line": {"type": ["integer", "null"], "description": "1-indexed line of the binding site."}
+      }
+    }
+  }
+}

@@ -384,6 +384,50 @@ objects reuse the view.json v1 per-node vocabulary (`instance_path`,
 `extractor` dataclasses verbatim. Consumed downstream by
 `rb hier-query` in [rtl_buddy](https://github.com/rtl-buddy/rtl_buddy).
 
+### `graph` — design knowledge graph
+
+`rtl-buddy-view graph` exports the elaborated design as a node-link
+knowledge graph: one node per design *entity* (module, instance,
+port, parameter, interface, modport), joined by typed edges
+(`instantiates`, `child_of`, `instance_of`, `connects`,
+`implements`, `overrides`). It is the design tier of the cross-repo
+graph in [rtl_buddy#375](https://github.com/rtl-buddy/rtl_buddy/issues/375)
+([view#126](https://github.com/rtl-buddy/rtl-buddy-view/issues/126)),
+and it merges with rtl-buddy's config and binding tiers by node-id
+union.
+
+```sh
+# DUT-rooted, to stdout
+rtl-buddy-view graph -f files.f --top counter
+
+# TB-rooted, to the artefact path the graph contract pins
+rtl-buddy-view graph -f files.f --top soc_top --tb-top tb_top \
+    --project-root . -o artefacts/graph/graph.json
+```
+
+```
+--filelist, -f PATH     One source file per line. [required]
+--top, -t TEXT          DUT top module. Roots the export unless --tb-top is set.
+--tb-top TEXT           Testbench top; roots the export so the TB hierarchy
+                        lands in the graph. A wrong hint is auto-corrected.
+--output, -o PATH       Write here (parents created) instead of stdout; also
+                        writes the <stem>-meta.json provenance sidecar.
+--project-root PATH     Root that node file paths are relative to. [default: cwd]
+--frontend [verible|slang]
+                        Parser frontend. [default: verible]
+--meta / --no-meta      Write the provenance sidecar. [default: --meta]
+```
+
+This is *not* another rendering of `view.json` — that one is a
+render snapshot keyed by instance; this one is a query index keyed
+by design entity. Overlays deliberately don't apply: nothing
+per-run (test status, seeds, coverage) goes in `graph.json`. The
+envelope is NetworkX node-link JSON, so `graphify merge-graphs` /
+`graphify query` and `networkx.node_link_graph(data,
+edges="links")` read it as-is. Schema:
+[`schemas/graph-v1.json`](schemas/graph-v1.json); full reference:
+[`docs/graph-json-v1.md`](docs/graph-json-v1.md).
+
 ### `view.json` v1 (`--format json`)
 
 The JSON output is the locked v1 contract that the Phase 5 web

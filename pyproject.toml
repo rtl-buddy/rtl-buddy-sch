@@ -59,6 +59,10 @@ lint = [
 ]
 test = [
     "coverage>=7.14.0",
+    # graph.json's envelope claims to be NetworkX node-link JSON (which
+    # is what makes it Graphify-compatible). Test-only: the exporter
+    # never imports networkx, it just has to satisfy its reader.
+    "networkx>=3.3",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
 ]
