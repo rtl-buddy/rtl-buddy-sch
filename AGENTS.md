@@ -47,6 +47,7 @@ src/rtl_buddy_view/
 │   ├── verible.py         # Verible CST walker → ModuleTable
 │   └── slang.py           # slang frontend stub (NotImplementedError; #2 follow-up)
 ├── graph.py               # build_hierarchy(table, top) → HierNode tree
+├── graph_export.py        # graph.json v1 (design tier); GRAPH_CONTRACT pinned
 ├── query.py               # walk, subtree, instances_of, port_connections, source_snippet
 ├── annotations.py         # DomainMap loader (rtl-buddy-cdc#106 schema v1.0)
 └── render/
@@ -250,10 +251,25 @@ The contract:
     present (`null` / `[]` when no domain map).
   - `edges` (list of `{parent, child}`) — instance-path pairs.
   Renaming or retyping any contract key is a CI failure.
+- **`graph` subcommand** ([view#126](https://github.com/rtl-buddy/rtl-buddy-view/issues/126),
+  epic [rtl_buddy#375](https://github.com/rtl-buddy/rtl_buddy/issues/375)):
+  `--filelist`/`--top`/`--tb-top`/`--output`/`--frontend`/
+  `--project-root`/`--meta`. Emits `graph.json` v1 — the **design
+  tier** of the cross-repo knowledge graph, pinned by
+  `graph_export.GRAPH_CONTRACT` + `schemas/graph-v1.json` +
+  `tests/test_graph_export.py::test_graph_contract_keys_present_and_typed`,
+  documented in `docs/graph-json-v1.md`. The node ids
+  (`module:`, `inst:`, `port:`, `param:`, `iface:`, `modport:`) are
+  the merge points rtl_buddy's config tier (rtl_buddy#376) and
+  binding tier (rtl_buddy#378) attach their edges to, so a rename
+  here breaks three repos, not one. Nothing volatile (test status,
+  seeds, artefact paths) may be added to this payload — that's the
+  results overlay's job.
 - **Exit codes**: `0` = success, `1` = unresolved top / parse failure
   / filelist invalid / bad domain map (`AnnotationsError`),
   `2` = frontend not implemented (`NotImplementedError`, e.g. slang
   before Phase 2 activation). Match `rb cdc` exit-code conventions.
+  The `graph` verb follows the same table.
 
 When changing any of the above, update
 `rtl_buddy/src/rtl_buddy/tools/hier_rtl_buddy_view.py` in the same

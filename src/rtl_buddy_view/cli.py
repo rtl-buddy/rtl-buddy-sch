@@ -18,11 +18,21 @@ The pre-#17 ``--cdc-annotations`` / ``--rdc-annotations`` flags
 stay as deprecated aliases: when set, they emit a stderr warning
 and rewrite internally to ``--overlay clock=…`` / ``--overlay
 reset=…``. They'll be removed in the next major bump.
+
+Two subcommands sit alongside the render callback::
+
+    rtl-buddy-view query <verb> …    # JSON answers over the hierarchy
+    rtl-buddy-view graph -f <file> --top <module> -o graph.json
+
+``graph`` (#126) exports the design tier of the knowledge graph —
+a different artifact from ``--format json``, see
+:mod:`rtl_buddy_view.graph_export`.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import asdict
 from enum import Enum
@@ -45,7 +55,7 @@ from rtl_buddy_view.coverage_annotations import (
     CoverageAnnotationsError,
     CoverageMap,
 )
-from rtl_buddy_view import query
+from rtl_buddy_view import graph_export, query
 from rtl_buddy_view.extractor import ModuleTable
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.frontend.verible import VeribleParseError, VeribleUnavailable
@@ -277,20 +287,11 @@ def main(
 
     table = _parse_design_or_exit(filelist, frontend)
 
-    # A ``--tb-top`` hint that doesn't name a real module is usually the
-    # testbench *config* name (e.g. ``tb_apb``) rather than the actual
-    # top module (commonly just ``tb_top``). Recover the real one from
-    # the elaborated design so a best-effort hint still produces a
-    # TB-rooted view instead of a "module not found" error.
-    if tb_top is not None and top is not None and tb_top not in table.modules_by_name:
-        detected = find_tb_top(table, top)
-        if detected is not None:
-            typer.echo(
-                f"tb-top: {tb_top!r} is not a module in the design; "
-                f"auto-detected {detected!r} as the testbench top.",
-                err=True,
-            )
-            tb_top = detected
+    # (The option is declared ``str`` with a ``None`` default — the
+    # typer convention here — so narrow before rebinding.)
+    detected_tb_top = _resolve_tb_top(table, top, tb_top)
+    if detected_tb_top is not None:
+        tb_top = detected_tb_top
 
     # The rendered root is whatever ``--tb-top`` resolved to; when only
     # --top is supplied, fall back to DUT-rooted (byte-identical to the
@@ -548,6 +549,34 @@ def _parse_design_or_exit(filelist: Path, frontend: Frontend) -> ModuleTable:
         raise typer.Exit(code=2) from None
 
 
+def _resolve_tb_top(
+    table: ModuleTable, top: str | None, tb_top: str | None
+) -> str | None:
+    """Fix up a ``--tb-top`` hint that doesn't name a real module.
+
+    The testbench *config* name (e.g. ``tb_apb``) frequently differs
+    from the actual top module (commonly just ``tb_top``), so a
+    best-effort hint should still produce a TB-rooted result instead
+    of a "module not found" error. Recovers the real top from the
+    elaborated design; returns the hint unchanged when it already
+    resolves or when detection is ambiguous.
+
+    Shared by the render path and ``graph`` so both surfaces accept
+    the same sloppy hint with the same stderr note.
+    """
+    if tb_top is None or top is None or tb_top in table.modules_by_name:
+        return tb_top
+    detected = find_tb_top(table, top)
+    if detected is None:
+        return tb_top
+    typer.echo(
+        f"tb-top: {tb_top!r} is not a module in the design; "
+        f"auto-detected {detected!r} as the testbench top.",
+        err=True,
+    )
+    return detected
+
+
 def _build_hierarchy_or_exit(table: ModuleTable, top: str) -> HierNode:
     try:
         return build_hierarchy(table, top)
@@ -799,6 +828,150 @@ def query_source_snippet(
         )
         raise typer.Exit(code=1)
     typer.echo(snippet)
+
+
+# --- `graph` verb (rtl-buddy-view#126) --------------------------------------
+#
+# The design tier of the cross-repo knowledge graph. Deliberately a
+# sibling of `query` rather than another `--format`: the output is a
+# different *artifact* (a durable, mergeable node-link graph keyed by
+# design entities), not another rendering of the same view.json
+# payload, and it takes no overlay flags — volatile per-run data
+# belongs in the results overlay, never in graph.json.
+
+
+@app.command("graph")
+def graph_cmd(
+    filelist: Annotated[
+        Path,
+        typer.Option(
+            "--filelist",
+            "-f",
+            exists=True,
+            readable=True,
+            help="Path to a filelist (one source file per line).",
+        ),
+    ],
+    top: Annotated[
+        str | None,
+        typer.Option(
+            "--top",
+            "-t",
+            help="DUT top module. Roots the export unless --tb-top is given.",
+        ),
+    ] = None,
+    tb_top: Annotated[
+        str | None,
+        typer.Option(
+            "--tb-top",
+            help="Testbench top module. When given, the export is rooted "
+            "here so the SV testbench hierarchy lands in the graph too. "
+            "A hint that isn't a real module is auto-corrected from the "
+            "elaborated design.",
+        ),
+    ] = None,
+    output_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Write graph.json here (parent dirs created). Default: stdout. "
+            "A graph-meta.json provenance sidecar is written alongside it.",
+        ),
+    ] = None,
+    frontend: _QueryFrontend = Frontend.verible,
+    project_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--project-root",
+            exists=True,
+            file_okay=False,
+            help="Root that node file paths are emitted relative to. "
+            "Defaults to the current working directory.",
+        ),
+    ] = None,
+    meta: Annotated[
+        bool,
+        typer.Option(
+            "--meta/--no-meta",
+            help="With --output, also write the graph-meta.json sidecar "
+            "(input content hashes + generator provenance).",
+        ),
+    ] = True,
+) -> None:
+    """Export the elaborated design as a node-link knowledge graph.
+
+    Emits ``graph.json`` v1 (``docs/graph-json-v1.md``): module /
+    instance / port / parameter / interface / modport nodes joined by
+    ``instantiates``, ``child_of``, ``instance_of``, ``connects``,
+    ``implements`` and ``overrides`` edges. The envelope is NetworkX
+    node-link JSON, which is what ``graphify merge-graphs`` and
+    ``graphify query`` accept.
+
+    Exit codes match the render surface: 1 for a bad filelist / parse
+    failure / unresolved top, 2 for a missing top or an unimplemented
+    frontend.
+    """
+    if top is None and tb_top is None:
+        typer.echo("error: --top or --tb-top is required", err=True)
+        raise typer.Exit(code=2)
+
+    table = _parse_design_or_exit(filelist, frontend)
+    tb_top = _resolve_tb_top(table, top, tb_top)
+    rendered_top = tb_top if tb_top is not None else top
+    assert rendered_top is not None  # guarded above
+    root = _build_hierarchy_or_exit(table, rendered_top)
+
+    root_dir = (project_root or Path.cwd()).resolve()
+    payload = graph_export.build_graph(
+        root,
+        table,
+        project_root=root_dir,
+        project_root_rel=_project_root_rel(root_dir, output_path),
+        dut_top=top,
+        tb_top=tb_top,
+        frontend=frontend.value,
+    )
+
+    if output_path is None:
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as sink:
+        json.dump(payload, sink, indent=2)
+        sink.write("\n")
+    if meta:
+        meta_path = output_path.with_name(f"{output_path.stem}-meta.json")
+        try:
+            files = parse_filelist(filelist)
+        except FilelistError:  # pragma: no cover - parse already succeeded
+            files = []
+        meta_payload = graph_export.build_meta(payload, files, project_root=root_dir)
+        with meta_path.open("w") as sink:
+            json.dump(meta_payload, sink, indent=2)
+            sink.write("\n")
+
+
+def _project_root_rel(project_root: Path, output_path: Path | None) -> str:
+    """``graph.project_root_rel``: project root relative to graph.json.
+
+    Node ``file`` fields are project-relative, so a consumer holding
+    only the graph file needs one hop to get back to the sources:
+    ``dirname(graph.json)/project_root_rel/<node file>``. Writing to
+    the contract's ``<root>/artefacts/graph/graph.json`` therefore
+    yields ``"../.."``. Streaming to stdout has no anchor to be
+    relative to, so it degrades to ``"."`` (i.e. "resolve against
+    wherever you save this").
+    """
+    if output_path is None:
+        return "."
+    out_dir = output_path.resolve().parent
+    try:
+        return Path(os.path.relpath(project_root, out_dir)).as_posix()
+    except ValueError:  # pragma: no cover - different drives on Windows
+        return project_root.as_posix()
 
 
 # Quiet unused-import warning for the type-only re-export the docstring references.
