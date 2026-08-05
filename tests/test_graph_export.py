@@ -350,15 +350,64 @@ def test_port_attributes(synthetic: dict) -> None:
         (None, None),
         ("logic", 1),
         ("wire", 1),
+        ("reg", 1),
+        ("bit", 1),
+        ("logic signed", 1),
+        ("wire unsigned", 1),
         ("logic [7:0]", 8),
         ("logic [0:7]", 8),
         ("logic [ 31 : 0 ]", 32),
+        ("[3:0]", 4),
         ("logic [WIDTH-1:0]", None),
         ("logic [$clog2(N)-1:0]", None),
+        # Not a scalar keyword ⇒ unknown, never a confident 1. These
+        # are the shapes that used to be reported as 1-bit ports.
+        ("int", None),
+        ("byte", None),
+        ("shortint", None),
+        ("chandle", None),
+        ("cfg_t", None),
+        ("some_pkg::cfg_t", None),
+        ("apb_intf.subordinate", None),
+        ("", None),
     ],
 )
 def test_width_of(type_text: str | None, expected: int | None) -> None:
     assert graph_export._width_of(type_text) == expected
+
+
+def test_width_is_unknown_for_a_non_wire_port_kind() -> None:
+    """An interface bundle is a set of signals, not a 1-bit port."""
+    assert graph_export._width_of("apb_intf.subordinate", "interface") is None
+    assert graph_export._width_of("logic", "interface") is None
+    assert graph_export._width_of("logic", "interface_signal") is None
+
+
+def test_interface_bundle_port_reports_no_width() -> None:
+    module = Module(
+        name="user",
+        ports=(
+            Port(
+                "apb",
+                None,
+                "apb_intf.subordinate",
+                None,
+                port_kind="interface",
+                interface_type="apb_intf",
+                modport="subordinate",
+            ),
+            Port("cfg", "input", "csr_pkg::cfg_t", None),
+        ),
+        parameters=(),
+        instances=(),
+        location=None,
+    )
+    table = ModuleTable(modules_by_name={"user": module})
+    nodes = _nodes_by_id(
+        graph_export.build_graph(build_hierarchy(table, "user"), table)
+    )
+    assert nodes["port:user.apb"]["width"] is None
+    assert nodes["port:user.cfg"]["width"] is None
 
 
 def test_parameter_and_interface_attributes(synthetic: dict) -> None:
@@ -567,6 +616,102 @@ def test_unknown_interface_type_gets_a_blackbox_stub() -> None:
     assert _links(payload, "implements")[0]["target"] == "modport:missing_if.sub"
 
 
+# --- closure ----------------------------------------------------------------
+
+
+def _closure_table() -> ModuleTable:
+    """``holder`` binds names ``child``'s declaration doesn't supply.
+
+    ``.qq``/``.WITDH`` stand in for every way a formal can go
+    missing: an interface's header ports (``Interface`` has no
+    ``ports`` field), a multi-declarator ``#(parameter AW = 8, DW =
+    32)`` header the Verible frontend collapses to one
+    ``<unknown>``, and a plain source-level typo.
+    """
+    child = Module(
+        name="child",
+        ports=(Port("q", "output", "logic", None),),
+        parameters=(Parameter("WIDTH", "8", None),),
+        instances=(),
+        location=None,
+    )
+    holder = Module(
+        name="holder",
+        ports=(),
+        parameters=(),
+        instances=(
+            Instance(
+                name="u_child",
+                module_name="child",
+                param_overrides=(ParameterOverride("WITDH", "4", None),),
+                port_connections=(PortConnection("qq", "net", None),),
+                location=None,
+            ),
+            # An interface instance with named header-port bindings.
+            Instance(
+                name="u_if",
+                module_name="test_if",
+                param_overrides=(),
+                port_connections=(PortConnection("clk", "clk", None),),
+                location=None,
+            ),
+        ),
+        location=None,
+    )
+    test_if = Interface(
+        name="test_if", parameters=(), signals=(), modports=(), location=None
+    )
+    return ModuleTable(
+        modules_by_name={m.name: m for m in (holder, child)},
+        unresolved=set(),
+        interfaces_by_name={"test_if": test_if},
+    )
+
+
+def test_named_bindings_to_undeclared_formals_stay_closed() -> None:
+    """A ``connects``/``overrides`` target the declaration never
+    produced is stubbed in, not left dangling.
+
+    A dangling id is not cosmetic: ``networkx.node_link_graph``
+    silently invents an attribute-less node for it, and that node —
+    with no ``type``/``label``/``tier`` — then propagates into every
+    merged cross-tier graph, violating ``NODE_CONTRACT``.
+    """
+    table = _closure_table()
+    payload = graph_export.build_graph(build_hierarchy(table, "holder"), table)
+    ids = set(_nodes_by_id(payload))
+    for link in payload["links"]:
+        assert link["source"] in ids, link
+        assert link["target"] in ids, link
+    # The edges survive — dropping them would lose the binding the
+    # binding tier's ``drives`` edge lands on.
+    assert _links(payload, "connects")[0]["target"] == "port:child.qq"
+    assert _links(payload, "overrides")[0]["target"] == "param:child.WITDH"
+
+
+def test_recovered_stubs_are_marked_by_their_empty_attributes() -> None:
+    """No source anchor and no declared facts is what says
+    "recovered from a use site, never seen declared"."""
+    table = _closure_table()
+    nodes = _nodes_by_id(
+        graph_export.build_graph(build_hierarchy(table, "holder"), table)
+    )
+    stub = nodes["port:child.qq"]
+    assert (stub["owner"], stub["dir"], stub["width"], stub["type_text"]) == (
+        "child",
+        None,
+        None,
+        None,
+    )
+    assert (stub["file"], stub["line"]) == (None, None)
+    assert nodes["param:child.WITDH"]["default"] is None
+    # An interface's header ports get the same treatment — the
+    # extractor models signals/params/modports, not the port list.
+    assert nodes["port:test_if.clk"]["owner"] == "test_if"
+    # The declared port keeps its real facts; the stub never wins.
+    assert nodes["port:child.q"]["width"] == 1
+
+
 # --- determinism ------------------------------------------------------------
 
 
@@ -657,6 +802,7 @@ _FIXTURE_CASES = [
     ("connection_shapes", "top"),
     ("interface_port_module", "tb_top"),
     ("tb_over_dut", "tb_top"),
+    ("graph_closure", "closure_top"),
 ]
 
 
@@ -669,6 +815,42 @@ def test_fixture_graph_validates(
     payload = _export_fixture(fixture_dir, top)
     jsonschema.validate(instance=payload, schema=graph_schema)
     assert payload["graph"]["design"]["top"] == top
+
+
+@pytest.mark.parametrize(
+    "fixture_dir,top", _FIXTURE_CASES, ids=[case[0] for case in _FIXTURE_CASES]
+)
+def test_fixture_graph_is_closed(fixture_dir: str, top: str) -> None:
+    """Closure over real Verible-parsed designs, not just the
+    synthetic table — the frontend's own gaps (an interface's header
+    ports, a multi-declarator parameter header) are exactly what
+    used to dangle."""
+    payload = _export_fixture(fixture_dir, top)
+    ids = set(_nodes_by_id(payload))
+    for link in payload["links"]:
+        assert link["source"] in ids, link
+        assert link["target"] in ids, link
+
+
+def test_frontend_gaps_are_stubbed_rather_than_dangled() -> None:
+    """The ``graph_closure`` fixture pins the two real-world shapes.
+
+    ``closure_bus_if``'s ``clk``/``rst_n`` are interface *header*
+    ports, which ``extractor.Interface`` doesn't model;
+    ``closure_leaf``'s ``#(parameter AW = 8, DW = 32)`` reaches the
+    module table as one ``<unknown>`` parameter. Both are named at
+    the instantiation site, so both need a node to point at.
+    """
+    payload = _export_fixture("graph_closure", "closure_top")
+    nodes = _nodes_by_id(payload)
+    assert nodes["port:closure_bus_if.clk"]["type"] == "port"
+    assert nodes["port:closure_bus_if.rst_n"]["owner"] == "closure_bus_if"
+    assert nodes["param:closure_leaf.AW"]["default"] is None
+    assert nodes["param:closure_leaf.DW"]["default"] is None
+    # ... and a non-scalar port type stays unknown rather than 1.
+    assert nodes["port:closure_leaf.budget"]["type_text"] == "int"
+    assert nodes["port:closure_leaf.budget"]["width"] is None
+    assert nodes["port:closure_leaf.clk"]["width"] == 1
 
 
 def _export_fixture(fixture_dir: str, top: str, *, tb_top: str | None = None) -> dict:

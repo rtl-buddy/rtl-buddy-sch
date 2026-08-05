@@ -471,7 +471,7 @@ class _Builder:
             location=port.location,
             owner=owner,
             dir=port.direction,
-            width=_width_of(port.type_text),
+            width=_width_of(port.type_text, port.port_kind),
             type_text=port.type_text,
             port_kind=port.port_kind,
             interface_type=port.interface_type,
@@ -538,28 +538,61 @@ class _Builder:
             doc=None,
         )
         for port_name in sorted(signature.ports):
-            self._add_node(
-                port_id(name, port_name),
-                node_type="port",
-                label=port_name,
-                location=None,
-                owner=name,
-                dir=None,
-                width=None,
-                type_text=None,
-                port_kind="wire",
-                interface_type=None,
-                modport=None,
-            )
+            self._ensure_port_stub(name, port_name)
         for param_name in sorted(signature.params):
-            self._add_node(
-                param_id(name, param_name),
-                node_type="parameter",
-                label=param_name,
-                location=None,
-                owner=name,
-                default=None,
-            )
+            self._ensure_param_stub(name, param_name)
+
+    def _ensure_port_stub(self, owner: str, port_name: str) -> None:
+        """Port node recovered from a *binding site*, not a declaration.
+
+        Emitted for any formal a ``connects`` edge names that the
+        owner's declaration doesn't (or can't) supply — a blackbox's
+        observed signature, an interface's header ports (which
+        :class:`~rtl_buddy_view.extractor.Interface` doesn't model),
+        or a formal the frontend failed to recover from a
+        multi-declarator header. Closure is the point: a dangling
+        ``target`` makes ``networkx.node_link_graph`` invent an
+        attribute-less node that violates :data:`NODE_CONTRACT`, and
+        that bogus node then propagates into every merged cross-tier
+        graph.
+
+        First-writer-wins plus definitions-before-instances means a
+        real declaration always beats this stub; the all-null
+        attributes are what tell a consumer the port was never seen
+        declared.
+        """
+        self._add_node(
+            port_id(owner, port_name),
+            node_type="port",
+            label=port_name,
+            location=None,
+            owner=owner,
+            dir=None,
+            width=None,
+            type_text=None,
+            port_kind="wire",
+            interface_type=None,
+            modport=None,
+        )
+
+    def _ensure_param_stub(self, owner: str, param_name: str) -> None:
+        """Parameter node recovered from an *override site*.
+
+        Same closure duty as :meth:`_ensure_port_stub`. The common
+        real-world trigger is a multi-declarator header
+        (``#(parameter AW = 8, DW = 32)``), which the Verible
+        frontend collapses to a single ``<unknown>`` parameter — so
+        ``.AW(...)`` / ``.DW(...)`` overrides have nothing declared
+        to point at.
+        """
+        self._add_node(
+            param_id(owner, param_name),
+            node_type="parameter",
+            label=param_name,
+            location=None,
+            owner=owner,
+            default=None,
+        )
 
     def _ensure_interface(self, name: str) -> None:
         """Interface node for ``name``, definition-first.
@@ -686,6 +719,11 @@ class _Builder:
         there is no order to resolve against, so the binding is
         recorded on the instance-side only (no edge) rather than
         inventing a formal name.
+
+        A *named* formal always gets its edge, and
+        :meth:`_ensure_port_stub` guarantees the target exists —
+        interface header ports and formals lost to a frontend
+        limitation would otherwise dangle.
         """
         ports = self._declared_ports(module_name)
         for index, conn in enumerate(instance.port_connections):
@@ -695,6 +733,7 @@ class _Builder:
                 if ports is None or index >= len(ports):
                     continue
                 formal = ports[index].name
+            self._ensure_port_stub(module_name, formal or "")
             self._add_link(
                 node_id,
                 port_id(module_name, formal or ""),
@@ -712,7 +751,13 @@ class _Builder:
     def _emit_overrides(
         self, node_id: str, module_name: str, instance: Instance
     ) -> None:
-        """``overrides`` edges: this instance → the parameters it sets."""
+        """``overrides`` edges: this instance → the parameters it sets.
+
+        Same closure rule as :meth:`_emit_connects`: a positional
+        override on a declaration we can't resolve is dropped, a
+        named one is always emitted and its target stubbed in if the
+        declaration never produced it.
+        """
         params = self._declared_parameters(module_name)
         for index, override in enumerate(instance.param_overrides):
             name = override.param_name
@@ -721,6 +766,7 @@ class _Builder:
                 if params is None or index >= len(params):
                     continue
                 name = params[index]
+            self._ensure_param_stub(module_name, name or "")
             self._add_link(
                 node_id,
                 param_id(module_name, name or ""),
@@ -778,25 +824,53 @@ def _observed_signature(hier_nodes: Iterable[HierNode]) -> dict[str, _Signature]
 
 _PACKED_RANGE_RE = re.compile(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]")
 
+#: Type keywords that are exactly one bit wide when no packed range
+#: follows. Anything else — ``int`` / ``byte`` / ``shortint`` /
+#: ``chandle``, a package-scoped struct typedef, a user typedef — has
+#: a width this module cannot know without elaborating the type, so
+#: it reports ``null`` instead of guessing 1.
+_SCALAR_TYPE_KEYWORDS = frozenset({"bit", "logic", "reg", "wire"})
+#: Signedness qualifiers that may sit beside a scalar keyword
+#: (``logic signed``) without changing its width.
+_SCALAR_QUALIFIERS = frozenset({"signed", "unsigned"})
 
-def _width_of(type_text: str | None) -> int | None:
+
+def _width_of(type_text: str | None, port_kind: str = "wire") -> int | None:
     """Bit width of a port from its verbatim type slice, when knowable.
 
-    ``logic [7:0]`` → 8, ``logic`` → 1, ``logic [WIDTH-1:0]`` → None.
-    Deliberately no expression evaluation: a wrong width is worse
-    than a missing one for an agent reading the graph, and the
-    parameter nodes + ``overrides`` edges already carry what's
-    needed to work the real width out.
+    ``logic [7:0]`` → 8, ``logic`` → 1, ``logic [WIDTH-1:0]`` → None,
+    ``some_pkg::cfg_t`` → None.
+
+    Deliberately no expression evaluation and no type resolution: a
+    wrong width is worse than a missing one for an agent reading the
+    graph, and the parameter nodes + ``overrides`` edges already
+    carry what's needed to work the real width out. That rule cuts
+    both ways — "no packed range" only means "one bit" for a scalar
+    keyword, never for an aggregate type.
+
+    ``port_kind`` other than ``"wire"`` is unconditionally unknown:
+    an interface bundle (``apb_intf.subordinate``) is a set of
+    signals, not a 1-bit port.
     """
+    if port_kind != "wire":
+        return None
     if type_text is None:
         return None
-    if "[" not in type_text:
-        return 1
-    match = _PACKED_RANGE_RE.search(type_text)
-    if match is None:
+    if "[" in type_text:
+        match = _PACKED_RANGE_RE.search(type_text)
+        if match is None:
+            return None
+        msb, lsb = int(match.group(1)), int(match.group(2))
+        return abs(msb - lsb) + 1
+    words = type_text.split()
+    if not any(word in _SCALAR_TYPE_KEYWORDS for word in words):
         return None
-    msb, lsb = int(match.group(1)), int(match.group(2))
-    return abs(msb - lsb) + 1
+    if any(
+        word not in _SCALAR_TYPE_KEYWORDS and word not in _SCALAR_QUALIFIERS
+        for word in words
+    ):
+        return None
+    return 1
 
 
 def _rel_path(path: str, project_root: Path | None) -> str:

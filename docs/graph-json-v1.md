@@ -182,11 +182,22 @@ discriminator that says "known entity, just not a module".
 `modport`.
 
 `width` is only filled in when it can be read straight off the
-declaration: a literal packed range (`logic [7:0]` → 8) or no
-packed range at all (`logic` → 1). A parameterized range
-(`logic [WIDTH-1:0]`) yields `null` — nothing here evaluates
-expressions, because a wrong width is worse than a missing one for
-a consumer that can follow `overrides` edges to the real value.
+declaration: a literal packed range (`logic [7:0]` → 8, `[3:0]` →
+4) or a bare **scalar keyword** — `logic` / `wire` / `reg` / `bit`,
+optionally `signed`/`unsigned` — which is 1.
+
+Everything else is `null`. A parameterized range
+(`logic [WIDTH-1:0]`) yields `null` because nothing here evaluates
+expressions. An aggregate or non-scalar type — `int`, `byte`,
+`chandle`, a typedef, `csr_pkg::cfg_t` — yields `null` because
+nothing here resolves types, and "no packed range" only means "one
+bit" for a scalar keyword. A port whose `port_kind` is not `wire`
+(an interface bundle such as `apb_intf.subordinate`) is `null`
+unconditionally: a bundle is a set of signals, not a 1-bit port.
+
+The rule throughout is that a wrong width is worse than a missing
+one for a consumer that can follow `overrides` edges — or read
+`type_text` — to the real value.
 
 **`parameter`** — `owner`, `default` (verbatim default expression,
 null when the parameter was recovered from an override site).
@@ -215,6 +226,26 @@ and its `instance_of` edge are still there). Named bindings on
 blackboxes, and positional bindings on resolved modules, are both
 fully represented.
 
+The same treatment covers every other way a **named** formal can
+have no declaration behind it, so that closure (§3) always holds:
+
+- an interface instantiated with header-port bindings
+  (`apb_intf bus (.clk(apb_clk), .rst_n(apb_rst_n));`) — the
+  extractor models an interface's signals, parameters and modports,
+  not its own port list;
+- a multi-declarator parameter header
+  (`#(parameter AW = 8, DW = 32)`), which the Verible frontend
+  reaches the module table as a single `<unknown>` parameter, so
+  `.AW(...)` / `.DW(...)` name nothing declared;
+- a formal the source names but the resolved definition does not
+  declare.
+
+In each case the named target is emitted as a stub node — right
+`id`, `type`, `label`, `owner`, everything else `null` — rather
+than the edge being dropped or, worse, left dangling. The absent
+`file`/`line` and null `dir`/`width`/`type_text` are how a consumer
+tells a recovered port from a declared one.
+
 ## 3. Link objects
 
 ```jsonc
@@ -234,7 +265,7 @@ fully represented.
 
 | Field | Type | Notes |
 | ----- | ---- | ----- |
-| `source`, `target` | string | Node ids. Both always exist in `nodes` — the graph is closed. |
+| `source`, `target` | string | Node ids. Both always exist in `nodes` — the graph is closed (see §2.3 for how targets with no declaration behind them are stubbed in). |
 | `type` | string | One of the six below. |
 | `confidence` | string | `EXTRACTED` \| `INFERRED` \| `AMBIGUOUS`. **Always `EXTRACTED`** in this tier: every relation is a deterministic CST walk. The other two are reserved for heuristic producers (the binding tier's cocotb `dut.<x>` scan). |
 
