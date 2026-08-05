@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from pathlib import Path
 
 import jsonschema
@@ -974,12 +975,19 @@ def test_graphify_accepts_the_export(tmp_path: Path, synthetic: dict) -> None:
 # --- CLI --------------------------------------------------------------------
 
 
-def test_graph_help_documents_the_verb() -> None:
+def test_graph_help_documents_the_verb(monkeypatch) -> None:
+    # CI renders help styled and 80-column-wrapped, which can split an
+    # option name mid-token; force plain wide output so the assertions
+    # test the content, not the renderer.
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.setenv("COLUMNS", "200")
     result = CliRunner().invoke(app, ["graph", "--help"])
     assert result.exit_code == 0
-    assert "knowledge graph" in result.output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "knowledge graph" in plain
     for flag in ("--filelist", "--top", "--tb-top", "--output", "--project-root"):
-        assert flag in result.output
+        assert flag in plain
 
 
 def test_graph_requires_a_top() -> None:
