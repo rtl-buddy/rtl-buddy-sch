@@ -25,6 +25,8 @@
 // / east edge — polyline no longer piles every edge onto the
 // geometric center of the side.
 
+import { token } from '../theme.js'
+
 const CLOCK_RESET_RE = /(?:^|_)(?:clk|clock|rst|reset)(?:$|_)/i
 // Bare-identifier net expressions only — drops slices / concats /
 // expressions like ``a[0]`` or ``{x, y}`` so the diagram doesn't
@@ -34,10 +36,22 @@ const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 // Marker glyph for SystemVerilog interface ports — distinct from
 // the scalar ``▶`` so a reader can tell at a glance that the row
 // is a bundle (a fan-in of signals) rather than a single wire.
-// Paired with italic styling + amber background in the cell HTML.
-// (rtl-buddy-view#102.)
+// Paired with italic styling + a warning-tinted background in the cell
+// HTML. (rtl-buddy-view#102.)
 const INTERFACE_GLYPH = '▶▶'
-const INTERFACE_BG = '#fef3c7' // tailwind amber-100; legible on the gray box BG.
+
+// Colours are resolved here, at DOT-build time: Graphviz bakes them
+// into the emitted SVG, so there is no ``var(--…)`` for the sheet to
+// re-resolve later. GraphCanvas re-lays-out on a theme flip.
+function dotStyle() {
+  return {
+    box: token('--panel-2'),
+    text: token('--fg'),
+    frame: token('--fg-faint'),
+    line: token('--line-strong'),
+    ifaceBg: token('--warn-bg'),
+  }
+}
 
 function isClockOrResetName(name) {
   if (typeof name !== 'string') return false
@@ -153,7 +167,7 @@ function interfacePortsFor(child) {
   return out
 }
 
-function interfacePortCellHtml(ownerId, iface) {
+function interfacePortCellHtml(ownerId, iface, style) {
   const cellId = `bf-iface:${htmlEscape(ownerId)}:${htmlEscape(iface.name)}`
   const suffix = iface.modport
     ? `${iface.interface_type}.${iface.modport}`
@@ -163,7 +177,7 @@ function interfacePortCellHtml(ownerId, iface) {
   const title = suffix ? `${cellId} :: ${suffix}` : cellId
   return (
     `<TD HREF="${cellId}" TITLE="${title}" PORT="${htmlEscape(iface.name)}" ` +
-    `ALIGN="LEFT" BGCOLOR="${INTERFACE_BG}">` +
+    `ALIGN="LEFT" BGCOLOR="${style.ifaceBg}">` +
     `<FONT POINT-SIZE="9"><I>${INTERFACE_GLYPH} ${htmlEscape(iface.name)}</I></FONT></TD>`
   )
 }
@@ -256,6 +270,7 @@ export function buildBlockFlowDot(graph, scopeId) {
     else if (isOutputDir(port.dir)) scopeOutputs.add(port.name)
   }
 
+  const style = dotStyle()
   const lines = []
   lines.push('digraph block_flow {')
   lines.push('  rankdir="LR";')
@@ -273,8 +288,14 @@ export function buildBlockFlowDot(graph, scopeId) {
   // the table itself supplies the border, background and per-cell
   // ports. (Mrecord would give rounded corners but doesn't support
   // per-cell fontsize, which we want for compact port labels.)
-  lines.push(`  node [shape=plaintext, fontname="Courier,monospace"];`)
-  lines.push('  edge [fontname="Courier,monospace"];')
+  lines.push('  bgcolor="transparent";')
+  lines.push(
+    `  node [shape=plaintext, fontname="Courier,monospace", fontcolor="${style.text}"];`,
+  )
+  lines.push(
+    `  edge [fontname="Courier,monospace", color="${style.line}", ` +
+      `fontcolor="${style.text}"];`,
+  )
   lines.push('')
   lines.push('  subgraph cluster_flow_scope {')
   // Title shape mirrors the child boxes (instance name on top,
@@ -297,7 +318,8 @@ export function buildBlockFlowDot(graph, scopeId) {
   lines.push('    labelloc="t";')
   lines.push('    labeljust="l";')
   lines.push('    style="rounded";')
-  lines.push('    color="#94a3b8";')
+  lines.push(`    fontcolor="${style.text}";`)
+  lines.push(`    color="${style.frame}";`)
   lines.push('    penwidth=2;')
   lines.push('    margin="20,20";')
 
@@ -335,7 +357,7 @@ export function buildBlockFlowDot(graph, scopeId) {
   // attaches. Port labels use POINT-SIZE=9 to keep the box
   // compact even when a module has many ports.
   const PORT_FONT_SIZE = 9
-  const BG = '#f5f5f5'
+  const BG = style.box
   for (const child of children) {
     const inPorts = childInputPorts.get(child.id) || []
     const outPorts = childOutputPorts.get(child.id) || []
@@ -363,7 +385,9 @@ export function buildBlockFlowDot(graph, scopeId) {
             `<FONT POINT-SIZE="${PORT_FONT_SIZE}">▶ ${htmlEscape(p)}</FONT></TD>`,
         )
       } else if (i < leftRowCount) {
-        tds.push(interfacePortCellHtml(child.id, ifacePorts[i - inPorts.length]))
+        tds.push(
+          interfacePortCellHtml(child.id, ifacePorts[i - inPorts.length], style),
+        )
       } else {
         tds.push('<TD></TD>')
       }
@@ -429,7 +453,7 @@ export function buildBlockFlowDot(graph, scopeId) {
       lines.push(
         `    "_in_${net}" -> ${dotId(child.id)}:${port.name}:w ` +
           `[id="${edgeIdForInput(net, child, port)}", ` +
-          `color="#cbd5e1", penwidth=1.2, arrowsize=0.6, tailport=e];`,
+          `color="${style.line}", penwidth=1.2, arrowsize=0.6, tailport=e];`,
       )
     }
   }
@@ -442,7 +466,7 @@ export function buildBlockFlowDot(graph, scopeId) {
       lines.push(
         `    ${dotId(child.id)}:${port.name}:e -> "_out_${net}" ` +
           `[id="${edgeIdForOutput(net, child, port)}", ` +
-          `color="#cbd5e1", penwidth=1.2, arrowsize=0.6, headport=w];`,
+          `color="${style.line}", penwidth=1.2, arrowsize=0.6, headport=w];`,
       )
     }
   }
@@ -496,8 +520,9 @@ function _emptyDigraph(reason) {
 // too. Clock/reset ports are included here — hier-view shows all
 // ports for a leaf, so we match that.
 function _renderLeafScope(scope) {
+  const style = dotStyle()
   const PORT_FONT_SIZE = 9
-  const BG = '#f5f5f5'
+  const BG = style.box
   const inPorts = []
   const outPorts = []
   for (const port of scope.ports || []) {
@@ -530,7 +555,7 @@ function _renderLeafScope(scope) {
           `<FONT POINT-SIZE="${PORT_FONT_SIZE}">▶ ${htmlEscape(p)}</FONT></TD>`,
       )
     } else if (i < leftRowCount) {
-      tds.push(interfacePortCellHtml(scope.id, ifacePorts[i - inPorts.length]))
+      tds.push(interfacePortCellHtml(scope.id, ifacePorts[i - inPorts.length], style))
     } else {
       tds.push('<TD></TD>')
     }
@@ -566,8 +591,9 @@ function _renderLeafScope(scope) {
   const lines = [
     'digraph block_flow_leaf {',
     '  rankdir="LR";',
+    '  bgcolor="transparent";',
     '  fontname="Courier,monospace";',
-    '  node [shape=plaintext, fontname="Courier,monospace"];',
+    `  node [shape=plaintext, fontname="Courier,monospace", fontcolor="${style.text}"];`,
     `  ${dotId(scope.id)} [label=${label}];`,
     '}',
   ]

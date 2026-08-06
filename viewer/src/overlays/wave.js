@@ -28,6 +28,8 @@
 // the function clears any previously-painted badges so the canvas
 // returns to its pristine state.
 
+import { token } from '../theme.js'
+
 const BADGE_CLASS = 'rb-wave-badge'
 
 function cssEscape(s) {
@@ -168,9 +170,9 @@ function paintBadge(svgRoot, group, nodeId, values) {
     const isInput = cell.getAttribute('data-bf-id')?.startsWith('bf-in:')
     const text = document.createElementNS(NS, 'text')
     text.setAttribute('class', BADGE_CLASS)
-    text.setAttribute('font-family', 'ui-monospace, Menlo, Consolas, monospace')
+    text.setAttribute('font-family', token('--font-mono'))
     text.setAttribute('font-size', '9')
-    text.setAttribute('fill', '#0f172a')
+    text.setAttribute('fill', token('--fg'))
     text.setAttribute('pointer-events', 'none')
     // Inputs sit on the LEFT edge of the design; their label-text
     // should hang OUTSIDE the box to the left of the cell. Outputs
@@ -208,9 +210,9 @@ function paintBadge(svgRoot, group, nodeId, values) {
   const anchorY = bbox.y + inset
   const badge = document.createElementNS(NS, 'text')
   badge.setAttribute('class', BADGE_CLASS)
-  badge.setAttribute('font-family', 'ui-monospace, Menlo, Consolas, monospace')
+  badge.setAttribute('font-family', token('--font-mono'))
   badge.setAttribute('font-size', '10')
-  badge.setAttribute('fill', '#0f172a')
+  badge.setAttribute('fill', token('--fg'))
   badge.setAttribute('pointer-events', 'none')
   badge.setAttribute('x', String(anchorX))
   badge.setAttribute('y', String(anchorY))

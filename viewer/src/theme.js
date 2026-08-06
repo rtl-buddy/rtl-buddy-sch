@@ -45,6 +45,8 @@ const FALLBACK = {
   '--clk-7': '#cffafe',
   '--reset-bind': '#ea580c',
   '--reset-sync': '#0d9488',
+  '--font-mono': 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  '--font-sans': '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
 }
 
 /**

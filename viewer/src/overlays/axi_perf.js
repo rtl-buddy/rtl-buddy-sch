@@ -22,6 +22,8 @@
 // wave overlay.
 
 import { formatBandwidth } from '../format.js'
+import { bpColor, bpLevel } from '../palette.js'
+import { token } from '../theme.js'
 
 const PIN_CLASS = 'rb-axi-pin' // outline rect around the decorated pin
 const BADGE_CLASS = 'rb-axi-badge' // throughput / error text badge
@@ -33,10 +35,12 @@ function cssEscape(s) {
   return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`)
 }
 
+// The backpressure ramp has exactly one definition, in ``palette.js``:
+// it used to live here, in NodeDetail.vue and in AxiPerfView.vue, with
+// three sets of class names and two different ambers (#f59e0b here vs
+// #d97706 there). Both the thresholds and the colours are shared now.
 function strokeForBackpressure(bpPct) {
-  if (bpPct > 15) return '#dc2626' // red-600
-  if (bpPct > 5) return '#f59e0b' // amber-500
-  return '#16a34a' // green-600
+  return bpColor(bpPct)
 }
 
 function strokeWidthForBps(bps) {
@@ -82,6 +86,7 @@ export function bundlePinVisual(pin) {
   const arrow = role === 'master' ? '▶' : role === 'slave' ? '◀' : '↔'
   return {
     color: strokeForBackpressure(bp),
+    level: bpLevel(bp),
     strokeWidth: Number(strokeWidthForBps(bps)),
     bpPct: bp,
     totalBps: bps,
@@ -201,7 +206,7 @@ function decoratePin(group, cells, vis, pin, boundary) {
   if (vis.hasErrors) label += ' ⚠'
   const badge = document.createElementNS(NS, 'text')
   badge.setAttribute('class', BADGE_CLASS)
-  badge.setAttribute('font-family', 'ui-monospace, Menlo, Consolas, monospace')
+  badge.setAttribute('font-family', token('--font-mono'))
   badge.setAttribute('font-size', '9')
   badge.setAttribute('fill', vis.color)
   badge.setAttribute('pointer-events', 'none')
@@ -259,6 +264,7 @@ export function aggregateNodeBundles(pins) {
   }
   return {
     color: strokeForBackpressure(worstBp),
+    level: bpLevel(worstBp),
     totalBps: bps,
     worstBp,
     hasErrors: errs,
@@ -308,7 +314,7 @@ function paintNodeAggregate(group, pins, nodeId) {
   const inset = 4
   const badge = document.createElementNS(NS, 'text')
   badge.setAttribute('class', BADGE_CLASS)
-  badge.setAttribute('font-family', 'ui-monospace, Menlo, Consolas, monospace')
+  badge.setAttribute('font-family', token('--font-mono'))
   badge.setAttribute('font-size', '10')
   badge.setAttribute('font-weight', 'bold')
   badge.setAttribute('fill', agg.color)
@@ -389,9 +395,9 @@ export const axiPerfOverlay = {
     })
     if (!hasPins) return []
     return [
-      { label: 'AXI backpressure low', swatch: '#16a34a', kind: 'stroke' },
-      { label: 'AXI backpressure med', swatch: '#f59e0b', kind: 'stroke' },
-      { label: 'AXI backpressure high', swatch: '#dc2626', kind: 'stroke' },
+      { label: 'AXI backpressure low', swatch: token('--ok'), kind: 'stroke' },
+      { label: 'AXI backpressure med', swatch: token('--warn'), kind: 'stroke' },
+      { label: 'AXI backpressure high', swatch: token('--err'), kind: 'stroke' },
     ]
   },
 }
@@ -399,6 +405,7 @@ export const axiPerfOverlay = {
 // Retained helpers — used by AxiPerfView.vue (per-tab deep dive) and
 // the unit tests.
 export {
+  bpLevel,
   cssEscape,
   strokeForBackpressure,
   strokeWidthForBps,
