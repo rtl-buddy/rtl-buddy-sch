@@ -48,25 +48,37 @@ only — no `pip` / `uv` step needed.
 ## Tests
 
 ```bash
-npm test          # vitest unit suite — parser, store, layout, overlays, hub
-npm run test:e2e  # Playwright — snapshot + hub-wiring suites
+npm test          # vitest unit suite — parser, store, layout, overlays, hub, tokens
+npm run test:e2e  # Playwright — snapshot, hub-wiring, and light/dark theme suites
 ```
+
+The Python-side `tests/test_vendored_theme.py` guards the vendored
+token sheet; see [`docs/design-tokens.md`](../docs/design-tokens.md).
 
 ## Architecture
 
 ```
 src/
-├── main.js             # Vue + Pinia bootstrap
-├── App.vue             # state-machine shell (idle / loading / ready / error)
+├── main.js             # Vue + Pinia bootstrap (stylesheet order matters — see below)
+├── App.vue             # state-machine shell (idle / loading / ready / error) + hub chrome
 ├── store.js            # Pinia store — graph, overlays, selection, hub state
 ├── parse.js            # view.json v1 loader + validator
+├── theme.css           # VENDORED hub token sheet — owned by rtl_buddy, do not edit
+├── tokens.css          # the few tokens the shared sheet has no home for
+├── app.css             # global rules that consume the tokens (.rb-sev, .rb-bp, :disabled)
+├── theme.js            # token() for baked-colour code paths + theme-change signal
+├── palette.js          # clock palette, backpressure ramp, coverage ramp — each once
+├── severity.js         # one severity rank order + colour map
+├── hubApps.js          # app-switcher contents (⌂ hub + siblings the hub advertises)
+├── identity.js         # favicon + chip logo (the bundle owns its own <link rel=icon>)
 ├── layout/
-│   └── viz.js          # @viz-js/viz wrapper + DOT generation
+│   ├── viz.js          # @viz-js/viz wrapper + DOT generation
+│   └── constants.js    # header height / sidebar width — the CSS side is tokens.css
 ├── components/
 │   ├── GraphCanvas.vue       # SVG canvas, pan/zoom, click-to-open
 │   ├── OverlayPanel.vue      # per-overlay toggles + legend
 │   ├── NodeDetail.vue        # selected-node ports/params/overlay values
-│   ├── HubStatus.vue         # connection indicator + peer/error popover
+│   ├── HubStatus.vue         # the bottom status strip (dot + peers + messages)
 │   ├── ToastHost.vue         # surfaces hub error envelopes
 │   └── DiagnosticsPanel.vue  # findings from diagnostics_set (per source)
 ├── overlays/           # one module per overlay name (mirrors Python's overlays/)
@@ -85,6 +97,21 @@ to the SVG — never an error. New overlays ship as a single
 `src/overlays/<name>.js` file alongside their Python emit code in
 later phases.
 
+## Design tokens and theming
+
+Every colour, radius, shadow and font in the SPA comes from the shared
+hub token sheet, vendored byte-for-byte at `src/theme.css`. Light is
+the default, dark follows `prefers-color-scheme`, and the header's
+three-state control (`system` → `light` → `dark`) pins `data-theme` on
+`<html>`.
+
+**Do not put a hex literal in a component's scoped `<style>`.** Reach
+for the token; if there isn't one, read
+[`docs/design-tokens.md`](../docs/design-tokens.md) — it covers the
+vendoring rules and lockstep guard, where each kind of colour decision
+lives, how the canvas / DOT / chart.js paths follow a theme flip, and
+the hub chrome contract the top bar and status strip implement.
+
 ## Hub integration (Phase 10d, [#23](https://github.com/rtl-buddy/rtl-buddy-view/issues/23))
 
 The viewer is a WebSocket client of [`rtl-buddy-hub`](https://github.com/rtl-buddy/rtl_buddy)
@@ -97,10 +124,13 @@ uv run rb hub start --serve-viewer --viewer-bundle path/to/viewer/dist/
 # by `rb hub status`.
 ```
 
-The hub serves the SPA at `/` and exposes its protocol over
-`/ws` on the same origin. The page is preamble-injected with
+The hub serves the SPA at `/view` (`/` is the landing page that lists
+every app this hub can serve) and exposes its protocol over `/ws` on
+the same origin. The page is preamble-injected with
 `window.__RTL_BUDDY_HUB__ = "<host>:<port>"`; the SPA never has
-to discover the address itself.
+to discover the address itself. The same preamble carries a data URL
+per sibling app the hub has something to show for — that is what the
+top bar's app switcher lists.
 
 ### Live behaviour
 

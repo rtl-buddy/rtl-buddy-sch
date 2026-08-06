@@ -275,6 +275,31 @@ When changing any of the above, update
 `rtl_buddy/src/rtl_buddy/tools/hier_rtl_buddy_view.py` in the same
 change set.
 
+## Cross-repo coupling — hub design tokens (vendored FROM rtl_buddy)
+
+Most cross-repo coupling in this file runs outward: rtl_buddy consumes
+what we emit. The design-token sheet runs the other way, and it is the
+mirror image of the hub-protocol schema (which *we* own and rtl_buddy
+vendors).
+
+- `viewer/src/theme.css` is a **byte-for-byte copy** of
+  `src/rtl_buddy/hub/theme.css` in `../rtl_buddy/`. rtl_buddy owns it;
+  a change here is a change made in the wrong repo.
+- `tests/test_vendored_theme.py` guards it twice: a pinned sha256 (no
+  sibling checkout needed — the one CI actually runs) and a byte-compare
+  against `../rtl_buddy/` that **skips loudly** when that checkout has
+  no sheet. The skip is deliberate: the sheet lands on rtl_buddy `main`
+  with [rtl-buddy/rtl_buddy#398](https://github.com/rtl-buddy/rtl_buddy/issues/398).
+- Updating it is a two-repo change set: land it there, copy the exact
+  bytes here, re-pin `EXPECTED_SHA256` in the same commit.
+- The SPA additionally implements rtl_buddy's **hub chrome contract**
+  (top bar + bottom status strip, one status vocabulary). Both are
+  documented in `docs/design-tokens.md`; the contract itself lives in
+  rtl_buddy's `docs/concepts/hub.md`.
+- **No hex literal belongs in a component's scoped `<style>`.** Colour
+  decisions live in `theme.css` (shared), `tokens.css` (SPA-only) or
+  `app.css` (shared classes) — see `docs/design-tokens.md`.
+
 ## Cross-repo coupling — clock-domain map (Phase 2)
 
 This tool **consumes** the domain map emitted by rtl-buddy-cdc's
