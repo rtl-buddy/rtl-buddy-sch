@@ -104,7 +104,7 @@ shares one envelope:
 | --------- | --------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `v`       | integer (= 1)   | Protocol major version. Mismatch → `error{code: "protocol_mismatch"}`. Minor additions to `type` are forward-compatible. |
 | `id`      | string (uuid)   | Per-message UUID. Used for request/response correlation (§3) and for the loop-prevention dedupe window (§6).            |
-| `origin`  | enum            | One of `view`, `wave`, `src`, `cli`, `notebook`, `graph`. The loop-prevention discriminator (§6). Every client tags messages it produces. |
+| `origin`  | enum            | One of `view`, `wave`, `src`, `cli`, `notebook`, `graph`, `cov`. The loop-prevention discriminator (§6). Every client tags messages it produces. |
 | `kind`    | enum            | One of `event`, `request`, `response`, `error`. See §3 for the per-`type` allowed kinds.                                 |
 | `type`    | string          | The message type from the event catalog (§3) or one of the request/response/error type names.                            |
 | `payload` | object \| null  | Type-specific. Shapes are defined in the JSON Schema (`schemas/hub-protocol-v1.json`).                                  |
@@ -132,6 +132,7 @@ one whose `origin` matches the event's `origin` (see §6). `kind:
 | `source_focused`        | src → all       | `{ "file": "rtl/fifo.sv", "line": 42, "col": 5 }`                      | nvim's explicit `:RtlBuddyShow` broadcast — not on every cursor move (would spam the bus). Paths are absolute.                  |
 | `diagnostics_set`       | any → all       | `{ "source": "rtl-buddy-cdc", "items": [{file, line, severity, message, [instance_path], …}] }` | Full diagnostic set for the given `source`. Latest-writer-wins per source on the hub's cache. Empty `items` clears that source. Each item carries `file`+`line` for resolution and MAY carry an `instance_path` hint so consumers map directly to a view.json node without walking source ranges. |
 | `graph_focus`           | any → all       | `{ "node": "test:verif/dma#smoke" }`                                   | Focus the design-knowledge-graph pane (§4.8) on one node of `artefacts/graph/graph.json`. `node` is a graph node id — `module:<name>`, `inst:<top>/<dot.path>`, `test:<suite>#<name>`, the vocabulary of `docs/graph-json-v1.md` (design tier) and rtl_buddy's `docs/concepts/graph.md` (config + binding tiers). A node the pane's loaded graph does not contain is a soft miss: the pane reports it and keeps its current focus, the same way an unknown overlay name is handled. The hub caches the last one and replays it on registration, so `rb hub send graph-focus NODE` before the tab is open still lands. |
+| `cov_focus`             | any → all       | `{ "target": "file:rtl/fifo.sv", "metric": "branch", "line": 42, "item": "b3" }` | Focus the coverage pane (§4.9) on one target of the run's coverage model (`GET /cov.json`). `target` is prefixed — `file:<path>` (as `/cov.json` keys files; an absolute path is accepted), `module:<name>`, `test:<suite>#<name>` — and an unprefixed string is read as a file path. `metric` (`line`, `branch`, `toggle`, `expression`, `cover`), `line`, and `item` are optional narrowing hints; omitting `metric` leaves the pane's current selection alone, and `line` applies to file targets only. A target the pane's loaded model does not contain is a soft miss: the pane reports it and keeps its current focus, exactly like `graph_focus`. The hub caches the last one and replays it on registration, so `rb hub send cov-focus TARGET` before the tab is open still lands. |
 | `view_changed`          | hub → all peers | `{ "model": "ip_dtnpu_dma", "models_file": "/abs/path/to/models.yaml", "view_url": "/view.json?model=ip_dtnpu_dma" }` | Broadcast by the hub (`origin: cli`) on every active-model change — driven by a SPA `?model=` switch on `GET /view.json`, or by future file-watch refresh. Consumers refetch model-scoped state.                                                                       |
 
 ### Request/response (point-to-point)
@@ -161,7 +162,7 @@ automatically.
 
 | `type`     | Direction         | Payload                                                                                | Notes                                                                                                                              |
 | ---------- | ----------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `hello`    | client → hub      | `{ "client": "viewer", "version": "0.1.0", "capabilities": ["selection_changed", ...] }` | Required first message. `client` is one of `view`, `wave`, `src`, `cli`, `notebook`, `graph`. `capabilities` lists `type`s the client understands. |
+| `hello`    | client → hub      | `{ "client": "viewer", "version": "0.1.0", "capabilities": ["selection_changed", ...] }` | Required first message. `client` is one of `view`, `wave`, `src`, `cli`, `notebook`, `graph`, `cov`. `capabilities` lists `type`s the client understands. |
 | `welcome`  | hub → client      | `{ "server_version": "0.1.0", "registered_clients": ["wave", "src"] }`                  | Hub's reply. Failure to negotiate → `error{code: "protocol_mismatch"}` then disconnect.                                            |
 | `bye`      | either direction  | `{}`                                                                                   | Clean disconnect; no response expected. Hub broadcasts `bye` to remaining clients with the leaving client's `origin` in the envelope. |
 | `peer_joined` | hub → all peers (except joining) | `{}` | Broadcast after a new client completes its hello handshake. The joining client's origin is in the envelope's `origin` field, mirroring `bye`'s shape so consumers can update their peer lists symmetrically (otherwise the list a peer received in its own `welcome` would never grow as later clients connect). |
@@ -468,6 +469,54 @@ Because `graph_focus` is a state event the hub caches (like
 `selection_changed`), a focus sent before the tab exists is replayed
 to the pane when it registers — the pane opens already focused rather
 than dropping the event that preceded it.
+
+### 4.9 Coverage pane (`cov` client, browser)
+
+The hub serves the run's coverage model
+([epic `rtl-buddy/rtl_buddy#397`](https://github.com/rtl-buddy/rtl_buddy/issues/397))
+as a page at `GET /cov` on the same `http_port` as the SPA, backed by
+`GET /cov.json` — the structured per-file / per-line / per-branch /
+per-toggle model plus per-test attribution that `rb cov` builds from
+the coverage artefacts already on disk. Implementation is rtl_buddy's
+(`hub/cov_page.py`, `rtl-buddy/rtl_buddy#400`); what belongs in *this*
+spec is the wire contract it registers under.
+
+Coverage numbers are **not** diagnostics. `diagnostics_set` is a
+closed, `additionalProperties: false` shape with no numeric field, and
+widening it to carry hit counts would make every existing consumer's
+severity-based rendering wrong. Coverage therefore gets its own
+channel: `/cov.json` for the data, `cov_focus` for the pointer.
+
+Like the graph pane, it is a peer with its **own origin**, not a
+second `view`. The hub allows one client per origin — a second
+`hello` for an already registered origin is refused unless it sets
+`takeover: true`, which evicts the older peer — and the coverage pane
+is meant to be open *alongside* the schematic and the graph, so
+sharing a slot would make the panes evict each other.
+
+User flow:
+
+1. Browser loads `http://localhost:<http_port>/cov`, reads
+   `window.__RTL_BUDDY_HUB__` exactly as the SPA does, opens the
+   WebSocket at `/ws`, sends `hello { client: "cov", ... }`.
+2. Hub responds `welcome`; the pane is the `cov` client and appears
+   in every peer's `registered_clients` / `state_snapshot.peers`.
+3. Clicking a file or module emits the **same envelopes the other
+   panes emit** — a `selection_changed` for anything that resolves to
+   a design-view instance path, and an `open_source` request for a
+   row whose `file`/`line` is known. The pane introduces no message
+   type of its own in this direction.
+4. The reverse direction is `cov_focus` (§3): `rb hub send cov-focus
+   TARGET`, or any peer, points the pane at a file, module, or test —
+   optionally narrowed to one `metric`, `line`, or `item`. A
+   `selection_changed` arriving from the SPA or the editor highlights
+   the matching file's coverage.
+
+Because `cov_focus` is a state event the hub caches (like
+`graph_focus`), a focus sent before the tab exists is replayed to the
+pane when it registers. Only the latest `cov_focus` is kept —
+latest-writer-wins, one slot, no history — so a late-joining pane
+opens on the most recent target rather than replaying a backlog.
 
 ---
 
@@ -839,7 +888,8 @@ applied per connection is the `v` from that connection's `hello`.
 | `id`            | Per-message UUID for request/response correlation and dedup.                                                          |
 | `instance_path` | A hierarchical instance reference rooted at `view.json.top`, e.g. `top.u_fifo.u_wr_ptr`.                              |
 | `graph.json`    | The design-knowledge-graph contract (`docs/graph-json-v1.md`); its node ids are the coordinate `graph_focus` speaks. |
-| `origin`        | One of `view`, `wave`, `src`, `cli`, `notebook`, `graph` — the conceptual originator of a message.                   |
+| `cov.json`      | The coverage model the hub serves at `GET /cov.json` (rtl_buddy's `rb cov`); its file / module / test keys are the coordinate `cov_focus` speaks. |
+| `origin`        | One of `view`, `wave`, `src`, `cli`, `notebook`, `graph`, `cov` — the conceptual originator of a message.            |
 | `tb_prefix`     | Configured prefix stripped from wave paths to recover view instance paths.                                            |
 | `view.json`     | The JSON contract emitted by `rtl-buddy-view --format json` once Phase 4 lands; see `rtl-buddy/rtl-buddy-view#17`.   |
 | `wave_scope`    | A path into the surfer-loaded waveform, e.g. `tb.dut.u_fifo`.                                                       |
@@ -855,6 +905,8 @@ applied per connection is the `v` from that connection's `hello`.
 - Phase 10c nvim plugin: `rtl-buddy/rtl_buddy#113`
 - Phase 10d viewer wiring: `rtl-buddy/rtl-buddy-view#23`
 - Phase 4 view.json v1 contract: `rtl-buddy/rtl-buddy-view#17`
+- Design-knowledge-graph pane (§4.8): `rtl-buddy/rtl_buddy#382`
+- Coverage pane (§4.9): `rtl-buddy/rtl_buddy#400`; protocol half `rtl-buddy/rtl-buddy-view#133`
 - WCP source of truth (fork): https://github.com/rtl-buddy/surfer/blob/rtl-buddy/surfer-wcp/src/proto.rs
 - WCP upstream: https://gitlab.com/surfer-project/surfer/-/blob/main/surfer-wcp/src/proto.rs
 - In-flight WCP work (value annotation, related fork branch): https://github.com/rtl-buddy/surfer/tree/feature/rtl-buddy-52-wcp-src-value-annotation
