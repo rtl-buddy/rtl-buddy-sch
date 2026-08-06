@@ -10,6 +10,8 @@
 // Graph-only by design: side panels, toolbar, and the overlay legend
 // are not included. v1 scope (rtl_buddy hub-side capture feature).
 
+import { token } from './theme.js'
+
 // Cap PNG rasterisation so the hub never has to wait out its own
 // 15s envelope timeout when the browser's Image+canvas pipeline
 // wedges (issue #101). The wedge has been observed after a hub
@@ -171,10 +173,17 @@ function renderSvgToPng(svgXml, width, height, timeoutMs = PNG_RASTERISE_TIMEOUT
           canvas.width = width
           canvas.height = height
           const ctx = canvas.getContext('2d')
-          // Solid white backdrop — the SVG has no background and most
+          // Solid backdrop — the SVG has no background and most
           // consumers (slides, docs, agent reads) prefer opaque PNGs
           // to checker-pattern transparency.
-          ctx.fillStyle = '#ffffff'
+          //
+          // It follows the ACTIVE theme rather than being pinned
+          // white, because the graph's own colours are already baked
+          // for that theme: the DOT builders resolve tokens at build
+          // time, so a dark-theme capture on a white plate is pale
+          // text on white. A caller that wants a light plate flips the
+          // theme first — the canvas re-lays-out on the flip.
+          ctx.fillStyle = token('--bg')
           ctx.fillRect(0, 0, width, height)
           ctx.drawImage(img, 0, 0, width, height)
           resolve(canvas.toDataURL('image/png'))

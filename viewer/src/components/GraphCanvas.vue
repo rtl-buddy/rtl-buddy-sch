@@ -1078,7 +1078,10 @@ onBeforeUnmount(() => {
 .svg-host :deep([data-rb-selected]) > path {
   stroke: var(--accent);
   stroke-width: 3 !important;
-  filter: drop-shadow(0 0 4px var(--accent));
+  /* The glow was a baked ``rgba(37, 99, 235, .55)``. ``color-mix``
+     keeps the same 55% so the halo reads as a halo and not a second
+     stroke, while following the accent into dark. */
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 55%, transparent));
 }
 /* For HTML-table labels (block-flow boxes), the outer table is a
    nested polygon — accent that one too. */
