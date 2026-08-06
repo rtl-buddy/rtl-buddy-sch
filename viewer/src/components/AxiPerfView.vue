@@ -342,11 +342,38 @@ const channelBarData = computed(() => {
   }
 })
 
-const channelBarOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  scales: { y: { max: 100, ticks: { callback: (v) => v + '%' } } },
+// chart.js's own chrome — tick labels, grid lines, the legend text —
+// defaults to a mid grey that is only legible on a light surface. It
+// takes concrete strings, not var(), so both option objects are
+// computed on the theme like the datasets are.
+function chartChrome() {
+  themeVersion.value
+  const fg = token('--fg-muted')
+  const line = token('--line')
+  return {
+    color: fg,
+    plugins: { legend: { labels: { color: fg } } },
+    scaleDefaults: { ticks: { color: fg }, grid: { color: line }, border: { color: line } },
+  }
 }
+
+const channelBarOptions = computed(() => {
+  const c = chartChrome()
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    color: c.color,
+    plugins: c.plugins,
+    scales: {
+      x: { ...c.scaleDefaults },
+      y: {
+        ...c.scaleDefaults,
+        max: 100,
+        ticks: { ...c.scaleDefaults.ticks, callback: (v) => v + '%' },
+      },
+    },
+  }
+})
 
 const latencyHistData = computed(() => {
   themeVersion.value
@@ -363,11 +390,19 @@ const latencyHistData = computed(() => {
   }
 })
 
-const latencyHistOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  scales: { y: { beginAtZero: true } },
-}
+const latencyHistOptions = computed(() => {
+  const c = chartChrome()
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    color: c.color,
+    plugins: c.plugins,
+    scales: {
+      x: { ...c.scaleDefaults },
+      y: { ...c.scaleDefaults, beginAtZero: true },
+    },
+  }
+})
 
 function maxBp(block) {
   let m = 0
