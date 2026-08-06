@@ -147,6 +147,7 @@ import { useViewerStore } from '../store.js'
 import { useHub } from '../composables/useHub.js'
 import { heatColor } from '../overlays/coverage.js'
 import { bpLevel } from '../palette.js'
+import { themeVersion } from '../theme.js'
 import { formatBandwidth as fmtBps } from '../format.js'
 
 const store = useViewerStore()
@@ -169,6 +170,9 @@ const COVERAGE_CHANNELS = [
   ['toggles', 'toggles'],
 ]
 const coverageRows = computed(() => {
+  // ``heatColor`` resolves --cov-l at call time, so the rows have to be
+  // recomputed when the theme flips (the ramp moves 82% → 38%).
+  themeVersion.value
   if (!coverage.value) return []
   const rows = []
   for (const [key, label] of COVERAGE_CHANNELS) {

@@ -59,13 +59,17 @@
 import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
 import { getOverlay, overlaySummary } from '../overlays/index.js'
-import { token } from '../theme.js'
+import { token, themeVersion } from '../theme.js'
 
 const store = useViewerStore()
 const summary = computed(() =>
   store.graph ? overlaySummary(store.graph) : [],
 )
 function legendFor(name) {
+  // Legend swatches are concrete colours an overlay resolved from a
+  // token, so a theme flip has to re-run this. Reading themeVersion
+  // during render is what registers the flip as a render dependency.
+  themeVersion.value
   const overlay = getOverlay(name)
   if (!overlay || typeof overlay.legend !== 'function') return []
   return overlay.legend(store.graph) || []
@@ -120,6 +124,7 @@ function _overlayReachesTbScope(overlayName) {
 // markers. Auto-filters per current graph and refreshes via Vue
 // reactivity when ``store.graph`` rebinds.
 const layoutLegend = computed(() => {
+  themeVersion.value // the swatch below is a resolved token, not a var()
   const dot = store.graph && store.graph.layout && store.graph.layout.dot
   if (typeof dot !== 'string' || dot.length === 0) return []
   const entries = []
