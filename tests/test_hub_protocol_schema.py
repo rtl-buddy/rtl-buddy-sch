@@ -15,11 +15,18 @@ hand-editing a 1000-line JSON file:
 2. ``cov_focus`` (rtl-buddy/rtl-buddy-view#133) is structurally a
    sibling of ``graph_focus`` — one required coordinate string plus
    optional hints, closed payload, ``kind: "event"``.
+3. The examples in ``docs/hub-protocol.md`` are what implementers copy,
+   and nothing else checks them: the ``hello`` row shipped
+   ``client: "viewer"`` for the whole life of the document, a value the
+   schema has never accepted. Every envelope example in the doc is now
+   validated against the schema, and every ``origin``/``client``
+   literal anywhere in the prose is checked against the vocabulary.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import jsonschema
@@ -37,6 +44,11 @@ UUID = "9c3f8e5f-7d1b-4d3a-9a3b-1a2f5c8e7d3a"
 @pytest.fixture(scope="module")
 def schema() -> dict:
     return json.loads(SCHEMA_PATH.read_text())
+
+
+@pytest.fixture(scope="module")
+def doc() -> str:
+    return DOC_PATH.read_text()
 
 
 @pytest.fixture(scope="module")
@@ -69,6 +81,44 @@ def _iter_enums(node: object):
     elif isinstance(node, list):
         for value in node:
             yield from _iter_enums(value)
+
+
+def _strip_line_comments(text: str) -> str:
+    """Drop ``//`` annotations from the doc's fenced JSON blocks.
+
+    The worked examples annotate envelopes with ``// → wave`` and the
+    like, which is not JSON. No string literal in those blocks contains
+    ``//``, so a naive strip is exact here.
+    """
+    return "\n".join(line.split("//")[0] for line in text.splitlines())
+
+
+def _iter_json_objects(text: str):
+    """Yield every top-level ``{...}`` object in ``text``, decoded."""
+    decoder = json.JSONDecoder()
+    idx = 0
+    while (start := text.find("{", idx)) != -1:
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            idx = start + 1
+            continue
+        idx = end
+        yield obj
+
+
+def _doc_envelopes(doc: str) -> list[dict]:
+    """Every fenced JSON block in the doc that is a wire envelope.
+
+    Non-envelope blocks (the ``hub.json`` discovery record) are skipped
+    by requiring both ``kind`` and ``type``.
+    """
+    envelopes: list[dict] = []
+    for block in re.findall(r"```json\n(.*?)```", doc, flags=re.DOTALL):
+        for obj in _iter_json_objects(_strip_line_comments(block)):
+            if isinstance(obj, dict) and "kind" in obj and "type" in obj:
+                envelopes.append(obj)
+    return envelopes
 
 
 # --- the origin vocabulary --------------------------------------------------
@@ -216,12 +266,70 @@ def test_cov_focus_mirrors_graph_focus_structurally(schema: dict) -> None:
 # --- schema ↔ docs ----------------------------------------------------------
 
 
-def test_docs_document_the_cov_peer() -> None:
+def test_docs_document_the_cov_peer(doc: str) -> None:
     """`docs/hub-protocol.md` is the prose form of the same promise."""
-    doc = DOC_PATH.read_text()
     assert "| `cov_focus`" in doc, "§3 event catalog row missing"
     assert "### 4.9 Coverage pane (`cov` client, browser)" in doc
     # Every prose list of origins carries the whole vocabulary.
     for line in doc.splitlines():
         if "`notebook`" in line and "`graph`" in line:
             assert "`cov`" in line, f"origin list missing cov: {line}"
+
+
+def test_doc_examples_name_only_real_origins(doc: str) -> None:
+    """No example invents a peer name the schema would reject.
+
+    §3's `hello` row said `client: "viewer"` — readable, and rejected on
+    the wire by the `client` enum. Sweep every `origin` / `client` /
+    `registered_clients` literal in the document, in JSON blocks and in
+    inline prose alike.
+    """
+    found = set(re.findall(r'"(?:origin|client)"\s*:\s*"([^"]*)"', doc))
+    found |= set(re.findall(r"\bclient:\s*\"([^\"]*)\"", doc))
+    for array in re.findall(r'"registered_clients"\s*:\s*\[([^\]]*)\]', doc):
+        found |= set(re.findall(r'"([^"]*)"', array))
+    assert found, "origin/client literals moved out of the document"
+    assert found <= set(ORIGINS), (
+        f"unknown peer names in examples: {sorted(found - set(ORIGINS))}"
+    )
+
+
+def test_doc_envelope_examples_validate(
+    validator: jsonschema.protocols.Validator, doc: str
+) -> None:
+    """Every envelope an implementer can copy out of the doc is legal.
+
+    §8 abbreviates `id` ("in practice they are full UUIDs"), so that one
+    field is normalised before validating; everything else is checked as
+    written.
+    """
+    envelopes = _doc_envelopes(doc)
+    assert len(envelopes) >= 10, (
+        f"only {len(envelopes)} envelopes parsed; extractor drifted"
+    )
+    for envelope in envelopes:
+        validator.validate({**envelope, "id": UUID})
+
+
+def test_doc_and_schema_agree_on_the_cov_focus_line_hint(
+    schema: dict, doc: str
+) -> None:
+    """`line` is not file-only, in either document.
+
+    The schema is the truth: `line` narrows a `file:` target *or* a
+    `module:` target that resolves to a single file, and is ignored
+    rather than rejected anywhere else. §3 used to say "file targets
+    only", which reads as a constraint the schema does not impose.
+    """
+    branches = {
+        branch["if"]["properties"]["type"]["const"]: branch["then"]
+        for branch in schema["allOf"]
+        if "const" in branch["if"]["properties"]["type"]
+    }
+    line = branches["cov_focus"]["properties"]["payload"]["properties"]["line"]
+    assert "module:" in line["description"]
+    assert "ignored" in line["description"]
+
+    (row,) = [ln for ln in doc.splitlines() if ln.startswith("| `cov_focus`")]
+    assert "`module:` target that resolves to a single file" in row
+    assert "ignored, not an error" in row
