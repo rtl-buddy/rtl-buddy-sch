@@ -106,13 +106,26 @@ them. `GraphCanvas` re-tints the parts that would otherwise be
 unreadable (text fill, edge stroke, cluster stroke) with `:deep` rules,
 which outrank Graphviz's presentation attributes.
 
-**PNG capture follows the active theme.** `capture.js` fills its
-backdrop with `--bg` rather than a pinned white, because the graph's
-own colours are already baked for whichever theme was active at layout
-time — a dark-theme graph on a white plate is pale text on white. A
-caller who wants a light plate pins light first; the canvas re-lays-out
-on the flip. The SVG format is emitted as-is, with no backdrop, exactly
-as before.
+Those rules are **gated on `.svg-host.producer-dot`**, a class
+`renderSvg` sets only when `hasEmbeddedDot(graph)` said the producer's
+DOT is what viz.js laid out. The gate is the whole point: "a stylesheet
+outranks a presentation attribute" cuts both ways, and ungated the same
+rules repaint the in-JS builders' *deliberate* colours — CDC-red edge
+labels and arrowheads, the `?` unconstrained-source marker — in body
+grey. The builders bake theme-resolved tokens and re-run on a flip, so
+they need no safety net.
+
+**PNG capture follows the active theme, except for the producer DOT.**
+`capture.js` fills its backdrop with `--bg` rather than a pinned white,
+because the graph's own colours are already baked for whichever theme
+was active at layout time — a dark-theme graph on a white plate is pale
+text on white. A caller who wants a light plate pins light first; the
+canvas re-lays-out on the flip. When the producer's DOT is what was
+rendered, the backdrop is pinned to the light `--bg` instead: that DOT
+is baked light and only *looks* dark-safe on screen thanks to the
+`:deep` re-tints, which do not travel with the standalone SVG the
+rasteriser serialises. The SVG format is emitted as-is, with no
+backdrop, exactly as before.
 
 ## Hub chrome contract
 

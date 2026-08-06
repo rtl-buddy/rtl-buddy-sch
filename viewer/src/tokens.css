@@ -1,5 +1,5 @@
 /* rtl-buddy-view SPA tokens — the thin layer above the vendored hub
- * sheet (``theme.css``, owned by rtl_buddy — see VENDORED-THEME.md).
+ * sheet (``theme.css``, owned by rtl_buddy — see docs/design-tokens.md).
  *
  * Only two families live here, because only two have no home in the
  * shared sheet:
