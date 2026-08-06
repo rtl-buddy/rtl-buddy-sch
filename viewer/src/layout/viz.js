@@ -70,11 +70,24 @@ export async function layoutDot(dot) {
 // builder otherwise. Exported for tests so the precedence rule is
 // pinnable without standing up the WASM engine.
 export function pickDot(graph) {
-  const embedded = graph?.layout?.dot
-  if (typeof embedded === 'string' && embedded.trim().length > 0) {
-    return embedded
-  }
+  if (hasEmbeddedDot(graph)) return graph.layout.dot
   return graphToDot(graph)
+}
+
+/**
+ * True when ``pickDot`` will use the producer's embedded DOT rather
+ * than the in-JS builder.
+ *
+ * GraphCanvas needs the distinction for more than layout: the
+ * producer's DOT has the Python renderer's light palette baked in and
+ * cannot be rebuilt here, so it needs the canvas's ``:deep`` re-tint
+ * rules; ``graphToDot`` bakes theme-resolved tokens (including the CDC
+ * red on crossing edges, labels and the unconstrained-source marker),
+ * and the same blanket re-tint would throw those away.
+ */
+export function hasEmbeddedDot(graph) {
+  const embedded = graph?.layout?.dot
+  return typeof embedded === 'string' && embedded.trim().length > 0
 }
 
 /**

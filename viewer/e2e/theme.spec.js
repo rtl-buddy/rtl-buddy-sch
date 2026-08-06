@@ -24,6 +24,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURE = path.join(__dirname, 'fixtures', 'two_clock_design.json')
 const payload = JSON.parse(fs.readFileSync(FIXTURE, 'utf-8'))
 
+// Same design with an explicit CDC crossing pair on the edge the
+// producer already flagged ``crossing: true``. The fixture generator
+// doesn't emit ``pairs`` (that needs a flop-level analysis the e2e
+// fixtures don't run), and without a pair ``graphToDot`` emits no CDC
+// edge at all — so the red-versus-grey question below would have
+// nothing to look at. Injected here rather than checked in as a
+// seventh fixture: it is a one-key delta to an existing one.
+const cdcPayload = JSON.parse(JSON.stringify(payload))
+for (const edge of cdcPayload.edges) {
+  if (edge?.overlays?.clock?.crossing) {
+    edge.overlays.clock.pairs = [{ src_clock: 'clk_a', dst_clock: 'clk_b', flops: 1 }]
+  }
+}
+
+// A fixture that DOES carry ``graph.layout.dot`` — the producer's own
+// bytes, baked with the Python renderer's light palette. This is the
+// only case the canvas's re-tint rules are for.
+const PRODUCER_FIXTURE = path.join(__dirname, 'fixtures', 'axi_2x2.json')
+const producerPayload = JSON.parse(fs.readFileSync(PRODUCER_FIXTURE, 'utf-8'))
+
 // The vendored sheet's two page surfaces. Chromium reports computed
 // colours as ``rgb(r, g, b)``.
 const BG = {
@@ -31,10 +51,10 @@ const BG = {
   dark: 'rgb(15, 17, 21)', // #0f1115
 }
 
-async function boot(page) {
-  await page.addInitScript((data) => {
-    window.__RTL_BUDDY_VIEW_DATA__ = data
-  }, payload)
+async function boot(page, data = payload) {
+  await page.addInitScript((d) => {
+    window.__RTL_BUDDY_VIEW_DATA__ = d
+  }, data)
   await page.goto('/')
   await expect(page.locator('svg').first()).toBeVisible({ timeout: 30_000 })
   await expect.poll(() => page.locator('svg g.node').count(), { timeout: 30_000 }).toBeGreaterThan(0)
@@ -80,6 +100,39 @@ for (const scheme of ['light', 'dark']) {
       // viz.js emits ``fill="#000000"`` on its <text>; the canvas's
       // themed rule has to outrank that presentation attribute, or
       // dark mode is black-on-black.
+      const fill = await page
+        .locator('svg g.node text')
+        .first()
+        .evaluate((el) => getComputedStyle(el).fill)
+      expect(fill).toBe(await token(page, '--fg').then(hexToRgb))
+    })
+
+    test('a CDC edge keeps the error colour the DOT builder baked', async ({ page }) => {
+      // The other half of the same cascade question. ``graphToDot``
+      // resolves ``--err`` and bakes it onto the crossing edge's label
+      // and arrowhead, and a canvas rule that re-tints *every* <text>
+      // and *every* ``g.edge polygon`` would quietly repaint both in
+      // body grey — a stylesheet outranks a presentation attribute.
+      // So the re-tint is gated on the producer-DOT marker, and this
+      // fixture (no ``layout.dot``) must come out red in both themes.
+      await boot(page, cdcPayload)
+      const err = await token(page, '--err').then(hexToRgb)
+      const label = page.locator('svg g.edge text').first()
+      await expect(label).toBeAttached()
+      expect(await label.evaluate((el) => getComputedStyle(el).fill)).toBe(err)
+      const head = page.locator('svg g.edge polygon').first()
+      expect(await head.evaluate((el) => getComputedStyle(el).fill)).toBe(err)
+      // The canvas is not wearing the safety-net class at all here.
+      await expect(page.locator('.svg-host')).not.toHaveClass(/producer-dot/)
+    })
+
+    test('a producer-supplied DOT still gets the re-tint', async ({ page }) => {
+      // The other side of the gate. These bytes are baked light and
+      // cannot be rebuilt here, so black-on-near-black in dark is only
+      // avoided by the ``.producer-dot`` rules outranking Graphviz's
+      // presentation attributes.
+      await boot(page, producerPayload)
+      await expect(page.locator('.svg-host')).toHaveClass(/producer-dot/)
       const fill = await page
         .locator('svg g.node text')
         .first()
