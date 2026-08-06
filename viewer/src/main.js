@@ -17,8 +17,12 @@ import './app.css'
 import App from './App.vue'
 import { useViewerStore } from './store.js'
 import { installFavicon } from './identity.js'
+import { applyStoredThemePreference } from './theme.js'
 
 installFavicon()
+// Before mount: a remembered ``data-theme`` pin has to be on <html>
+// for the first paint, or the page flashes the OS palette first.
+applyStoredThemePreference()
 
 const app = createApp(App)
 const pinia = createPinia()

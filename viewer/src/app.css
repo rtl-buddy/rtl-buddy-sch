@@ -17,6 +17,15 @@
 :root {
   font-family: var(--font-sans);
   color: var(--fg);
+}
+
+/* The surface is declared on ``body``, not only on ``:root``. Painting
+   it on the root alone leaves ``body`` transparent — the page still
+   *looks* right (the root's background propagates to the canvas) but
+   any element that samples ``body``'s computed background, and any
+   screenshot diff of a body-anchored region, sees ``rgba(0,0,0,0)``. */
+html,
+body {
   background: var(--bg);
 }
 

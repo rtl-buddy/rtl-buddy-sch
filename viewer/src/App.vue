@@ -1,36 +1,58 @@
 <template>
   <div class="app">
+    <!-- Top bar, per the hub chrome contract (rtl_buddy
+         docs/concepts/hub.md): identity left, app controls centre,
+         app switcher right. Every hub app wears the same two strips
+         so moving between them costs nothing. -->
     <header class="app-header">
-      <h1>rtl-buddy-view</h1>
-      <nav class="app-tabs" v-if="store.status === 'ready'">
-        <button
-          type="button"
-          :class="{ active: store.activeTab === 'hierarchy' }"
-          @click="store.setActiveTab('hierarchy')"
-        >Hierarchy</button>
-        <button
-          type="button"
-          :class="{ active: store.activeTab === 'axi-perf' }"
-          :disabled="!hasAxiPerf"
-          :title="hasAxiPerf ? '' : 'Load a view.json with --overlay axi-perf=...'"
-          @click="store.setActiveTab('axi-perf')"
-        >AXI Performance</button>
-      </nav>
-      <div class="header-status">
+      <div class="app-identity">
+        <img class="app-logo" :src="LOGO_URL" alt="" width="18" height="18" />
+        <h1>rtl-buddy-view</h1>
         <span class="design-name" v-if="store.graph">{{ store.graph.top }}</span>
-        <ModelPicker />
         <span
           v-if="hub.serverVersion.value"
-          class="server-version"
+          class="build-chip"
           :title="`rtl-buddy ${hub.serverVersion.value}`"
         >rtl-buddy <code>{{ shortVersion }}</code></span>
         <span
           v-if="bundleHash"
-          class="server-version bundle-hash"
+          class="build-chip"
           :title="`SPA bundle index-${bundleHash}.js`"
         >spa <code>{{ bundleHash }}</code></span>
-        <HubStatus />
       </div>
+      <div class="app-controls">
+        <nav class="app-tabs" v-if="store.status === 'ready'">
+          <button
+            type="button"
+            :class="{ active: store.activeTab === 'hierarchy' }"
+            @click="store.setActiveTab('hierarchy')"
+          >Hierarchy</button>
+          <button
+            type="button"
+            :class="{ active: store.activeTab === 'axi-perf' }"
+            :disabled="!hasAxiPerf"
+            :title="hasAxiPerf ? '' : 'Load a view.json with --overlay axi-perf=...'"
+            @click="store.setActiveTab('axi-perf')"
+          >AXI Performance</button>
+        </nav>
+        <ModelPicker />
+      </div>
+      <nav class="app-switcher" aria-label="Hub apps">
+        <a
+          v-for="app in switcherApps"
+          :key="app.key"
+          class="switch-link"
+          :href="app.href"
+          :title="app.title"
+        >{{ app.label }}</a>
+        <button
+          type="button"
+          class="theme-toggle"
+          :title="themeToggleTitle"
+          :aria-label="themeToggleTitle"
+          @click="cycleTheme"
+        >{{ themeToggleGlyph }}</button>
+      </nav>
     </header>
     <!-- Keep the body mounted across status transitions so a model
          switch (status='ready' → 'loading' → 'ready') doesn't tear
@@ -143,6 +165,13 @@
         </p>
       </div>
     </div>
+    <!-- Bottom status strip, per the hub chrome contract: connection
+         dot + one vocabulary (connected / connecting… / offline) on
+         the left, peer list in the middle, message area on the right.
+         HubStatus owns all three. -->
+    <footer class="app-status-strip">
+      <HubStatus />
+    </footer>
     <ToastHost />
   </div>
 </template>
@@ -169,13 +198,24 @@ import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
 import CollapsiblePanel from './components/CollapsiblePanel.vue'
 import { initHub, useHub } from './composables/useHub.js'
 import { initEventSync } from './composables/useEventSync.js'
+import {
+  SIDEBAR_DEFAULT_WIDTH_PX,
+  SIDEBAR_MIN_WIDTH_PX,
+  SIDEBAR_MAX_WIDTH_PX,
+} from './layout/constants.js'
+import { hubApps } from './hubApps.js'
+import { LOGO_URL } from './identity.js'
+import { initTheme, themePreference, setThemePreference } from './theme.js'
 
 const store = useViewerStore()
 const hub = useHub()
 
 // --- Resizable sidebar (drag the divider between sidebar and canvas).
-const SIDEBAR_MIN = 200
-const SIDEBAR_MAX = 640
+// The clamp and the default live in layout/constants.js because the
+// stylesheet needs the same numbers; tests/tokens.spec.js keeps the two
+// sides honest.
+const SIDEBAR_MIN = SIDEBAR_MIN_WIDTH_PX
+const SIDEBAR_MAX = SIDEBAR_MAX_WIDTH_PX
 function loadSidebarWidth() {
   try {
     const v = Number(localStorage.getItem('rb-sidebar-width'))
@@ -183,7 +223,7 @@ function loadSidebarWidth() {
   } catch {
     /* localStorage unavailable — fall through to the default */
   }
-  return 280
+  return SIDEBAR_DEFAULT_WIDTH_PX
 }
 const sidebarWidth = ref(loadSidebarWidth())
 function startResize(e) {
@@ -250,6 +290,22 @@ function readBundleHash() {
 }
 const bundleHash = readBundleHash()
 
+// App switcher (top-bar right). Empty unless the hub is serving us —
+// off the hub, ``/`` and ``/graph`` are not ours to link to.
+const switcherApps = hubApps()
+
+// Theme control. Three states so a user can go back to following the
+// OS after pinning; ``system`` is the default and writes no attribute.
+const THEME_CYCLE = { system: 'light', light: 'dark', dark: 'system' }
+const THEME_GLYPH = { system: '◐', light: '☀', dark: '☾' }
+const themeToggleGlyph = computed(() => THEME_GLYPH[themePreference.value] || '◐')
+const themeToggleTitle = computed(
+  () => `Theme: ${themePreference.value} — click for ${THEME_CYCLE[themePreference.value]}`,
+)
+function cycleTheme() {
+  setThemePreference(THEME_CYCLE[themePreference.value] || 'light')
+}
+
 function onPickFile(event) {
   const file = event.target.files && event.target.files[0]
   if (file) store.loadFromFile(file)
@@ -268,6 +324,9 @@ function onDrop(e) {
 onMounted(() => {
   document.addEventListener('dragover', onDragOver)
   document.addEventListener('drop', onDrop)
+  // Watch for OS colour-scheme flips and ``data-theme`` pins so the
+  // canvas — whose colours are baked, not inherited — redraws.
+  initTheme()
   // Phase 10d: kick the hub composable. Same-origin /ws — the hub
   // injects window.__RTL_BUDDY_HUB__ when it serves the bundle.
   initHub({ store })
@@ -282,21 +341,67 @@ onBeforeUnmount(() => {
 </script>
 
 <style>
-:root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  color: #1f2937;
-  background: #f8fafc;
-}
-body, html, .app { margin: 0; height: 100%; }
+/* App shell. Global (unscoped) because these class names are the
+   chrome contract every hub app implements, and because the layout
+   numbers (--header-h, --status-h, --sidebar-w) have to reach the
+   children. Colours, radii and type come from tokens.css + the
+   vendored hub sheet; the document base lives in app.css. */
+
+/* -- top bar: identity left / controls centre / switcher right ------- */
 .app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.5rem 1rem;
-  background: #ffffff;
-  border-bottom: 1px solid #e5e7eb;
+  gap: 1rem;
+  height: var(--header-h);
+  box-sizing: border-box;
+  padding: 0 1rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
 }
-.app-header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+.app-identity,
+.app-controls,
+.app-switcher {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+.app-identity { flex: 0 1 auto; }
+.app-controls { flex: 1 1 auto; justify-content: center; }
+.app-switcher { flex: 0 0 auto; }
+/* The one piece of brand art in the SPA chrome: an 18px chip beside
+   the wordmark. Minimal by decree — no hero, no watermark. */
+.app-logo {
+  display: block;
+  flex-shrink: 0;
+  image-rendering: -webkit-optimize-contrast;
+}
+.app-header h1 {
+  font-size: var(--fs-head);
+  margin: 0;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.design-name {
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.build-chip {
+  font-size: var(--fs-small);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.build-chip code {
+  background: var(--panel-2);
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-1);
+  margin-left: 0.25rem;
+}
 .app-tabs { display: flex; gap: 0; }
 .app-tabs button {
   background: transparent;
@@ -304,44 +409,60 @@ body, html, .app { margin: 0; height: 100%; }
   border-bottom: 2px solid transparent;
   padding: 0.35rem 0.75rem;
   font-size: 0.85rem;
-  color: #475569;
+  color: var(--fg-muted);
   cursor: pointer;
-}
-.app-tabs button:hover:not(:disabled) {
-  color: #1e293b;
-}
-.app-tabs button.active {
-  color: #4f46e5;
-  border-bottom-color: #4f46e5;
-  font-weight: 600;
-}
-.app-tabs button:disabled {
-  color: #cbd5e1;
-  cursor: not-allowed;
-}
-.header-status { display: flex; gap: 1rem; align-items: center; }
-.design-name { font-family: ui-monospace, Menlo, monospace; color: #475569; }
-.server-version {
-  font-size: 0.72rem;
-  color: #64748b;
   white-space: nowrap;
 }
-.server-version code {
-  font-family: ui-monospace, Menlo, monospace;
-  background: #f1f5f9;
-  padding: 0.05rem 0.35rem;
-  border-radius: 3px;
-  margin-left: 0.25rem;
+.app-tabs button:hover:not(:disabled) {
+  color: var(--fg);
 }
-.app-body { display: flex; height: calc(100vh - 48px); }
-.app-body.axi-tab { display: block; overflow: auto; background: #ffffff; }
+/* One accent family: the tab underline was the SPA's indigo. */
+.app-tabs button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+/* app.css owns ``button:disabled``; the tab only drops the border it
+   would otherwise keep from the shared rule. */
+.app-tabs button:disabled {
+  background: transparent;
+  border-color: transparent;
+}
+/* App switcher: ⌂ hub back to the landing, then the sibling apps the
+   hub says it has data for. Rendered only under the hub. */
+.switch-link,
+.theme-toggle {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  line-height: 1.6;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-2);
+  background: var(--panel);
+  color: var(--fg-muted);
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.switch-link:hover,
+.theme-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* -- body ------------------------------------------------------------ */
+/* Header and status strip are both fixed-height, so the body is what
+   is left. Both numbers are tokens (tests/tokens.spec.js keeps them in
+   step with layout/constants.js) — they used to be a magic 48. */
+.app-body { display: flex; height: calc(100vh - var(--header-h) - var(--status-h)); }
+.app-body.axi-tab { display: block; overflow: auto; background: var(--panel); }
 .sidebar {
-  width: 280px;        /* fallback; overridden by the inline :style width */
+  width: var(--sidebar-w);  /* fallback; overridden by the inline :style width */
   flex-shrink: 0;      /* honour the width in the flex row (don't squeeze) */
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid var(--line);
   padding: 0;
   overflow: auto;
-  background: #ffffff;
+  background: var(--panel);
 }
 /* Draggable divider between the sidebar and the canvas. */
 .sidebar-resizer {
@@ -353,7 +474,7 @@ body, html, .app { margin: 0; height: 100%; }
 }
 .sidebar-resizer:hover,
 .sidebar-resizer:active {
-  background: #93c5fd;  /* blue-300 highlight while grabbing */
+  background: var(--accent);
 }
 .canvas-wrap {
   flex: 1;
@@ -368,18 +489,20 @@ body, html, .app { margin: 0; height: 100%; }
   align-items: center;
   justify-content: center;
   gap: 0.6rem;
-  background: rgba(248, 250, 252, 0.78);
+  /* Scrim over the previous view. ``--bg`` at 78% so it dims in dark
+     as well; a baked rgba(248,250,252,…) was a white veil there. */
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
   backdrop-filter: blur(2px);
   font-size: 0.85rem;
-  color: #475569;
+  color: var(--fg-muted);
   z-index: 20;
   pointer-events: all;
 }
 .spinner {
   width: 28px;
   height: 28px;
-  border: 3px solid #cbd5e1;
-  border-top-color: #1e293b;
+  border: 3px solid var(--line-strong);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: rb-spin 0.8s linear infinite;
 }
@@ -392,37 +515,40 @@ body, html, .app { margin: 0; height: 100%; }
   align-items: center;
   justify-content: center;
   gap: 0.6rem;
-  height: calc(100vh - 48px);
+  height: calc(100vh - var(--header-h) - var(--status-h));
   text-align: center;
   padding: 2rem;
+  /* content-box would add the 2rem padding on TOP of the calc and push
+     the status strip below the fold — the strip is the one piece of
+     chrome that has to stay reachable. */
+  box-sizing: border-box;
 }
 .empty-state .empty-hint {
   font-size: 0.85rem;
-  color: #475569;
+  color: var(--fg-muted);
   max-width: 60ch;
   line-height: 1.5;
-  background: #f1f5f9;
+  background: var(--panel-2);
   padding: 0.75rem 1rem;
-  border-radius: 6px;
+  border-radius: var(--radius-3);
 }
 .empty-state code, .empty-hint code {
-  font-family: ui-monospace, Menlo, monospace;
-  background: #e2e8f0;
+  background: var(--line);
   padding: 0.05rem 0.3rem;
-  border-radius: 3px;
+  border-radius: var(--radius-1);
   font-size: 0.85em;
 }
 .error pre {
   max-width: 60ch;
   white-space: pre-wrap;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  background: var(--err-bg);
+  border: 1px solid var(--err);
   padding: 0.75rem;
-  border-radius: 4px;
-  color: #991b1b;
+  border-radius: var(--radius-2);
+  color: var(--err);
 }
 .error-status {
-  color: #991b1b;
+  color: var(--err);
   font-weight: 600;
   margin: 0;
 }
@@ -430,10 +556,10 @@ body, html, .app { margin: 0; height: 100%; }
   max-width: 64ch;
   text-align: left;
   font-size: 0.85rem;
-  color: #475569;
-  background: #f1f5f9;
+  color: var(--fg-muted);
+  background: var(--panel-2);
   padding: 0.75rem 1rem;
-  border-radius: 6px;
+  border-radius: var(--radius-3);
   line-height: 1.5;
 }
 .error-reasons-title {
@@ -452,10 +578,23 @@ body, html, .app { margin: 0; height: 100%; }
   font-style: italic;
 }
 .error code {
-  font-family: ui-monospace, Menlo, monospace;
-  background: #e2e8f0;
+  background: var(--line);
   padding: 0.05rem 0.3rem;
-  border-radius: 3px;
+  border-radius: var(--radius-1);
   font-size: 0.85em;
+}
+
+/* -- bottom status strip --------------------------------------------- */
+/* The second half of the chrome contract. Fixed height so the body's
+   calc() is exact; HubStatus lays out the three slots inside it. */
+.app-status-strip {
+  height: var(--status-h);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-small);
 }
 </style>

@@ -58,7 +58,10 @@ onBeforeUnmount(() => {
 .toast-host {
   position: fixed;
   right: 1rem;
-  bottom: 1rem;
+  /* Clear of the bottom status strip — a toast that covers the
+     connection state hides the thing the user needs to read to make
+     sense of it. */
+  bottom: calc(var(--status-h) + 0.75rem);
   z-index: 100;
   pointer-events: none;
 }

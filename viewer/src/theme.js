@@ -148,3 +148,62 @@ export function _resetThemeForTests() {
   _installed = false
   themeVersion.value = 0
 }
+
+// ---------------------------------------------------------------------
+// Explicit pin
+// ---------------------------------------------------------------------
+//
+// ``system`` (no ``data-theme``) is the default and the third state of
+// the header toggle — a user who has never touched it follows the OS,
+// which is what the shared sheet's media query is for. The two pins
+// exist because the sheet's ``[data-theme]`` blocks win in BOTH
+// directions, so a light pin survives a dark OS and vice versa.
+
+const THEME_STORAGE_KEY = 'rb-theme'
+
+/** ``'system' | 'light' | 'dark'`` — the *preference*, not the result. */
+export const themePreference = ref('system')
+
+function writeThemeAttribute(pref) {
+  if (typeof document === 'undefined' || !document.documentElement) return
+  if (pref === 'light' || pref === 'dark') {
+    document.documentElement.setAttribute('data-theme', pref)
+  } else {
+    document.documentElement.removeAttribute('data-theme')
+  }
+}
+
+/** Pin the theme (or return to ``system``) and remember the choice. */
+export function setThemePreference(pref) {
+  const next = pref === 'light' || pref === 'dark' ? pref : 'system'
+  themePreference.value = next
+  writeThemeAttribute(next)
+  try {
+    if (next === 'system') localStorage.removeItem(THEME_STORAGE_KEY)
+    else localStorage.setItem(THEME_STORAGE_KEY, next)
+  } catch {
+    /* best-effort persistence — private mode, file:// with a strict UA */
+  }
+  // The MutationObserver in ``initTheme`` covers the pin/unpin, but it
+  // only runs after ``initTheme``; bump here so a pre-mount call still
+  // repaints the canvas.
+  themeVersion.value += 1
+}
+
+/**
+ * Apply the remembered pin. Called from ``main.js`` before mount so the
+ * first paint is already the right palette — flipping it afterwards is
+ * a visible flash.
+ */
+export function applyStoredThemePreference() {
+  let stored = null
+  try {
+    stored = localStorage.getItem(THEME_STORAGE_KEY)
+  } catch {
+    /* no localStorage — fall through to ``system`` */
+  }
+  const pref = stored === 'light' || stored === 'dark' ? stored : 'system'
+  themePreference.value = pref
+  writeThemeAttribute(pref)
+  return pref
+}
