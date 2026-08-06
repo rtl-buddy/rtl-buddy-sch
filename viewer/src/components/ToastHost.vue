@@ -67,21 +67,23 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  background: #1f2937;
-  color: #f9fafb;
+  background: var(--fg);
+  color: var(--bg);
   padding: 0.6rem 0.9rem;
-  border-radius: 6px;
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.25);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-2);
   min-width: 16rem;
   max-width: 28rem;
   font-size: 0.85rem;
 }
 .toast[data-code='protocol_mismatch'],
 .toast[data-code='bad_request'] {
-  background: #7f1d1d;
+  background: var(--err);
+  color: var(--accent-contrast);
 }
 .toast[data-code='not_connected'] {
-  background: #78350f;
+  background: var(--warn);
+  color: var(--accent-contrast);
 }
 .toast .body {
   display: flex;
@@ -90,13 +92,12 @@ onBeforeUnmount(() => {
   flex: 1;
 }
 .toast .code {
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #fcd34d;
+  opacity: 0.75;
 }
-.toast[data-code='unresolvable'] .code { color: #fdba74; }
 .toast .message {
   word-break: break-word;
 }

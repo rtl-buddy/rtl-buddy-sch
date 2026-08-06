@@ -69,7 +69,7 @@ function toggle() {
 
 <style scoped>
 .collapsible-panel {
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--line);
 }
 .collapsible-panel:first-child {
   border-top: 0;
@@ -85,14 +85,14 @@ function toggle() {
   cursor: pointer;
   text-align: left;
   font: inherit;
-  color: #1e293b;
+  color: var(--fg);
 }
 .collapsible-header:hover {
-  background: #f8fafc;
+  background: var(--bg);
 }
 .collapsible-header .chevron {
   font-size: 0.7rem;
-  color: #64748b;
+  color: var(--fg-muted);
   width: 0.7rem;
   text-align: center;
 }
@@ -104,8 +104,8 @@ function toggle() {
 }
 .collapsible-header .badge {
   font-size: 0.7rem;
-  color: #64748b;
-  background: #f1f5f9;
+  color: var(--fg-muted);
+  background: var(--panel-2);
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
 }

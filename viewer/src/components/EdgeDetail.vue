@@ -94,9 +94,12 @@ const otherOverlays = computed(() => {
 </script>
 
 <style scoped>
-.edge-detail { padding: 0.5rem; border-top: 1px solid #e5e7eb; margin-top: 0.5rem; }
+/* No border-top / margin-top here: every detail panel is mounted
+   inside a CollapsiblePanel, which already draws the separator. Both
+   drawing it produced a double rule at every section boundary. */
+.edge-detail { padding: 0.5rem; }
 .edge-detail h3 {
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   margin: 0 0 0.5rem;
   word-break: break-all;
@@ -105,27 +108,28 @@ const otherOverlays = computed(() => {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #64748b;
+  color: var(--fg-muted);
   margin-top: 0.5rem;
 }
 .edge-detail dd { margin: 0.1rem 0 0; font-size: 0.85rem; }
 .edge-detail dd ul { margin: 0; padding-left: 1rem; }
 .edge-detail dd pre {
-  background: #f1f5f9;
+  background: var(--panel-2);
   padding: 0.25rem 0.5rem;
-  border-radius: 4px;
+  border-radius: var(--radius-2);
   font-size: 0.75rem;
 }
 .nav-actions { display: flex; gap: 0.25rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .nav-actions button {
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--fg);
   padding: 0.15rem 0.5rem;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-2);
   font-size: 0.75rem;
 }
-.empty { color: #64748b; }
-.port-name { color: #1e293b; }
-.port-arrow { color: #64748b; font-size: 0.75rem; margin-left: 0.25rem; }
+.empty { color: var(--fg-muted); }
+.port-name { color: var(--fg); }
+.port-arrow { color: var(--fg-muted); font-size: 0.75rem; margin-left: 0.25rem; }
 </style>

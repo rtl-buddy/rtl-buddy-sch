@@ -91,15 +91,15 @@ function dismiss() {
   top: 0.5rem;
   right: 0.5rem;
   z-index: 30;
-  background: #ffffff;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-1);
   padding: 0.6rem 0.75rem;
   max-width: 28rem;
   min-width: 18rem;
   font-size: 0.8rem;
-  color: #1f2937;
+  color: var(--fg);
 }
 .selection-candidates header {
   display: flex;
@@ -114,11 +114,11 @@ function dismiss() {
   cursor: pointer;
   line-height: 1;
   padding: 0 0.25rem;
-  color: #64748b;
+  color: var(--fg-muted);
 }
 .selection-candidates .hint {
   margin: 0 0 0.5rem 0;
-  color: #475569;
+  color: var(--fg-muted);
   font-size: 0.72rem;
   line-height: 1.35;
 }
@@ -132,9 +132,10 @@ function dismiss() {
 }
 .candidate {
   width: 100%;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  border-radius: var(--radius-2);
   padding: 0.35rem 0.5rem;
   cursor: pointer;
   display: grid;
@@ -142,35 +143,35 @@ function dismiss() {
   gap: 0.5rem;
   align-items: center;
   text-align: left;
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.72rem;
 }
 .candidate:hover {
-  background: #eff6ff;
-  border-color: #93c5fd;
+  background: var(--panel-2);
+  border-color: var(--accent);
 }
 .is-current .candidate {
-  background: #ecfdf5;
-  border-color: #6ee7b7;
+  background: var(--ok-bg);
+  border-color: var(--ok);
 }
 .candidate .rank {
-  color: #64748b;
+  color: var(--fg-muted);
   font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .is-current .candidate .rank {
-  color: #047857;
+  color: var(--ok);
   font-weight: 600;
 }
 .candidate .path {
-  color: #1e293b;
+  color: var(--fg);
   background: transparent;
   padding: 0;
   word-break: break-all;
 }
 .candidate .range {
-  color: #64748b;
+  color: var(--fg-muted);
   font-size: 0.7rem;
   white-space: nowrap;
 }

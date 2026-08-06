@@ -215,44 +215,44 @@ async function onSelectMode(mode) {
 }
 .view-mode-toggle {
   display: inline-flex;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-2);
   overflow: hidden;
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.72rem;
 }
 .view-mode-toggle button {
-  background: #ffffff;
+  background: var(--panel);
   border: 0;
   padding: 0.2rem 0.55rem;
-  color: #475569;
+  color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
 }
 .view-mode-toggle button + button {
-  border-left: 1px solid #e2e8f0;
+  border-left: 1px solid var(--line);
 }
 .view-mode-toggle button.active {
-  background: #1e293b;
-  color: #ffffff;
+  background: var(--accent);
+  color: var(--accent-contrast);
   cursor: default;
 }
 .view-mode-toggle button:not(.active):hover {
-  background: #f1f5f9;
+  background: var(--panel-2);
 }
 .model-picker {
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   padding: 0.2rem 0.5rem;
-  border-radius: 4px;
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  color: #1f2937;
+  border-radius: var(--radius-2);
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--fg);
   cursor: pointer;
   max-width: 18rem;
 }
 .model-picker:focus {
-  outline: 2px solid #94a3b8;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 </style>
