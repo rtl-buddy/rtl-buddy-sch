@@ -12,6 +12,8 @@
 //   - diagnosticsBySource: { [source]: items[] } keyed by producer.
 //     Latest-writer-wins per source; empty items clears the source.
 //   - hubError / hubErrorDismissedAt: surfaces hub `error` envelopes.
+//   - covData / covEnabled: the hub's live coverage payload
+//     (`/cov.json`, null without a hub) and the canvas tint toggle.
 //
 // Actions:
 //   - bootstrap(): kick off the initial load (URL query, inlined
@@ -20,7 +22,8 @@
 //   - loadFromUrl(url) / loadFromFile(file) / loadFromText(text):
 //     three explicit entry points for the same parse+validate path.
 //   - select(id) / clearSelection()
-//   - toggleOverlay(name)
+//   - toggleOverlay(name) / toggleCoverageTint()
+//   - loadCoverage(): one-shot fetch of the hub's /cov.json.
 //   - applyHubCursorTime / applyHubSelection / applyHubScope /
 //     applyDiagnostics / applyHubError — invoked by useHub on inbound
 //     events; centralising them keeps the composable thin and the
@@ -29,6 +32,7 @@
 import { defineStore } from 'pinia'
 import { parseViewJson } from './parse.js'
 import { commonSourceRoot } from './sourcePaths.js'
+import { loadCovData, moduleCoverage } from './covData.js'
 
 
 // -------------------------------------------------------------------
@@ -242,6 +246,25 @@ export const useViewerStore = defineStore('viewer', {
     // view.json's ``tb_top`` field at install time; mode switches go
     // through ``switchModel`` / ``switchTest``.
     viewModeTb: false,
+
+    // --- live coverage (the hub's /cov.json) ---------------------------
+    //
+    // Distinct from the baked ``overlays.coverage`` block a producer
+    // may have written into view.json: this is whatever the hub has
+    // NOW, fetched once per graph load and joined to nodes by module
+    // name. ``null`` means "no hub, or the hub has no coverage" —
+    // the overlay entry and the NodeDetail section both hide, and
+    // nothing about the standalone / embed.py experience changes.
+    covData: null,
+    // Loading latch: ``loadCoverage`` is idempotent per session, so a
+    // model switch doesn't re-fetch and two callers can't race.
+    covLoadStarted: false,
+    // Tint enabled. Default ON so coverage is visible the moment the
+    // data is there (matching the graph pane's auto-tick); once the
+    // user has touched the checkbox their choice sticks for the rest
+    // of the session, including across model switches.
+    covEnabled: true,
+    covEnabledTouched: false,
   }),
   getters: {
     nodesById: (state) => {
@@ -285,6 +308,18 @@ export const useViewerStore = defineStore('viewer', {
       }
       return m
     },
+    // Live coverage keyed by module name:
+    // ``Map<module, {line, branch, toggle, expression, cover}>``,
+    // each bucket ``{found, hit, ratio}``. Empty when there is no
+    // coverage payload.
+    //
+    // The join is per-FILE totals attributed to every module the file
+    // declares, with Verilator's ``__W4`` parameterization suffixes
+    // stripped to source names — see ``covData.moduleCoverage`` for
+    // the rule and its approximation. Memoized by being a getter:
+    // Pinia caches it until ``covData`` is replaced, so the canvas
+    // can re-read it per repaint without rebuilding the map.
+    covByModule: (state) => moduleCoverage(state.covData),
     // The graph the canvas actually renders. When rootInstancePath
     // is null, this is the full graph; otherwise it's the subtree
     // rooted at that node.
@@ -925,6 +960,11 @@ export const useViewerStore = defineStore('viewer', {
       // Default: every overlay the producer emitted is enabled, so
       // the user sees the full overlay decoration on first open.
       this.enabledOverlays = new Set(graph.overlays_present)
+      // Live coverage is per-HUB, not per-graph: fetch it once, the
+      // first time a graph lands, and keep it across model switches
+      // (the join is by module name, so a different model simply
+      // matches a different subset). No-ops without a hub.
+      this.loadCoverage().catch(() => {})
     },
     _fail(message, meta = {}) {
       this.status = 'error'
@@ -1032,6 +1072,34 @@ export const useViewerStore = defineStore('viewer', {
       // trigger reactivity reliably across all consumers; reassign
       // to force an update.
       this.enabledOverlays = new Set(this.enabledOverlays)
+    },
+
+    // --- live coverage -------------------------------------------------
+
+    /**
+     * Fetch the hub's ``/cov.json`` once per session.
+     *
+     * Never throws and never surfaces an error: no hub, no coverage
+     * route, a 404 or a malformed body all land on ``covData = null``,
+     * which reads downstream as "this feature isn't available here".
+     * That silence is deliberate — the SPA also runs from embed.py and
+     * the Vite dev server, where the absence is normal, not a fault.
+     */
+    async loadCoverage() {
+      if (this.covLoadStarted) return this.covData
+      this.covLoadStarted = true
+      const data = await loadCovData()
+      this.covData = data
+      // Auto-tick on arrival, unless the user has already expressed a
+      // preference this session.
+      if (data && !this.covEnabledTouched) this.covEnabled = true
+      return this.covData
+    },
+
+    /** Toggle the live coverage tint, and remember that they did. */
+    toggleCoverageTint() {
+      this.covEnabled = !this.covEnabled
+      this.covEnabledTouched = true
     },
 
     // --- hub-event reducers --------------------------------------------------

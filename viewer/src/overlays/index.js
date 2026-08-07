@@ -12,13 +12,26 @@
 import { axiPerfOverlay } from './axi_perf.js'
 import { clockOverlay } from './clock.js'
 import { coverageOverlay } from './coverage.js'
+import { coverageLiveOverlay } from './coverage_live.js'
 import { resetOverlay } from './reset.js'
 import { waveOverlay } from './wave.js'
+
+// ``coverage-live`` is a LIVE overlay: its data is the hub's
+// ``/cov.json``, fetched at load time, not something a producer can
+// bake into view.json. So it is never in ``graph.overlays_present``,
+// never appears in ``overlaySummary``, and is never applied by
+// ``applyOverlays`` — GraphCanvas applies it explicitly, after this
+// pass. It is registered here anyway so the panel can reach its
+// ``legend()`` through the same ``getOverlay`` door as everything
+// else, and so a future producer that DOES emit the name gets the
+// renderer rather than an "unknown" tag.
+export const LIVE_OVERLAY_NAMES = ['coverage-live']
 
 const BUILTINS = {
   'axi-perf': axiPerfOverlay,
   clock: clockOverlay,
   coverage: coverageOverlay,
+  'coverage-live': coverageLiveOverlay,
   reset: resetOverlay,
   wave: waveOverlay,
 }

@@ -79,6 +79,7 @@ import { useViewerStore } from '../store.js'
 import { layoutGraph, layoutDot, clusterIdFor, hasEmbeddedDot } from '../layout/viz.js'
 import { buildBlockFlowDot } from '../layout/blockFlow.js'
 import { applyOverlays } from '../overlays/index.js'
+import { coverageLiveOverlay } from '../overlays/coverage_live.js'
 import { useHub } from '../composables/useHub.js'
 import { registerSvgProvider, unregisterSvgProvider } from '../capture.js'
 import { FIT_SCALE_MAX } from '../layout/constants.js'
@@ -247,7 +248,7 @@ async function renderSvg() {
     }
   }
   applyDutBoundary(_svgEl, graph.value)
-  applyOverlays(_svgEl, graph.value, store.enabledOverlays, overlayContext())
+  repaintOverlays()
   applySelectionHighlight(store.selection)
   // Signal to the badge-position computed that the underlying SVG
   // has just been re-rendered — previously cached bboxes are stale.
@@ -432,7 +433,7 @@ watch(
   () => store.enabledOverlays,
   () => {
     if (_svgEl && graph.value) {
-      applyOverlays(_svgEl, graph.value, store.enabledOverlays, overlayContext())
+      repaintOverlays()
     }
   },
 )
@@ -445,13 +446,45 @@ function overlayContext() {
   return {
     waveValuesByKey: store.waveValuesByKey,
     selectedSignal: store.hubSignalSelected,
+    // Live coverage from the hub's /cov.json, joined by module name.
+    // An empty Map when there is no hub or no coverage data.
+    covByModule: store.covByModule,
   }
+}
+
+// One repaint of every overlay layer, in the order they must run.
+//
+// ``applyOverlays`` first: it is the payload-driven pass, and it owns
+// restoring the Graphviz fill floor for everything it doesn't paint.
+// The LIVE coverage overlay second, on top: it isn't in
+// ``overlays_present`` (the hub, not the producer, is its source), it
+// wins the fill on plain leaf boxes when enabled, and its clear
+// branch assumes the pass before it has already run. Every trigger —
+// first render, overlay toggle, wave values, coverage arriving or
+// being unticked — goes through here so that order is never in doubt.
+function repaintOverlays() {
+  if (!_svgEl || !graph.value) return
+  const context = overlayContext()
+  applyOverlays(_svgEl, graph.value, store.enabledOverlays, context)
+  coverageLiveOverlay.apply(_svgEl, graph.value, store.covEnabled, context)
 }
 watch(
   () => [store.waveValuesByKey, store.hubSignalSelected],
   () => {
     if (_svgEl && graph.value) {
-      applyOverlays(_svgEl, graph.value, store.enabledOverlays, overlayContext())
+      repaintOverlays()
+    }
+  },
+)
+// Live coverage re-tint: the payload lands asynchronously (one fetch
+// per session, kicked off when the graph installs), so the first
+// paint usually happens before it arrives. Re-run the overlay layer
+// on arrival and on every toggle — no viz.js re-layout, just fills.
+watch(
+  () => [store.covEnabled, store.covByModule],
+  () => {
+    if (_svgEl && graph.value) {
+      repaintOverlays()
     }
   },
 )
