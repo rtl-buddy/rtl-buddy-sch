@@ -433,6 +433,115 @@ export const useViewerStore = defineStore('viewer', {
       }
       return out
     },
+
+    // --- instance-hierarchy tree ----------------------------------------
+    //
+    // The hierarchy panel (HierarchyTree.vue) is derived purely from
+    // node ids: ``a.b.c``'s parent is the longest strict dot-prefix
+    // that is ITSELF a node of the graph.
+    //
+    // Sparse hierarchies are the interesting case. A producer may emit
+    // ``top`` and ``top.u_a.u_b`` without ``top.u_a`` (elided blackbox
+    // interior, a filtered view.json, a hand-written fixture). Such an
+    // orphan is re-attached to its NEAREST EXISTING ANCESTOR — here
+    // ``top`` — rather than being dropped or promoted to a root; when
+    // no ancestor exists at all it becomes an additional root. The
+    // panel is the design's index, so nothing may go missing: a
+    // slightly-flattened branch is a far smaller lie than an invisible
+    // instance. The full dotted path stays on the row's ``data-node-id``
+    // and title, so the flattening is visible to anyone who looks.
+    //
+    // Order within a level follows ``graph.nodes`` order — the
+    // producer's declaration order, which is what other tools show.
+    treeParentOf(state) {
+      const parents = new Map()
+      if (!state.graph || !Array.isArray(state.graph.nodes)) return parents
+      const ids = new Set()
+      for (const n of state.graph.nodes) {
+        if (n && typeof n.id === 'string' && n.id) ids.add(n.id)
+      }
+      for (const id of ids) {
+        let cur = id
+        let parent = null
+        for (;;) {
+          const cut = cur.lastIndexOf('.')
+          if (cut < 0) break
+          cur = cur.slice(0, cut)
+          if (ids.has(cur)) {
+            parent = cur
+            break
+          }
+        }
+        parents.set(id, parent)
+      }
+      return parents
+    },
+    // ``Map<parentId, childIds[]>``. Only parents that have children
+    // appear as keys.
+    treeChildren(state) {
+      const children = new Map()
+      if (!state.graph || !Array.isArray(state.graph.nodes)) return children
+      const parents = this.treeParentOf
+      for (const n of state.graph.nodes) {
+        if (!n || typeof n.id !== 'string' || !n.id) continue
+        const p = parents.get(n.id)
+        if (!p) continue
+        const arr = children.get(p)
+        if (arr) arr.push(n.id)
+        else children.set(p, [n.id])
+      }
+      return children
+    },
+    // Ids with no parent in the node set, in graph order. Normally a
+    // single entry (the design top); more when the graph is sparse.
+    treeRoots(state) {
+      if (!state.graph || !Array.isArray(state.graph.nodes)) return []
+      const parents = this.treeParentOf
+      const out = []
+      for (const n of state.graph.nodes) {
+        if (!n || typeof n.id !== 'string' || !n.id) continue
+        if (!parents.get(n.id)) out.push(n.id)
+      }
+      return out
+    },
+    // Filter semantics for the tree's search box, as a pure function of
+    // the query so it is testable without mounting anything.
+    //
+    // ``matches`` = nodes whose INSTANCE NAME (last path segment) or
+    // MODULE name contains the query, case-insensitively. ``visible``
+    // = the matches plus every ancestor of a match, because a match
+    // shown without its ancestors would be a list, not a tree; the
+    // panel dims the ancestors that are not themselves matches.
+    treeMatch(state) {
+      const nodes =
+        state.graph && Array.isArray(state.graph.nodes) ? state.graph.nodes : []
+      const parents = this.treeParentOf
+      return (query) => {
+        const q = typeof query === 'string' ? query.trim().toLowerCase() : ''
+        const matches = new Set()
+        if (!q) return { matches, visible: new Set() }
+        for (const n of nodes) {
+          if (!n || typeof n.id !== 'string' || !n.id) continue
+          const name = n.id.slice(n.id.lastIndexOf('.') + 1)
+          const module = typeof n.module === 'string' ? n.module : ''
+          if (
+            name.toLowerCase().includes(q) ||
+            module.toLowerCase().includes(q)
+          ) {
+            matches.add(n.id)
+          }
+        }
+        const visible = new Set(matches)
+        for (const id of matches) {
+          let p = parents.get(id) || null
+          while (p && !visible.has(p)) {
+            visible.add(p)
+            p = parents.get(p) || null
+          }
+        }
+        return { matches, visible }
+      }
+    },
   },
   actions: {
     async bootstrap() {
