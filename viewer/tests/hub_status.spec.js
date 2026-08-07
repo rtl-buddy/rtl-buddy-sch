@@ -87,13 +87,32 @@ describe('HubStatus strip', () => {
     expect(w.get('.hub-message').text()).toBe('')
   })
 
-  it('a hub error is an error-severity message carrying the code', () => {
+  it('a hub error is an error-severity message in SHORT human words', () => {
+    // R7c: one event, one full rendering. The toast says the sentence;
+    // the strip says a few words. The raw ``code — message`` is the
+    // hover title, not a second copy of the toast in red mono.
     hub.state.value = 'ready'
-    hub.lastError.value = { code: 'not_connected', message: 'no wave peer', at: 0 }
+    hub.errorNotice.value = { code: 'not_connected', message: 'no wave peer', at: 0 }
     const w = mount(HubStatus)
-    expect(w.get('.hub-message').attributes('data-severity')).toBe('error')
-    expect(w.get('.hub-message').text()).toContain('not_connected')
-    expect(w.get('.hub-message').text()).toContain('no wave peer')
+    const msg = w.get('.hub-message')
+    expect(msg.attributes('data-severity')).toBe('error')
+    expect(msg.text()).toBe('peer not connected')
+    expect(msg.text()).not.toContain('not_connected')
+    expect(w.get('.hub-message .msg-text').attributes('title')).toBe(
+      'not_connected — no wave peer',
+    )
+  })
+
+  it('the strip ignores lastError once its notice has expired', () => {
+    // ``lastError`` is the popover's permanent log row; the strip
+    // reads ``errorNotice``, which expires. Before this the red mono
+    // line stayed put for the rest of the session.
+    hub.state.value = 'ready'
+    hub.lastError.value = { code: 'bad_request', message: 'boom', at: 0 }
+    hub.errorNotice.value = null
+    const w = mount(HubStatus)
+    expect(w.get('.hub-message').attributes('data-severity')).toBe('note')
+    expect(w.get('.hub-message').text()).toBe('')
   })
 
   it('a mid-session drop is a warning, and only after we were once ready', () => {
