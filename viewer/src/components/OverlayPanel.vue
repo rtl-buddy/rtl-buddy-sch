@@ -31,7 +31,16 @@
         </ul>
       </li>
     </ul>
-    <p v-else class="empty">No overlays in this view.</p>
+    <!-- Actionable empty state: the second line is the command that
+         fixes it, spelled as README.md / docs/overlays.md spell it. -->
+    <template v-else>
+      <p class="empty">No overlays in this view.</p>
+      <p class="empty empty-hint">
+        Produce them with
+        <code>{{ RENDER_WITH_OVERLAYS_HINT }}</code>
+        and reload.
+      </p>
+    </template>
   </section>
   <section v-if="layoutLegend.length" class="overlay-panel">
     <h3>Layout</h3>
@@ -60,6 +69,7 @@ import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
 import { getOverlay, overlaySummary } from '../overlays/index.js'
 import { token, themeVersion } from '../theme.js'
+import { RENDER_WITH_OVERLAYS_HINT } from '../cliHints.js'
 
 const store = useViewerStore()
 const summary = computed(() =>
@@ -243,5 +253,20 @@ function swatchStyle(item) {
   font-size: 0.85rem;
   color: var(--fg-muted);
   margin: 0;
+}
+/* The "here's the command" line: quieter than the statement above it,
+   and the command itself wraps rather than widening the sidebar. */
+.empty-hint {
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--fg-faint);
+  line-height: 1.4;
+}
+.empty-hint code {
+  font-family: var(--font-mono);
+  background: var(--panel-2);
+  padding: 0.05rem 0.3rem;
+  border-radius: var(--radius-1);
+  word-break: break-word;
 }
 </style>
