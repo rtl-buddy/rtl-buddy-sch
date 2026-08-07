@@ -120,6 +120,20 @@
           >Open in Coverview ↗</a>
         </dd>
       </template>
+      <template v-if="liveCoverageText">
+        <dt>Coverage</dt>
+        <dd class="live-cov" data-testid="node-live-coverage">
+          <div class="live-cov-metrics">{{ liveCoverageText }}</div>
+          <a
+            v-if="covPaneHref"
+            class="live-cov-link"
+            :href="covPaneHref"
+            target="_blank"
+            rel="noopener"
+            title="Open the hub's coverage pane in a new tab"
+          >open in coverage ↗</a>
+        </dd>
+      </template>
       <template v-if="axiPins.length || axiInterconnect">
         <dt>AXI performance</dt>
         <dd>
@@ -173,6 +187,8 @@ import { useHub } from '../composables/useHub.js'
 import { copyText } from '../clipboard.js'
 import { relativeSourcePath } from '../sourcePaths.js'
 import { heatColor } from '../overlays/coverage.js'
+import { covSummaryText, COV_PANE_ROUTE } from '../covData.js'
+import { isHubServed } from '../hubApps.js'
 import { bpLevel } from '../palette.js'
 import { themeVersion } from '../theme.js'
 import { formatBandwidth as fmtBps } from '../format.js'
@@ -215,6 +231,28 @@ const coverageRows = computed(() => {
   }
   return rows
 })
+
+// --- live coverage (the hub's /cov.json, joined by module name) -------
+//
+// Separate from the ``coverage`` block above, which is whatever the
+// producer baked into view.json. This one is the hub's latest run,
+// so it can be present on a payload that carries no coverage overlay
+// at all — and both can show at once, which is the honest rendering:
+// they are two different measurements.
+//
+// Rendered as one compact line rather than five progress bars. The
+// bars above earn their space by being the node's own numbers; this
+// is a per-MODULE roll-up whose detail lives one click away in the
+// coverage pane.
+const liveCoverage = computed(() => {
+  const module = node.value && node.value.module
+  if (typeof module !== 'string' || module.length === 0) return null
+  return store.covByModule.get(module) || null
+})
+const liveCoverageText = computed(() => covSummaryText(liveCoverage.value))
+// The pane link only exists when a hub is serving us — from embed.py
+// or the dev server ``/cov`` is a 404 (or someone else's page).
+const covPaneHref = computed(() => (isHubServed() ? COV_PANE_ROUTE : null))
 
 // --- axi-perf: render the overlay human-readably instead of raw JSON.
 // (throughput formatting shared via ../format.js — bytes/s, decimal MB/GB)
@@ -525,6 +563,18 @@ function openInEditor() {
 .coverview-link {
   display: inline-block;
   margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--accent);
+}
+/* Live coverage: one mono line of metrics (they are data) over a
+   quiet link into the hub's coverage pane for the per-line view. */
+.live-cov-metrics {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.live-cov-link {
+  display: inline-block;
+  margin-top: 0.2rem;
   font-size: 0.75rem;
   color: var(--accent);
 }
