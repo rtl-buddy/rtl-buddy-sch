@@ -1,9 +1,21 @@
 <template>
   <section class="node-detail" v-if="node">
     <h3 :title="node.id">
-      <span v-for="(segment, i) in pathSegments" :key="i">
-        <span v-if="i > 0" class="sep">.</span>{{ segment }}<wbr />
+      <!-- The path text is wrapped so consumers (and the e2e suite)
+           can read the instance path without picking the copy glyph
+           out of the heading's text content. -->
+      <span class="inst-path">
+        <span v-for="(segment, i) in pathSegments" :key="i">
+          <span v-if="i > 0" class="sep">.</span>{{ segment }}<wbr />
+        </span>
       </span>
+      <button
+        type="button"
+        class="copy-btn"
+        :title="`Copy the instance path — ${node.id}`"
+        aria-label="Copy instance path"
+        @click="copy('path', node.id)"
+      >{{ copied === 'path' ? '✓' : '📋' }}</button>
     </h3>
     <div class="nav-actions">
       <button
@@ -16,7 +28,7 @@
         type="button"
         @click="store.ascend()"
         :disabled="!store.rootInstancePath"
-        title="Show parent scope"
+        title="Show parent scope (keyboard: u)"
       >Up</button>
       <button
         type="button"
@@ -32,9 +44,22 @@
         :title="openTitle"
       >Open in editor</button>
     </div>
-    <div v-if="hasOpenable" class="open-target-row" :title="openTitle">
-      <code class="open-target">{{ openTargetText }}</code>
-      <span class="open-via" :data-mode="openVia">{{ openViaLabel }}</span>
+    <!-- Source location. Shown project-relative (store.sourceRoot, see
+         sourcePaths.js) because the absolute path was four wrapped
+         lines of which the leading two thirds were identical for every
+         node; the absolute path is the title and the copy button's
+         payload. -->
+    <div v-if="hasOpenable" class="open-target-row">
+      <code class="open-target" :title="absoluteTargetText || openTitle">{{ openTargetText }}</code>
+      <button
+        v-if="absoluteTargetText"
+        type="button"
+        class="copy-btn"
+        :title="`Copy the absolute path — ${absoluteTargetText}`"
+        aria-label="Copy absolute source path"
+        @click="copy('file', absoluteTargetText)"
+      >{{ copied === 'file' ? '✓' : '📋' }}</button>
+      <span class="open-via" :data-mode="openVia" :title="openTitle">{{ openViaLabel }}</span>
     </div>
     <dl>
       <dt>Module</dt><dd>{{ node.module }}</dd>
@@ -142,9 +167,11 @@
 // require this component to know about every overlay's payload
 // shape, and stays useful for unknown / future overlays the
 // viewer doesn't have a dedicated renderer for.
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useViewerStore } from '../store.js'
 import { useHub } from '../composables/useHub.js'
+import { copyText } from '../clipboard.js'
+import { relativeSourcePath } from '../sourcePaths.js'
 import { heatColor } from '../overlays/coverage.js'
 import { bpLevel } from '../palette.js'
 import { themeVersion } from '../theme.js'
@@ -300,13 +327,47 @@ function ifaceTagTitle(port) {
 const hasOpenable = computed(
   () => node.value && (node.value.source || node.value.link),
 )
-const openTargetText = computed(() => {
+// Absolute ``file:line`` — what ``open_source`` sends, what the copy
+// button copies, and what the tooltip shows. Falls back to the raw
+// ``link`` URI for nodes with no structured source block.
+const absoluteTargetText = computed(() => {
   const src = node.value && node.value.source
   if (src && typeof src.file === 'string') {
     const line = typeof src.start_line === 'number' ? src.start_line : 1
     return `${src.file}:${line}`
   }
+  return ''
+})
+// What the row actually renders: project-relative when we could work
+// out a root, ``basename:line`` when we could not.
+const openTargetText = computed(() => {
+  const src = node.value && node.value.source
+  if (src && typeof src.file === 'string') {
+    const line = typeof src.start_line === 'number' ? src.start_line : 1
+    return `${relativeSourcePath(src.file, store.sourceRoot)}:${line}`
+  }
   return (node.value && node.value.link) || ''
+})
+
+// --- copy affordances -----------------------------------------------
+// Two payloads, one flash: the heading copies the INSTANCE PATH (what
+// you paste into ``rb hub send`` or a testbench probe), the source row
+// copies the ABSOLUTE ``file:line`` (what you paste into an editor).
+const COPY_FLASH_MS = 1200
+const copied = ref('')
+let copyFlashTimer = null
+async function copy(which, text) {
+  const ok = await copyText(text)
+  if (!ok) return
+  copied.value = which
+  if (copyFlashTimer) clearTimeout(copyFlashTimer)
+  copyFlashTimer = setTimeout(() => {
+    copied.value = ''
+    copyFlashTimer = null
+  }, COPY_FLASH_MS)
+}
+onBeforeUnmount(() => {
+  if (copyFlashTimer) clearTimeout(copyFlashTimer)
 })
 const openVia = computed(() => (hub.state.value === 'ready' ? 'hub' : 'os'))
 const openViaLabel = computed(() =>
@@ -390,6 +451,27 @@ function openInEditor() {
   font-size: 0.7rem;
   color: var(--fg-muted);
   word-break: break-all;
+}
+/* Copy affordance — a quiet glyph that only gains a box on hover, so
+   two of them on one panel don't read as primary actions. Token
+   colours throughout; the ✓ flash is the shared --ok. */
+.copy-btn {
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-faint);
+  border-radius: var(--radius-1);
+  padding: 0 0.25rem;
+  margin-left: 0.3rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+.copy-btn:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+  background: var(--panel-2);
 }
 /* "(via hub)" / "(via OS)" tag tells the user how the next click
    will be routed — green when the hub is connected and will

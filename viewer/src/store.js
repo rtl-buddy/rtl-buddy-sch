@@ -28,6 +28,7 @@
 //
 import { defineStore } from 'pinia'
 import { parseViewJson } from './parse.js'
+import { commonSourceRoot } from './sourcePaths.js'
 
 
 // -------------------------------------------------------------------
@@ -343,6 +344,24 @@ export const useViewerStore = defineStore('viewer', {
     },
     overlaysPresent: (state) =>
       state.graph ? state.graph.overlays_present : [],
+    // Directory every source path in this graph is shown relative to.
+    // See sourcePaths.js for the heuristic (common directory prefix,
+    // falling back to the top node's directory). Empty string means
+    // "no useful root" and consumers show a basename. Recomputed when
+    // ``graph`` is replaced, so a model switch re-anchors.
+    sourceRoot(state) {
+      const g = state.graph
+      if (!g || !Array.isArray(g.nodes)) return ''
+      const files = []
+      let topFile = null
+      for (const n of g.nodes) {
+        const f = n?.source?.file
+        if (typeof f !== 'string' || !f) continue
+        files.push(f)
+        if (n.id === g.top) topFile = f
+      }
+      return commonSourceRoot(files, topFile)
+    },
     // Instance paths of every DUT anchor in the current graph,
     // derived from ``graph.dut_top`` per view-json v1.1 — the SPA's
     // DUT-boundary renderer (GraphCanvas) walks this list to stamp
