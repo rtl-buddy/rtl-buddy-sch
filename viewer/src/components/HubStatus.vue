@@ -29,6 +29,22 @@
       >peers: {{ peerSummary }}</span
     >
 
+    <!-- Which rtl-buddy is on the other end, in the SAME words the
+         /graph and /cov panes use — one label a user can read off any
+         hub surface and compare with ``rb --version``. Nothing at all
+         before the first welcome: an empty version is a fact about the
+         connection, and the dot already states it. The full raw string
+         is the title here and a row in the popover. -->
+    <span v-if="versionText" class="version-inline" :title="hub.serverVersion.value"
+      >rtl-buddy {{ versionText
+      }}<span
+        v-if="bundleHash"
+        class="ui-hash"
+        title="SPA bundle — changes when the viewer is rebuilt"
+        >{{ ` · ui ${bundleHash}` }}</span
+      ></span
+    >
+
     <!-- right slot: message area, on the shared severity tokens
          (--err errors, --warn warnings, --fg-muted notes). The two
          banners live HERE rather than as separate floating bars —
@@ -129,13 +145,23 @@
 import { computed, ref } from 'vue'
 import { useHub } from '../composables/useHub.js'
 import { humanizeHubError } from '../hubErrors.js'
-import { readBundleHash, shortServerVersion } from '../buildInfo.js'
+import { readBundleHash, shortServerVersion, versionLabel } from '../buildInfo.js'
 
 const hub = useHub()
 const open = ref(false)
 
-// Build identity, popover-only (rtl-buddy/rtl_buddy#397 R8b).
+// Build identity. The popover keeps the full detail (R8b); the strip
+// carries the one short label every hub app shows, recomputed off the
+// ``serverVersion`` ref so a fresh welcome (reconnect, hub restart on a
+// new build) rewrites it without a reload.
 const shortVersion = computed(() => shortServerVersion(hub.serverVersion.value))
+const versionText = computed(() => versionLabel(hub.serverVersion.value))
+// The SPA's own build. Unlike the panes — which are HTML the hub
+// server itself serves, so the server version covers them — this
+// bundle ships from a different artefact and can be older than the hub
+// it is talking to, so the strip names it separately. Empty under the
+// dev server and the offline embed (no hashed asset): then there is no
+// second build to disambiguate, and the suffix stays off.
 const bundleHash = readBundleHash()
 
 // Human copy for the expiring strip message. Reads ``errorNotice``,
@@ -295,9 +321,13 @@ function takeBack() {
 .hub-status .dot[data-state='connecting'] { background: var(--warn); }
 .hub-status .dot[data-state='error'] { background: var(--err); }
 
-/* -- middle slot: inline peer list ----------------------------------- */
+/* -- middle slot: inline peer list + version label -------------------- */
+/* The peer list shrinks (and ellipsises) before the version label does:
+   a truncated version string is worse than useless — it looks like a
+   different build. The flexible gap moved to the message area's
+   ``margin-left`` so both sit together on the left of it. */
 .peers-inline {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -305,9 +335,21 @@ function takeBack() {
   font-size: var(--fs-small);
   color: var(--fg-muted);
 }
+.version-inline {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: var(--fs-small);
+  color: var(--fg-muted);
+}
+/* One step fainter: the hub's version is the answer to "what am I
+   talking to"; the bundle hash is a footnote to it. */
+.version-inline .ui-hash {
+  color: var(--fg-faint);
+}
 
 /* -- right slot: message area ---------------------------------------- */
 .hub-message {
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 0.4rem;
