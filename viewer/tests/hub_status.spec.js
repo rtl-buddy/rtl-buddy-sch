@@ -2,10 +2,11 @@
 //
 // The chrome contract (rtl_buddy docs/concepts/hub.md) pins three
 // things this component owes every other hub app: ONE status
-// vocabulary (connected / connecting… / offline), a peer list covering
-// every origin a user can have open, and a message area on the shared
-// severity tokens. All three are asserted here; the colours themselves
-// are the e2e theme suite's job.
+// vocabulary (connected / connecting… / offline), the inline
+// ``peers: …`` line the panes print (with the full roster of origins a
+// user can have open one click away in the popover), and a message
+// area on the shared severity tokens. All three are asserted here; the
+// colours themselves are the e2e theme suite's job.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -40,16 +41,36 @@ describe('HubStatus strip', () => {
     })
   }
 
-  it('lists every origin a user can have open, connected or not', () => {
+  it('names the connected peers inline, in the panes\' exact form', () => {
+    hub.state.value = 'ready'
+    hub.peers.value = ['view', 'graph']
+    const w = mount(HubStatus)
+    // ``setPeers`` in rtl_buddy hub/graph_page.html writes exactly
+    // this string; the SPA is the third app in the same strip.
+    expect(w.get('.peers-inline').text()).toBe('peers: view, graph')
+  })
+
+  it('says "peers: none" rather than going blank when nobody is attached', () => {
+    hub.state.value = 'ready'
+    hub.peers.value = []
+    expect(mount(HubStatus).get('.peers-inline').text()).toBe('peers: none')
+  })
+
+  it('lists every origin a user can have open, connected or not', async () => {
     hub.state.value = 'ready'
     hub.peers.value = ['wave']
     const w = mount(HubStatus)
-    const rows = w.findAll('.peer-strip li')
+    // The full roster is the popover's — the strip itself carries the
+    // panes' one-line "peers: …" and nothing else.
+    await w.get('.hub-status').trigger('click')
+    const rows = w.findAll('.peer-list li')
     // `cli` and `notebook` are excluded on purpose: one is a one-shot
     // (`rb hub send`), the other is a single marimo session.
-    expect(rows.map((r) => r.text())).toEqual(['view', 'src', 'wave', 'graph', 'cov'])
+    expect(rows.map((r) => r.find('code').text())).toEqual([
+      'view', 'src', 'wave', 'graph', 'cov',
+    ])
     const byOrigin = Object.fromEntries(
-      rows.map((r) => [r.text(), r.attributes('data-state')]),
+      rows.map((r) => [r.find('code').text(), r.attributes('data-state')]),
     )
     expect(byOrigin.wave).toBe('connected')
     expect(byOrigin.view).toBe('disconnected')

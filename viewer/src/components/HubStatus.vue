@@ -16,18 +16,18 @@
       {{ displayState }}
     </button>
 
-    <!-- middle slot: who else is attached right now. -->
-    <ul class="peer-strip" aria-label="Hub peers">
-      <li
-        v-for="peer in peerRows"
-        :key="peer.origin"
-        :data-state="peer.connected ? 'connected' : 'disconnected'"
-        :title="`${peer.origin} ${peer.label} — ${peer.connected ? 'connected' : 'not connected'}`"
-      >
-        <span class="peer-dot" aria-hidden="true"></span>
-        <code>{{ peer.origin }}</code>
-      </li>
-    </ul>
+    <!-- middle slot: who else is attached right now, in the panes'
+         one-line form (``peers: view, graph`` / ``peers: none``). The
+         full roster — every origin a user CAN have open, connected or
+         not — is one click away in the popover; putting it inline here
+         instead was the SPA disagreeing with the panes about what the
+         middle slot of the strip says. -->
+    <span
+      class="peers-inline"
+      aria-label="Hub peers"
+      :title="peerRosterHint"
+      >peers: {{ peerSummary }}</span
+    >
 
     <!-- right slot: message area, on the shared severity tokens
          (--err errors, --warn warnings, --fg-muted notes). The two
@@ -102,7 +102,7 @@
 // The SPA's half of the hub chrome contract's bottom status strip
 // (rtl_buddy docs/concepts/hub.md): connection dot + status word on
 // the left, peer list in the middle, message area on the right. Click
-// the status pill for the popover with the protocol/peer detail that
+// the status word for the popover with the protocol/peer detail that
 // would otherwise live in devtools.
 import { computed, ref } from 'vue'
 import { useHub } from '../composables/useHub.js'
@@ -110,9 +110,13 @@ import { useHub } from '../composables/useHub.js'
 const hub = useHub()
 const open = ref(false)
 
+// The panes' inline form, verbatim: ``peers: view, graph`` when some
+// are attached, ``peers: none`` when none are (see ``setPeers`` in
+// rtl_buddy hub/graph_page.html). Only CONNECTED peers — the roster of
+// everything that could connect is the popover's job.
 const peerSummary = computed(() => {
   const list = hub.peers.value || []
-  return list.length > 0 ? list.join(', ') : '—'
+  return list.length > 0 ? list.join(', ') : 'none'
 })
 
 // Render every known peer role, including ones not currently
@@ -142,6 +146,13 @@ const peerRows = computed(() => {
     connected: list.includes(role.origin),
   }))
 })
+// Hover text for the inline list: the full roster with each origin's
+// state, so "who is missing" is answerable without opening anything.
+const peerRosterHint = computed(() =>
+  peerRows.value
+    .map((r) => `${r.origin} ${r.label} — ${r.connected ? 'connected' : 'not connected'}`)
+    .join('\n'),
+)
 
 // User-friendly labels for the protocol-level state names. Keep
 // the raw value in ``data-state`` for CSS theming, but the chip
@@ -215,29 +226,35 @@ function takeBack() {
   width: 100%;
   min-width: 0;
 }
+/* Plain text in the strip, not a button-looking pill: the panes'
+   footers put ``<dot> connected`` there as bare muted text, and a
+   bordered chip in the same slot read as a different kind of control.
+   It is still a button (it opens the popover), so it keeps a hover
+   affordance — a colour lift, no box that appears out of nowhere. */
 .hub-status {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   flex-shrink: 0;
-  font-family: var(--font-mono);
+  font-family: inherit;
   font-size: var(--fs-small);
-  padding: 0 0.5rem;
-  border-radius: 999px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   background: transparent;
   color: var(--fg-muted);
-  border: 1px solid transparent;
   cursor: pointer;
 }
 .hub-status:hover {
-  border-color: var(--line-strong);
+  color: var(--fg);
 }
 /* Dot colour is the state; the word is the state spelled out. Both
    from the shared status tokens — connected/connecting…/offline map
-   to --ok / --warn / --err, per the chrome contract. */
+   to --ok / --warn / --err, per the chrome contract. .55rem is the
+   panes' ``.dot`` size. */
 .hub-status .dot {
-  width: 0.5rem;
-  height: 0.5rem;
+  width: 0.55rem;
+  height: 0.55rem;
   border-radius: 50%;
   background: var(--err);
   flex-shrink: 0;
@@ -245,35 +262,16 @@ function takeBack() {
 .hub-status .dot[data-state='ready'] { background: var(--ok); }
 .hub-status .dot[data-state='connecting'] { background: var(--warn); }
 .hub-status .dot[data-state='error'] { background: var(--err); }
-.hub-status[data-state='ready'] { color: var(--fg); }
 
-/* -- middle slot: peer list ------------------------------------------ */
-.peer-strip {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+/* -- middle slot: inline peer list ----------------------------------- */
+.peers-inline {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-}
-.peer-strip li {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--fs-small);
-  color: var(--fg);
-}
-.peer-strip li[data-state='disconnected'] {
-  color: var(--fg-faint);
-}
-.peer-strip code {
-  font-family: inherit;
-  background: transparent;
-  padding: 0;
+  color: var(--fg-muted);
 }
 
 /* -- right slot: message area ---------------------------------------- */
@@ -389,7 +387,6 @@ function takeBack() {
   border: 1px solid var(--line-strong);
   flex-shrink: 0;
 }
-.peer-strip li[data-state='connected'] .peer-dot,
 .peer-list li[data-state='connected'] .peer-dot {
   background: var(--ok);
   border-color: var(--ok);

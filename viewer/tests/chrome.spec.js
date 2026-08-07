@@ -6,7 +6,7 @@
 
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 
-import { hubApps, isHubServed } from '../src/hubApps.js'
+import { hubApps, isHubServed, switcherLinkAttrs } from '../src/hubApps.js'
 import { installFavicon, FAVICON_16_URL, FAVICON_32_URL, LOGO_URL } from '../src/identity.js'
 import {
   applyStoredThemePreference,
@@ -50,6 +50,35 @@ describe('app switcher', () => {
       __RTL_BUDDY_COV_URL__: '/cov.json',
     })
     expect(apps.map((a) => a.href)).toEqual(['/', '/cov'])
+  })
+
+  it('labels siblings the way the panes do, arrow included', () => {
+    const apps = hubApps({
+      __RTL_BUDDY_HUB__: '127.0.0.1:8123',
+      __RTL_BUDDY_GRAPH_URL__: '/graph.json',
+      __RTL_BUDDY_COV_URL__: '/cov.json',
+    })
+    expect(apps.map((a) => a.label)).toEqual(['⌂ hub', 'graph ↗', 'coverage ↗'])
+  })
+
+  it('opens siblings in a new tab so the view peer slot survives', () => {
+    // One WS client per origin: navigating THIS tab to /graph drops
+    // the SPA's ``view`` registration, which is the peer the graph
+    // pane's "sync design view" talks to. The panes open siblings in
+    // a new tab for the same reason — the ↗ in the label is the
+    // promise this assertion keeps.
+    const apps = hubApps({
+      __RTL_BUDDY_HUB__: '127.0.0.1:8123',
+      __RTL_BUDDY_GRAPH_URL__: '/graph.json',
+      __RTL_BUDDY_COV_URL__: '/cov.json',
+    })
+    const byKey = Object.fromEntries(apps.map((a) => [a.key, switcherLinkAttrs(a)]))
+    expect(byKey.graph).toEqual({ href: '/graph', target: '_blank', rel: 'noopener' })
+    expect(byKey.cov).toEqual({ href: '/cov', target: '_blank', rel: 'noopener' })
+    // ⌂ hub is the exception: the landing page is never a peer, so
+    // same-tab costs nothing that Back does not undo.
+    expect(byKey.hub).toEqual({ href: '/' })
+    expect(byKey.hub.target).toBeUndefined()
   })
 })
 

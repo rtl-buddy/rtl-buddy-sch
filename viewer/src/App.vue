@@ -42,7 +42,7 @@
           v-for="app in switcherApps"
           :key="app.key"
           class="switch-link"
-          :href="app.href"
+          v-bind="switcherLinkAttrs(app)"
           :title="app.title"
         >{{ app.label }}</a>
         <button
@@ -203,7 +203,7 @@ import {
   SIDEBAR_MIN_WIDTH_PX,
   SIDEBAR_MAX_WIDTH_PX,
 } from './layout/constants.js'
-import { hubApps } from './hubApps.js'
+import { hubApps, switcherLinkAttrs } from './hubApps.js'
 import { LOGO_URL } from './identity.js'
 import { initTheme, themePreference, setThemePreference } from './theme.js'
 
@@ -429,17 +429,24 @@ onBeforeUnmount(() => {
   border-color: transparent;
 }
 /* App switcher: ⌂ hub back to the landing, then the sibling apps the
-   hub says it has data for. Rendered only under the hub. */
+   hub says it has data for. Rendered only under the hub.
+
+   Byte-for-byte the panes' ``nav.switcher a`` rule (rtl_buddy
+   hub/graph_page.html, hub/cov_page.html): --panel-2 fill, --fg text,
+   a --line-strong hairline, --radius-2, .25rem/.55rem padding, accent
+   on hover. The three apps sit next to each other in a tab strip, so
+   a switcher that looks different in one of them reads as a different
+   control. The theme toggle rides along — it is the same size of
+   button in the same group. */
 .switch-link,
 .theme-toggle {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--fs-small);
-  line-height: 1.6;
-  padding: 0.1rem 0.5rem;
+  padding: 0.25rem 0.55rem;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-2);
-  background: var(--panel);
-  color: var(--fg-muted);
+  background: var(--panel-2);
+  color: var(--fg);
   text-decoration: none;
   cursor: pointer;
   white-space: nowrap;
