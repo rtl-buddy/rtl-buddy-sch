@@ -469,6 +469,18 @@ Because `graph_focus` is a state event the hub caches (like
 to the pane when it registers — the pane opens already focused rather
 than dropping the event that preceded it.
 
+`graph_focus` is broadcast, so the graph pane is not its only consumer.
+The SPA acts on the `module:<name>` form: it selects the instance of
+that module in the loaded `view.json`, or — when the module is
+instantiated more than once — applies the shallowest instance and
+offers the rest through the same disambiguation picker a multi-match
+`selection_changed` opens. Every other id form, and any module absent
+from the loaded model, is the soft miss §3 specifies: the SPA keeps
+its current selection and says nothing. This is what makes a click in
+either pane land in the schematic when the clicked thing has no
+instance path of its own — a module-tier graph node, or a coverage
+module pill.
+
 ---
 
 ## 5. Config

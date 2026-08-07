@@ -249,6 +249,41 @@ export const useViewerStore = defineStore('viewer', {
       for (const n of state.graph.nodes) m.set(n.id, n)
       return m
     },
+    // Instance paths grouped by the module type they instantiate:
+    // ``Map<module, string[]>``. The inverse of ``nodesById``'s key —
+    // the hub's ``graph_focus`` targets a design node by MODULE
+    // (``module:fifo``), because the knowledge graph has one node per
+    // module type while this view has one per instance, so "focus
+    // fifo" is a 1→N resolution the SPA has to do itself.
+    //
+    // Each list is sorted shallowest-first (fewest dots), then
+    // lexicographically, so ``[0]`` is the least-nested instance —
+    // the same "smallest range wins" default the multi-match
+    // ``selection_changed`` picker applies. Sorted here rather than at
+    // the call site so every consumer gets the same order.
+    //
+    // Recomputed when ``graph`` is replaced (a model switch), which is
+    // what makes the resolution follow the CURRENTLY loaded view.
+    nodeIdsByModule: (state) => {
+      const m = new Map()
+      if (!state.graph || !Array.isArray(state.graph.nodes)) return m
+      for (const n of state.graph.nodes) {
+        if (!n || typeof n.module !== 'string' || n.module.length === 0) continue
+        if (typeof n.id !== 'string' || n.id.length === 0) continue
+        const arr = m.get(n.module)
+        if (arr) arr.push(n.id)
+        else m.set(n.module, [n.id])
+      }
+      for (const ids of m.values()) {
+        ids.sort((a, b) => {
+          const da = a.split('.').length
+          const db = b.split('.').length
+          if (da !== db) return da - db
+          return a < b ? -1 : a > b ? 1 : 0
+        })
+      }
+      return m
+    },
     // The graph the canvas actually renders. When rootInstancePath
     // is null, this is the full graph; otherwise it's the subtree
     // rooted at that node.

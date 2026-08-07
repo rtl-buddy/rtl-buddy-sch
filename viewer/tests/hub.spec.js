@@ -601,6 +601,153 @@ describe('useHub disambiguation picker (rtl-buddy-view#55)', () => {
   })
 })
 
+describe('useHub graph_focus → module selection', () => {
+  // A node clicked in the /graph pane, or a module pill clicked in
+  // /cov, arrives as ``graph_focus {node: "module:<name>"}``. The
+  // panes think in MODULE TYPES; this view is a tree of INSTANCES, so
+  // the SPA resolves 1→N against the currently loaded view.json.
+  let store
+
+  function payload(nodes) {
+    return {
+      schema_version: '1.0',
+      top: 'top',
+      nodes: nodes.map((n) => ({
+        is_blackbox: false,
+        parameters: {},
+        ports: [],
+        overlays: {},
+        ...n,
+      })),
+      edges: [],
+      overlays_present: [],
+    }
+  }
+
+  function load(nodes) {
+    store.loadFromText(JSON.stringify(payload(nodes)))
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    store = useViewerStore()
+    _testing.reset()
+    _testing.setStore({
+      applyHubSelection: (id) => store.applyHubSelection(id),
+      presentSelectionCandidates: (paths) => store.presentSelectionCandidates(paths),
+      dismissSelectionCandidates: () => store.dismissSelectionCandidates(),
+      // A getter, not a snapshot: the resolution has to see whatever
+      // model is loaded at the moment the envelope lands.
+      get nodeIdsByModule() {
+        return store.nodeIdsByModule
+      },
+    })
+    load([
+      { id: 'top', module: 'top' },
+      { id: 'top.u_fifo', module: 'fifo' },
+      { id: 'top.u_core', module: 'core' },
+      { id: 'top.u_core.u_fifo', module: 'fifo' },
+    ])
+  })
+  afterEach(() => { _testing.reset() })
+
+  it('selects the only instance of the named module', () => {
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:core' }, 'graph'))
+    expect(store.selection).toBe('top.u_core')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('opens the picker for a module instantiated more than once, shallowest first', () => {
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:fifo' }, 'graph'))
+    // Same multi-match path a ``selection_changed`` array takes: the
+    // least-nested instance is applied immediately, the full list
+    // surfaces for the user to override.
+    expect(store.selection).toBe('top.u_fifo')
+    expect(store.selectionCandidates).toEqual(['top.u_fifo', 'top.u_core.u_fifo'])
+  })
+
+  it('the multi-match picker auto-dismisses on the shared timer', () => {
+    vi.useFakeTimers()
+    try {
+      _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:fifo' }, 'graph'))
+      expect(store.selectionCandidates).not.toBeNull()
+      vi.advanceTimersByTime(_testing.SELECTION_PICKER_AUTODISMISS_MS + 1)
+      expect(store.selectionCandidates).toBeNull()
+      // Dismissing the picker does not undo the applied default.
+      expect(store.selection).toBe('top.u_fifo')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('soft-ignores a module this model does not contain', () => {
+    // Schema semantics for graph_focus: an unresolvable target is
+    // silently kept, not an error. The knowledge graph spans every
+    // module in the project; this view holds one elaboration.
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:nowhere' }, 'graph'))
+    expect(store.selection).toBeNull()
+    expect(store.selectionCandidates).toBeNull()
+    expect(store.hubError).toBeNull()
+  })
+
+  it('ignores node ids outside the module: vocabulary', () => {
+    // The knowledge graph's id space is wider than this view's; only
+    // ``module:`` names something a hierarchy can be resolved against.
+    for (const node of [
+      'inst:top/top.u_fifo',
+      'test:smoke#fifo_basic',
+      'fifo',
+      'module:',
+      'MODULE:fifo',
+      '',
+    ]) {
+      _testing.applyEnvelope(env('graph_focus', 'event', { node }, 'graph'))
+      expect(store.selection).toBeNull()
+    }
+    // Non-string payloads are equally inert.
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 42 }, 'graph'))
+    _testing.applyEnvelope(env('graph_focus', 'event', {}, 'graph'))
+    expect(store.selection).toBeNull()
+  })
+
+  it('ignores its own origin so a focus cannot loop', () => {
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:core' }, 'view'))
+    expect(store.selection).toBeNull()
+  })
+
+  it('never echoes a focus back to the hub', () => {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({ store: undefined })
+    sock.open()
+    sock.receive(env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }))
+    const before = sock.sent.length
+    sock.receive(env('graph_focus', 'event', { node: 'module:core' }, 'graph'))
+    // Broadcasting the selection we were just handed is how two panes
+    // bounce one click between each other forever.
+    expect(sock.sent.length).toBe(before)
+  })
+
+  it('resolves against the model loaded right now, not the one at connect time', () => {
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:core' }, 'graph'))
+    expect(store.selection).toBe('top.u_core')
+
+    // Model switch: same module name, different hierarchy.
+    load([
+      { id: 'tb', module: 'top' },
+      { id: 'tb.dut', module: 'core' },
+    ])
+    expect(store.selection).toBeNull() // _installGraph wipes selection
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:core' }, 'graph'))
+    expect(store.selection).toBe('tb.dut')
+
+    // And a module that only existed in the previous model is now a
+    // soft miss rather than a stale hit.
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:fifo' }, 'graph'))
+    expect(store.selection).toBe('tb.dut')
+  })
+})
+
 describe('hub takeover handshake', () => {
   beforeEach(() => {
     setActivePinia(createPinia())

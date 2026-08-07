@@ -96,6 +96,60 @@ function clearPickerDismissTimer() {
   }
 }
 
+// Show the disambiguation picker for an ambiguous incoming selection
+// and arm its auto-dismiss. Two wire types produce ambiguity — a
+// ``selection_changed`` carrying several instance paths, and a
+// ``graph_focus`` naming a module instantiated more than once — and
+// they must behave identically, so the timer lives here rather than
+// once per case.
+function presentCandidatesWithAutoDismiss(paths) {
+  _store?.presentSelectionCandidates(paths)
+  clearPickerDismissTimer()
+  _pickerDismissTimer = setTimeout(() => {
+    _store?.dismissSelectionCandidates()
+    _pickerDismissTimer = null
+  }, SELECTION_PICKER_AUTODISMISS_MS)
+}
+
+// ``graph_focus`` node ids the SPA can act on. The knowledge graph's
+// id vocabulary is wider than this view's (``inst:``, ``test:``,
+// ``covitem:``, …); ``module:<name>`` is the only one that names
+// something a hierarchy of instances can be resolved against.
+const MODULE_TARGET_PREFIX = 'module:'
+
+/**
+ * Resolve a ``graph_focus`` target onto the loaded view.
+ *
+ * The graph pane and the coverage pane both speak in MODULE types
+ * (one graph node per module, one coverage row per module) while this
+ * view is a tree of INSTANCES, so a focus is a 1→N resolution: every
+ * node whose ``module`` is the named type. One match selects, several
+ * open the same picker a multi-match ``selection_changed`` does.
+ *
+ * Anything else is a soft miss — a target this consumer cannot
+ * resolve is silently kept, per the ``graph_focus`` description in
+ * schemas/hub-protocol-v1.json. That covers both a foreign id
+ * vocabulary (``inst:``/``test:``) and a module that is real in the
+ * knowledge graph but absent from the model currently loaded here;
+ * neither is an error worth interrupting the user for.
+ */
+function focusGraphNode(target) {
+  if (typeof target !== 'string' || !target.startsWith(MODULE_TARGET_PREFIX)) return
+  const module = target.slice(MODULE_TARGET_PREFIX.length)
+  if (module.length === 0) return
+  const byModule = _store?.nodeIdsByModule
+  const ids = (byModule && byModule.get(module)) || []
+  if (ids.length === 0) return
+  if (ids.length === 1) {
+    _store?.applyHubSelection(ids[0])
+    return
+  }
+  // Already shallowest-first then lexicographic (the store getter
+  // sorts), so ``[0]`` — the default the picker applies immediately —
+  // is the least-nested instance of the module.
+  presentCandidatesWithAutoDismiss(ids.slice())
+}
+
 function makeId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID()
@@ -193,6 +247,9 @@ function sendHello() {
       'signal_selected',
       'wave_values_changed',
       'diagnostics_set',
+      // Consumed, never produced: the graph and coverage panes send
+      // it, we resolve it onto an instance (see focusGraphNode).
+      'graph_focus',
     ],
   }
   // ``takeover`` is opt-in per-hello: the hub kicks any pre-
@@ -255,18 +312,23 @@ function applyEnvelope(env) {
         // we also surface the picker so the user can override if
         // the resolver's tie-break picked the wrong sibling
         // (rtl-buddy-view#55).
-        _store?.presentSelectionCandidates(ip)
-        clearPickerDismissTimer()
-        _pickerDismissTimer = setTimeout(() => {
-          _store?.dismissSelectionCandidates()
-          _pickerDismissTimer = null
-        }, SELECTION_PICKER_AUTODISMISS_MS)
+        presentCandidatesWithAutoDismiss(ip)
         break
       }
       const id = Array.isArray(ip) ? ip[0] : ip
       if (typeof id === 'string' && id.length > 0) {
         _store?.applyHubSelection(id)
       }
+      break
+    }
+
+    case 'graph_focus': {
+      // A node clicked in the /graph pane, or a module pill clicked in
+      // /cov. Nothing is broadcast back — applyHubSelection is a local
+      // write by design, and echoing a selection we were handed is how
+      // two panes end up bouncing one click between them forever.
+      if (env.origin === 'view') break
+      focusGraphNode(env.payload?.node)
       break
     }
 
