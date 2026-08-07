@@ -15,10 +15,15 @@
         @click="store.setViewMode('flow')"
         :title="flowTabTitle"
       >Block Flow</button>
-      <nav v-if="store.viewMode === 'flow' && breadcrumb.length > 0" class="flow-breadcrumb" aria-label="Block-flow scope">
-        <span class="flow-scope-label">scope:</span>
+      <nav
+        v-if="breadcrumb.length > 0"
+        class="scope-breadcrumb"
+        data-rb-scope-breadcrumb
+        :aria-label="store.viewMode === 'flow' ? 'Block-flow scope' : 'Hierarchy scope'"
+      >
+        <span class="scope-label">scope:</span>
         <template v-for="(crumb, i) in breadcrumb" :key="crumb.path">
-          <span v-if="i > 0" class="crumb-sep" aria-hidden="true">/</span>
+          <span v-if="i > 0" class="crumb-sep" aria-hidden="true">›</span>
           <button
             type="button"
             class="crumb"
@@ -76,6 +81,7 @@ import { buildBlockFlowDot } from '../layout/blockFlow.js'
 import { applyOverlays } from '../overlays/index.js'
 import { useHub } from '../composables/useHub.js'
 import { registerSvgProvider, unregisterSvgProvider } from '../capture.js'
+import { FIT_SCALE_MAX } from '../layout/constants.js'
 import { token, themeVersion } from '../theme.js'
 import NodeBadge from './NodeBadge.vue'
 import SelectionCandidates from './SelectionCandidates.vue'
@@ -106,13 +112,27 @@ const canAscendScope = computed(() => {
   return store.flowScopeId && store.flowScopeId !== store.graph.top
 })
 
-// Clickable breadcrumb path for the flow-view scope. Each segment
-// is a button that jumps the scope to that prefix; the trailing
-// (current) segment is rendered disabled. With one segment (the
-// design top) only the top crumb is shown.
+// Clickable breadcrumb path for whichever scope the active tab is
+// showing. Each segment is a button that jumps the scope to that
+// prefix; the trailing (current) segment is rendered disabled.
+//
+// Both tabs get one, from the same computed, because both tabs have a
+// scope and the two are kept in lockstep by ``store.descend`` /
+// ``store.ascend``. Block-flow always has one (it falls back to
+// ``graph.top``); the hier view only shows it once the user has
+// actually descended — at the top of the design the canvas already
+// says where you are, and an unconditional strip would just be
+// permanent chrome. Before this, descending in hier left NO indication
+// of the current scope anywhere on the canvas.
+const scopePath = computed(() => {
+  if (!store.graph) return null
+  return store.viewMode === 'flow' ? store.flowScopeId : store.rootInstancePath
+})
+
 const breadcrumb = computed(() => {
-  if (store.viewMode !== 'flow' || !store.graph || !store.flowScopeId) return []
-  const segments = store.flowScopeId.split('.')
+  const scope = scopePath.value
+  if (!scope) return []
+  const segments = scope.split('.')
   return segments.map((label, i) => {
     const path = segments.slice(0, i + 1).join('.')
     return { label, path, current: i === segments.length - 1 }
@@ -121,13 +141,16 @@ const breadcrumb = computed(() => {
 
 function jumpToScope(path) {
   if (!path || !store.graph) return
-  // Top of design → clear the explicit scope so it falls back to
-  // ``graph.top`` via the getter.
+  // Top of design → clear the scope entirely. ``goToTop`` resets BOTH
+  // scope fields, which is what keeps the two tabs pointing at the same
+  // place (the same invariant ``descend`` / ``ascend`` maintain).
   if (path === store.graph.top) {
-    store.flowScope = null
-  } else {
-    store.flowScope = path
+    store.goToTop()
+    return
   }
+  // Any other crumb is an ancestor of the current scope, so it has
+  // children by construction and ``descend`` will accept it.
+  store.descend(path)
 }
 
 async function renderSvg() {
@@ -883,7 +906,13 @@ function fitToWindow() {
     applyTransform()
     return
   }
-  const scale = Math.min(rect.width / bb.width, rect.height / bb.height)
+  // Capped: see FIT_SCALE_MAX. An uncapped aspect-fit turns a two-node
+  // scope into a billboard the moment the user descends.
+  const scale = Math.min(
+    rect.width / bb.width,
+    rect.height / bb.height,
+    FIT_SCALE_MAX,
+  )
   transform.value = {
     scale,
     x: (rect.width - bb.width * scale) / 2 - bb.x * scale,
@@ -967,7 +996,7 @@ onBeforeUnmount(() => {
   color: var(--accent-contrast);
   border-color: var(--accent);
 }
-.flow-breadcrumb {
+.scope-breadcrumb {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
@@ -976,7 +1005,7 @@ onBeforeUnmount(() => {
   margin-left: 0.5rem;
   color: var(--fg-muted);
 }
-.flow-scope-label {
+.scope-label {
   margin-right: 0.15rem;
 }
 .crumb-sep {
@@ -1087,26 +1116,36 @@ onBeforeUnmount(() => {
 
 /* Selected-node accent. Painted by ``applySelectionHighlight``,
    which stamps ``data-rb-selected`` on the SVG group whose
-   ``data-node-id`` matches the store's selection. Covers both
-   hier-view ``g.node`` polygons + flow-view HTML-table outer
-   tables. The thicker stroke + drop-shadow makes the highlight
-   visible across the wide range of node fill colours overlays may
-   apply, and the glow still cues the eye when the node has just
-   panned in from the edge of the viewport. */
+   ``data-node-id`` matches the store's selection. Covers hier-view
+   ``g.node`` polygons, ``g.cluster`` backdrops (a container is
+   selectable in its own right) and flow-view HTML-table outer tables.
+
+   A single thin outline was easy to miss against the range of fills
+   the overlays paint, so the treatment is two-part: a 2.5px accent
+   stroke, plus a two-stop accent halo (tight + soft) that reads as a
+   glow rather than as a second border. Both stops are ``color-mix``ed
+   off ``--accent`` so the highlight follows a theme flip. Static —
+   nothing here animates. */
 .svg-host :deep([data-rb-selected]) > polygon,
 .svg-host :deep([data-rb-selected]) > path {
   stroke: var(--accent);
-  stroke-width: 3 !important;
-  /* The glow was a baked ``rgba(37, 99, 235, .55)``. ``color-mix``
-     keeps the same 55% so the halo reads as a halo and not a second
-     stroke, while following the accent into dark. */
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 55%, transparent));
+  stroke-width: 2.5 !important;
+  filter:
+    drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 70%, transparent))
+    drop-shadow(0 0 9px color-mix(in srgb, var(--accent) 35%, transparent));
 }
-/* For HTML-table labels (block-flow boxes), the outer table is a
-   nested polygon — accent that one too. */
+/* For HTML-table labels (block-flow boxes, CDC bridge grids), the
+   outer table is a nested polygon — accent that one too. */
 .svg-host :deep([data-rb-selected] polygon:first-of-type) {
   stroke: var(--accent);
-  stroke-width: 3 !important;
+  stroke-width: 2.5 !important;
+}
+/* A selected cluster's own label is the only text that names it, so
+   promote it to the accent as well — the backdrop stroke alone is far
+   from the label on a large container. */
+.svg-host :deep(g.cluster[data-rb-selected] > text) {
+  fill: var(--accent);
+  font-weight: 700;
 }
 
 /* Theme safety net for the *producer-supplied* layout DOT — and ONLY
@@ -1130,12 +1169,18 @@ onBeforeUnmount(() => {
 .svg-host.producer-dot :deep(text) {
   fill: var(--fg);
 }
+/* ``--line-strong`` is a surface-divider tier; as a 1px polyline on the
+   open canvas it was the faintest thing in the render. Edges carry the
+   connectivity, so they get the readable ``--fg-muted`` text tier —
+   matching what ``graphToDot`` / ``buildBlockFlowDot`` now bake in, so
+   the producer and in-JS renders agree on edge weight. Arrowheads are
+   filled polygons and need both properties. */
 .svg-host.producer-dot :deep(g.edge path) {
-  stroke: var(--line-strong);
+  stroke: var(--fg-muted);
 }
 .svg-host.producer-dot :deep(g.edge polygon) {
-  fill: var(--line-strong);
-  stroke: var(--line-strong);
+  fill: var(--fg-muted);
+  stroke: var(--fg-muted);
 }
 .svg-host.producer-dot :deep(g.cluster > polygon) {
   fill: none;

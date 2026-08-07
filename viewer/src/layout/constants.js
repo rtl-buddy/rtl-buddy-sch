@@ -21,3 +21,20 @@ export const SIDEBAR_MAX_WIDTH_PX = 640
 
 /** Height of the bottom hub status strip, in px. */
 export const STATUS_STRIP_HEIGHT_PX = 24
+
+/**
+ * Upper bound on the scale ``GraphCanvas.fitToWindow`` may compute.
+ *
+ * "Fit" is aspect-fit: ``min(host.w / bbox.w, host.h / bbox.h)``. That
+ * is the right answer while the graph is bigger than the viewport, but
+ * with no ceiling a two-node scope (the common case straight after a
+ * Descend) gets blown up to fill a 1280px canvas — a billboard where
+ * the text is inches tall and the reader has lost every cue about how
+ * big the block is relative to its siblings. Capping at 1.5x keeps
+ * small graphs near their natural Graphviz size, still centred.
+ *
+ * Only the automatic fit is capped: the +/- buttons and the wheel run
+ * through their own clamp (0.1 … 10) so a deliberate zoom is unbounded
+ * by this number.
+ */
+export const FIT_SCALE_MAX = 1.5
