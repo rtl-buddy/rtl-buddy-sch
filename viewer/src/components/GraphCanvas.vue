@@ -1057,6 +1057,18 @@ onBeforeUnmount(() => {
 .svg-host :deep([data-bf-id]) {
   cursor: pointer;
 }
+/* Cluster borders are ``fill:none`` on every DOT path (producer and
+   graphToDot both emit ``style="rounded"``), and SVG skips pointer
+   events on unpainted fill — so a container was only clickable on
+   its hairline border, making "select the wrapper, then Descend"
+   (and dblclick-descend) effectively impossible. ``pointer-events:
+   all`` opts the full geometry in regardless of paint. Children are
+   emitted after their cluster's backdrop, so they still win
+   hit-testing wherever they overlap it. */
+.svg-host :deep(g.cluster > path),
+.svg-host :deep(g.cluster > polygon) {
+  pointer-events: all;
+}
 
 /* Port-edge highlight. Painted by ``highlightEdgesForPort`` when
    the user clicks a port cell in block-flow view — marks every
