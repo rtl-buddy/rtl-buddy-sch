@@ -52,6 +52,16 @@ describe('versionLabel', () => {
     expect(versionLabel(undefined)).toBe(null)
     expect(versionLabel(null)).toBe(null)
   })
+
+  // Alignment cases with the panes' duplicated copy (rtl_buddy
+  // graph_page.html / cov_page.html `version-label` marker block):
+  // both ends must agree on these or the three apps drift.
+  it('agrees with the pane copy on the edge cases', () => {
+    // a sha with no base version is not a label
+    expect(versionLabel('+g3f5b890e3')).toBe(null)
+    // fewer than 4 hex digits is not a sha
+    expect(versionLabel('1.0+gabc')).toBe('1.0')
+  })
 })
 
 describe('HubStatus strip', () => {

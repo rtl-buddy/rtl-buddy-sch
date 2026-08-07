@@ -43,9 +43,11 @@ export function versionLabel(raw) {
   const s = raw.trim()
   if (!s) return null
   const [base, ...localParts] = s.split('+')
+  // A sha with no base version to hang it off is not a label — the
+  // panes' duplicated copy agrees (their empty-base case is null too).
+  if (!base) return null
   const m = localParts.join('+').match(SHA_RE)
   const sha = m ? m[1].slice(0, SHA_MAX) : ''
-  if (!base) return sha || null
   return sha ? `${base} @ ${sha}` : base
 }
 
