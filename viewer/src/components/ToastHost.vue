@@ -2,15 +2,23 @@
   <div class="toast-host" aria-live="polite">
     <transition name="toast">
       <div
-        v-if="store.hubError"
+        v-if="copy"
         class="toast"
         :data-code="store.hubError.code"
+        :data-known="copy.known ? 'yes' : 'no'"
         role="alert"
       >
         <div class="body">
-          <span class="code">{{ store.hubError.code }}</span>
-          <span class="message">{{ store.hubError.message }}</span>
+          <span class="message">{{ copy.headline }}</span>
+          <span class="detail" :title="copy.detail">{{ copy.detail }}</span>
         </div>
+        <button
+          v-if="copy.takeover"
+          type="button"
+          class="action"
+          title="Evict the other tab's registration and connect this one"
+          @click="takeOver"
+        >Take over</button>
         <button type="button" class="dismiss" @click="dismiss" aria-label="Dismiss">×</button>
       </div>
     </transition>
@@ -23,17 +31,36 @@
 // One toast at a time; the latest error replaces the previous and
 // auto-dismisses after a fixed delay so a stuck producer doesn't
 // pin a stale toast.
+//
+// The toast is THE full rendering of a hub error: it leads with a
+// sentence (hubErrors.js maps the closed catalog onto human wording)
+// and demotes ``code — message`` to a secondary line for whoever is
+// debugging the producer. The status strip gets a few words and an
+// expiry; nobody else renders this event.
 import { useViewerStore } from '../store.js'
-import { onBeforeUnmount, watch } from 'vue'
+import { useHub } from '../composables/useHub.js'
+import { humanizeHubError } from '../hubErrors.js'
+import { computed, onBeforeUnmount, watch } from 'vue'
 
 const store = useViewerStore()
+const hub = useHub()
 const AUTO_DISMISS_MS = 6000
+
+const copy = computed(() => humanizeHubError(store.hubError))
 
 let timer = null
 
 function dismiss() {
   if (timer) { clearTimeout(timer); timer = null }
   store.dismissHubError()
+}
+
+// "Another view tab is connected": the fix is to evict it. Same
+// takeover hello the composable retries with automatically — this is
+// the manual handle for when that retry was refused too.
+function takeOver() {
+  hub.reconnect({ takeover: true })
+  dismiss()
 }
 
 watch(
@@ -94,15 +121,33 @@ onBeforeUnmount(() => {
   gap: 0.1rem;
   flex: 1;
 }
-.toast .code {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  opacity: 0.75;
-}
+/* Headline first, machine detail second — the reverse of the
+   original layout, which led with an uppercase error code. */
 .toast .message {
   word-break: break-word;
+  font-weight: 600;
+}
+.toast .detail {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  opacity: 0.75;
+  word-break: break-word;
+  /* Never let a chatty producer message push the toast past two
+     lines — the title carries the rest. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.toast .action {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 .toast .dismiss {
   background: transparent;

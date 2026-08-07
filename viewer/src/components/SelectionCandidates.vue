@@ -1,6 +1,7 @@
 <template>
   <div
     v-if="store.selectionCandidates && store.selectionCandidates.length > 1"
+    ref="root"
     class="selection-candidates"
     role="dialog"
     aria-label="Multiple matches — pick one"
@@ -18,7 +19,7 @@
     <p class="hint">
       The source range mapped to more than one instance. The smallest-
       range match is selected by default — click another to lock that
-      choice. Auto-dismisses in a few seconds.
+      choice, or press Esc to keep the default.
     </p>
     <ul class="candidate-list">
       <li
@@ -45,20 +46,44 @@
 // Disambiguation picker (rtl-buddy-view#55). Surfaces when the hub
 // resolves a source_focused event to more than one instance path.
 // The composable stashes the candidate list on the store (via
-// presentSelectionCandidates) and starts an auto-dismiss timer; this
-// component just renders the list and forwards clicks back through
-// useHub.chooseSelectionCandidate so the chosen path is locked
-// locally AND broadcast to the other hub peers.
+// presentSelectionCandidates); this component renders the list and
+// forwards clicks back through useHub.chooseSelectionCandidate so the
+// chosen path is locked locally AND broadcast to the other hub peers.
+//
+// There is no auto-dismiss timer. The picker closes when the user
+// picks, presses Esc (App.vue's global handler), clicks outside it
+// (below), or a new selection arrives (the store clears the list). A
+// popover that vanishes mid-read is worse than one that waits.
 //
 // Showing source ranges (file:start-end) next to each path is what
 // distinguishes siblings like ``u_a`` / ``u_b`` whose instance names
 // only differ by a one-char suffix — the path alone is often hard to
 // read at a glance.
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useViewerStore } from '../store.js'
 import { useHub } from '../composables/useHub.js'
 
 const store = useViewerStore()
 const hub = useHub()
+const root = ref(null)
+
+// Click-outside dismissal. Bound on ``mousedown`` rather than
+// ``click`` so a drag that STARTS outside the popover (panning the
+// canvas) closes it on press, matching every other popover on the
+// page. The picker is opened by a hub event, never by a click, so
+// there is no opening-click to guard against here.
+function onDocumentMouseDown(event) {
+  if (!store.selectionCandidates) return
+  const el = root.value
+  if (el && event.target instanceof Node && el.contains(event.target)) return
+  hub.dismissSelectionCandidates()
+}
+onMounted(() => {
+  document.addEventListener('mousedown', onDocumentMouseDown, true)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocumentMouseDown, true)
+})
 
 function rangeFor(path) {
   // Pull file + line range from the node table so the user can tell

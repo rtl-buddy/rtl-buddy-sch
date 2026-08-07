@@ -58,7 +58,7 @@ test.describe('cluster-interior selection + descend', () => {
     const pt = await interiorPoint(page, CONTAINER)
     expect(pt).not.toBeNull()
     await page.mouse.click(pt.x, pt.y)
-    await expect(page.locator('.node-detail h3')).toHaveText(
+    await expect(page.locator('.node-detail h3 .inst-path')).toHaveText(
       new RegExp(CONTAINER.replaceAll('.', '\\.?')),
     )
     // The container has children, so Descend must be enabled.

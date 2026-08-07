@@ -15,7 +15,7 @@
         role="tab"
         :aria-selected="!store.viewModeTb"
         :class="{ active: !store.viewModeTb }"
-        title="Show the DUT hierarchy (the today's-default --top view)"
+        title="Show the DUT subtree — the design under test, rooted at its own top"
         @click="onSelectMode('dut')"
       >DUT</button>
       <button
@@ -23,7 +23,7 @@
         role="tab"
         :aria-selected="store.viewModeTb"
         :class="{ active: store.viewModeTb }"
-        title="Show the testbench hierarchy with the DUT called out as a subtree"
+        title="Show the full testbench hierarchy, with the DUT called out as a subtree"
         @click="onSelectMode('tb')"
       >TB</button>
     </div>

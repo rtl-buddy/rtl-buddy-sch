@@ -140,7 +140,7 @@ test.describe('Phase 10d hub wiring', () => {
     // NodeDetail in the sidebar shows the selection — scope the
     // assertion to its h3 so we don't match the SVG <title> or
     // graph-edge title text.
-    await expect(page.locator('.node-detail h3')).toHaveText(targetId, { timeout: 5_000 })
+    await expect(page.locator('.node-detail h3 .inst-path')).toHaveText(targetId, { timeout: 5_000 })
   })
 
   test('diagnostics_set populates the panel; empty items clears that source', async ({ page }) => {
@@ -185,7 +185,15 @@ test.describe('Phase 10d hub wiring', () => {
 
     await expect(page.locator('.toast')).toBeVisible({ timeout: 5_000 })
     await expect(page.locator('.toast')).toHaveAttribute('data-code', 'not_connected')
-    await expect(page.locator('.toast .message')).toContainText('no wave client attached')
+    // R7a: the toast leads with a SENTENCE; the raw ``code — message``
+    // is the secondary detail line, not the headline.
+    await expect(page.locator('.toast .message')).toContainText(
+      'peer that request needed is not connected',
+    )
+    await expect(page.locator('.toast .detail')).toContainText('no wave client attached')
+    // R7c: the strip carries a short status, not a second full copy.
+    await expect(page.locator('.hub-message')).not.toContainText('no wave client attached')
+    await expect(page.locator('.hub-message')).toContainText('peer not connected')
   })
 
   test('replay-on-welcome: cached diagnostics appear after handshake', async ({ page }) => {

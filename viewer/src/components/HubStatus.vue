@@ -53,10 +53,14 @@
           <span class="msg-text">reconnecting — wave badges frozen</span>
         </span>
       </template>
-      <template v-else-if="hub.lastError.value">
-        <code class="msg-code">{{ hub.lastError.value.code }}</code>
-        <span class="msg-text" :title="hub.lastError.value.message">
-          {{ hub.lastError.value.message }}
+      <!-- One event, one full rendering. The toast says the sentence;
+           this slot says a few words and expires (the composable's
+           ``errorNotice`` clears itself, and a welcome clears it
+           early). It used to be a red mono duplicate of the toast
+           that never went away. -->
+      <template v-else-if="noticeCopy">
+        <span class="msg-text" :title="noticeCopy.detail">
+          {{ noticeCopy.short }}
         </span>
       </template>
     </div>
@@ -90,6 +94,24 @@
         </dd>
         <dd v-else>—</dd>
       </dl>
+      <!-- Versions. These two were chips in the top bar, where they
+           competed for space with the controls a user actually
+           touches while answering a question that comes up about once
+           a session ("am I on the build I just staged?"). They belong
+           with the rest of the connection facts. -->
+      <section class="versions">
+        <h4>versions</h4>
+        <dl>
+          <dt>rtl-buddy</dt>
+          <dd :title="hub.serverVersion.value || 'no hub connected'">
+            <code>{{ shortVersion || '—' }}</code>
+          </dd>
+          <dt>spa bundle</dt>
+          <dd :title="bundleHash ? `index-${bundleHash}.js` : 'dev server or embedded build — no hashed bundle'">
+            <code>{{ bundleHash || '—' }}</code>
+          </dd>
+        </dl>
+      </section>
       <footer v-if="hub.state.value === 'disconnected'">
         <button type="button" @click="reconnect">Reconnect</button>
       </footer>
@@ -106,9 +128,19 @@
 // would otherwise live in devtools.
 import { computed, ref } from 'vue'
 import { useHub } from '../composables/useHub.js'
+import { humanizeHubError } from '../hubErrors.js'
+import { readBundleHash, shortServerVersion } from '../buildInfo.js'
 
 const hub = useHub()
 const open = ref(false)
+
+// Build identity, popover-only (rtl-buddy/rtl_buddy#397 R8b).
+const shortVersion = computed(() => shortServerVersion(hub.serverVersion.value))
+const bundleHash = readBundleHash()
+
+// Human copy for the expiring strip message. Reads ``errorNotice``,
+// NOT ``lastError`` — the latter is the popover's permanent log row.
+const noticeCopy = computed(() => humanizeHubError(hub.errorNotice.value))
 
 // The panes' inline form, verbatim: ``peers: view, graph`` when some
 // are attached, ``peers: none`` when none are (see ``setPeers`` in
@@ -186,7 +218,7 @@ const isReconnecting = computed(
 const messageSeverity = computed(() => {
   if (hub.superseded.value) return 'error'
   if (isReconnecting.value) return 'warning'
-  if (hub.lastError.value) return 'error'
+  if (hub.errorNotice.value) return 'error'
   return 'note'
 })
 
@@ -291,9 +323,6 @@ function takeBack() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.hub-message .msg-code {
-  font-family: var(--font-mono);
-}
 .hub-message .msg-action {
   font-size: var(--fs-small);
   padding: 0 0.4rem;
@@ -342,6 +371,27 @@ function takeBack() {
 }
 .hub-popover dt { color: var(--fg-muted); }
 .hub-popover dd { margin: 0; word-break: break-word; }
+/* Versions block: a hairline-separated sub-section so it reads as
+   build identity rather than another connection fact. */
+.hub-popover .versions {
+  margin-top: 0.5rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--line);
+}
+.hub-popover .versions h4 {
+  margin: 0 0 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+.hub-popover .versions code {
+  font-family: var(--font-mono);
+  background: var(--panel-2);
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-1);
+}
 .hub-popover footer {
   margin-top: 0.5rem;
   display: flex;
