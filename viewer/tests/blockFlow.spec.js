@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { buildBlockFlowDot } from '../src/layout/blockFlow.js'
+import { token } from '../src/theme.js'
 
 function makeGraph(overrides = {}) {
   return {
@@ -84,6 +85,25 @@ describe('buildBlockFlowDot', () => {
     const dot = buildBlockFlowDot(makeGraph(), 'top')
     expect(dot).toMatch(/"_in_din"\s*\[shape=plaintext, label="din ▶"/)
     expect(dot).toMatch(/"_out_dout"\s*\[shape=plaintext, label="▶ dout"/)
+  })
+
+  it('carries the mono font on the graph, node and edge scopes', () => {
+    const dot = buildBlockFlowDot(makeGraph(), 'top')
+    expect(dot).toContain('fontname="Courier,monospace";')
+    expect(dot).toMatch(/node \[[^\]]*fontname="Courier,monospace"/)
+    expect(dot).toMatch(/edge \[[^\]]*fontname="Courier,monospace"/)
+  })
+
+  it('draws edges in --fg-muted so connectivity is legible', () => {
+    // ``--line-strong`` (the old value) is a surface-divider tier: fine
+    // as a border between two filled areas, all but invisible as a 1px
+    // polyline on the open canvas.
+    const dot = buildBlockFlowDot(makeGraph(), 'top')
+    const muted = token('--fg-muted')
+    expect(muted).not.toBe(token('--line-strong'))
+    expect(dot).toMatch(new RegExp(`edge \\[[^\\]]*color="${muted}"`))
+    // Boundary edges name the colour per-edge rather than inheriting.
+    expect(dot).toContain(`"_in_din" -> "top.u_a":d_in:w [id="bf-edge:_in_din::top.u_a:d_in", color="${muted}"`)
   })
 
   it('skips clock-named nets so the data path stays legible', () => {
