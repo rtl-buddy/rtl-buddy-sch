@@ -9,6 +9,9 @@
 //         clear the selection. One key, two steps, most-recent-first.
 //   u   — ascend one level. No-op unless a scope is set, so the key
 //         is inert on a design sitting at its top.
+//   /   — focus the hierarchy filter box. The one key every tree-based
+//         tool (and every browser) binds to "search this list"; the
+//         placeholder advertises it.
 //
 // Deliberately NOT handled: anything with a modifier (that is a
 // browser/OS shortcut), and anything typed into a form control — the
@@ -28,10 +31,15 @@ export function isTypingTarget(target) {
 /**
  * Build the document-level keydown handler.
  *
- * @param {{store: object, hub: object}} deps
+ * ``focusTreeFilter`` is an optional callback supplied by App.vue that
+ * focuses the hierarchy panel's filter input and returns false when it
+ * could not (panel collapsed, tree not mounted) — in which case the
+ * keystroke is left to the browser rather than swallowed.
+ *
+ * @param {{store: object, hub: object, focusTreeFilter?: () => boolean}} deps
  * @returns {(event: KeyboardEvent) => void}
  */
-export function makeGlobalKeydownHandler({ store, hub }) {
+export function makeGlobalKeydownHandler({ store, hub, focusTreeFilter }) {
   return function onGlobalKeydown(event) {
     if (!event || event.defaultPrevented) return
     if (event.ctrlKey || event.metaKey || event.altKey) return
@@ -45,6 +53,16 @@ export function makeGlobalKeydownHandler({ store, hub }) {
         store?.clearSelection?.()
       }
       event.preventDefault()
+      return
+    }
+
+    if (event.key === '/') {
+      // Esc inside that input is the tree's to handle (clear the
+      // filter); it never reaches here because ``isTypingTarget``
+      // already excluded form controls above.
+      if (typeof focusTreeFilter === 'function' && focusTreeFilter() !== false) {
+        event.preventDefault()
+      }
       return
     }
 

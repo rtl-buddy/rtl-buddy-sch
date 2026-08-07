@@ -65,6 +65,12 @@
       v-if="store.graph && (store.status !== 'ready' || store.activeTab === 'hierarchy')"
     >
       <aside class="sidebar" :style="{ width: sidebarWidth + 'px' }">
+        <!-- The hierarchy outline goes FIRST: it is the design's index
+             and the thing every other panel is about. Verdi/Vivado both
+             put it here for the same reason. -->
+        <CollapsiblePanel title="Hierarchy" persist-key="hierarchy">
+          <HierarchyTree ref="treeRef" />
+        </CollapsiblePanel>
         <CollapsiblePanel title="Overlays" persist-key="overlays">
           <OverlayPanel />
         </CollapsiblePanel>
@@ -196,6 +202,7 @@ import ModelPicker from './components/ModelPicker.vue'
 import ToastHost from './components/ToastHost.vue'
 import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
 import CollapsiblePanel from './components/CollapsiblePanel.vue'
+import HierarchyTree from './components/HierarchyTree.vue'
 import { initHub, useHub } from './composables/useHub.js'
 import { initEventSync } from './composables/useEventSync.js'
 import {
@@ -298,10 +305,16 @@ function onDrop(e) {
   if (file) store.loadFromFile(file)
 }
 
-// Global keyboard shortcuts (Esc / u). The behaviour lives in
+// Global keyboard shortcuts (Esc / u / "/"). The behaviour lives in
 // keyboard.js so it can be unit-tested against a bare KeyboardEvent;
-// App.vue owns nothing but the listener's lifetime.
-const onGlobalKeydown = makeGlobalKeydownHandler({ store, hub })
+// App.vue owns nothing but the listener's lifetime and the one DOM
+// handle the shortcuts need (the hierarchy filter box).
+const treeRef = ref(null)
+const onGlobalKeydown = makeGlobalKeydownHandler({
+  store,
+  hub,
+  focusTreeFilter: () => treeRef.value?.focusFilter?.() ?? false,
+})
 
 onMounted(() => {
   document.addEventListener('dragover', onDragOver)

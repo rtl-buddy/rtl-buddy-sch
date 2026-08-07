@@ -112,6 +112,50 @@ describe('global keydown handler', () => {
     expect(press('q').defaultPrevented).toBe(false)
   })
 
+  it('/ focuses the hierarchy filter, and yields the key when it cannot', () => {
+    let focused = 0
+    const withTree = makeGlobalKeydownHandler({
+      store,
+      hub: {},
+      focusTreeFilter: () => {
+        focused++
+        return true
+      },
+    })
+    const ev = new KeyboardEvent('keydown', { key: '/', cancelable: true })
+    withTree(ev)
+    expect(focused).toBe(1)
+    expect(ev.defaultPrevented).toBe(true)
+
+    // Panel collapsed / tree not mounted → the browser keeps the key
+    // (quick-find in Firefox, plain typing everywhere else).
+    const noTree = makeGlobalKeydownHandler({
+      store,
+      hub: {},
+      focusTreeFilter: () => false,
+    })
+    const ev2 = new KeyboardEvent('keydown', { key: '/', cancelable: true })
+    noTree(ev2)
+    expect(ev2.defaultPrevented).toBe(false)
+
+    // No callback at all (the pre-tree call shape) must not throw.
+    expect(() => press('/')).not.toThrow()
+  })
+
+  it('leaves / alone while the filter box itself has focus', () => {
+    let focused = 0
+    const withTree = makeGlobalKeydownHandler({
+      store,
+      hub: {},
+      focusTreeFilter: () => {
+        focused++
+        return true
+      },
+    })
+    withTree({ key: '/', target: { tagName: 'INPUT' } })
+    expect(focused).toBe(0)
+  })
+
   it('isTypingTarget covers the picker <select> that shares the "u" key', () => {
     expect(isTypingTarget({ tagName: 'select' })).toBe(true)
     expect(isTypingTarget({ tagName: 'BUTTON' })).toBe(false)
