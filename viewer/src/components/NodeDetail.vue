@@ -88,7 +88,6 @@
         v-if="graphOpenHref"
         type="button"
         class="open-graph"
-        :disabled="graphConnected"
         :title="openGraphTitle"
         @click="openGraph"
       >open graph ↗</button>
@@ -96,7 +95,6 @@
         v-if="covOpenHref"
         type="button"
         class="open-cov"
-        :disabled="covConnected"
         :title="openCovTitle"
         @click="openCov"
       >open coverage ↗</button>
@@ -502,17 +500,17 @@ const sendCovTitle = computed(() =>
     ? `Focus the open coverage pane on ${elsewhereTarget.value}. ${BROADCAST_NOTE}`
     : 'coverage is not connected — use open ↗',
 )
-// One client per origin — and the PANES do not handle being superseded:
-// they hello with takeover on every reconnect attempt, so a second
-// graph/cov tab and the first fight an indefinite eviction war
-// (rtl_buddy graph_page/cov_page reconnect loops; found while building
-// their side of this row). Until the panes learn the SPA's polite
-// superseded flow, ``open ↗`` is disabled whenever the target is
-// already connected — ``send`` is strictly the better action then.
-// Same uniform rule as the panes' copies of this row.
+// One client per origin: a new tab's hello takes the slot and the hub
+// closes the old tab's socket (hub/server.py's takeover path). The
+// button stays enabled — that flow is supported and sometimes exactly
+// what you want — but the tooltip says what it costs. Enabled-when-
+// connected REQUIRES the panes' polite superseded handling (they once
+// warred over the slot on reconnect; fixed alongside this on rtl_buddy
+// `cov-graph-joins` — the evicted tab now goes quiet with a take-back
+// affordance instead of reconnecting forever).
 function openTitleFor(app, connected) {
-  if (connected) return `${app} is already open — use send → ${app}`
   const parts = [`Open ${app} in a new tab, landed on ${elsewhereTarget.value}`]
+  if (connected) parts.push(`replaces the currently open ${app} tab's hub connection`)
   if (hub.state.value !== 'ready') {
     parts.push('hub not connected — the new tab would land on nothing, so this will not open one')
   }
