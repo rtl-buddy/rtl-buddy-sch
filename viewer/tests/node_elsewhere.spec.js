@@ -250,15 +250,22 @@ describe('NodeDetail "elsewhere" row', () => {
     expect(store.hubError.message).toContain('graph')
   })
 
-  it('warns that opening supersedes an app that is already connected', () => {
+  it('disables open ↗ for an app that is already connected', () => {
+    // The panes hello with takeover on every reconnect and never stop —
+    // a second pane tab starts an eviction war. Until they learn the
+    // SPA's polite superseded flow, open is disabled when the target is
+    // connected; send is strictly the better action then. Same uniform
+    // rule as the panes' copies of this row.
     serve()
     loadAndSelect(store)
     connect(store, ['view', 'graph'])
     const w = mount(NodeDetail)
+    expect(w.get('.open-graph').attributes('disabled')).toBeDefined()
     expect(w.get('.open-graph').attributes('title')).toContain(
-      "replaces the currently open graph tab's hub connection",
+      'already open — use send → graph',
     )
-    // Nothing connected on the coverage side — no such warning.
-    expect(w.get('.open-cov').attributes('title')).not.toContain('replaces')
+    // Nothing connected on the coverage side — open stays live.
+    expect(w.get('.open-cov').attributes('disabled')).toBeUndefined()
+    expect(w.get('.open-cov').attributes('title')).not.toContain('already open')
   })
 })
