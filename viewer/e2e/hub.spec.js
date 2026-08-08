@@ -266,3 +266,71 @@ test.describe('Phase 10d hub wiring', () => {
     }
   })
 })
+
+// The selected node, elsewhere: NodeDetail's cross-app row. The
+// ordering contract is what earns an e2e — "open X ↗" is only correct
+// because the focus envelope is on the wire BEFORE the tab exists, so
+// the hub's replay lands it on the right node. Asserting that against
+// a real WS connection is the closest we get to the hub's own replay.
+test.describe('cross-app send / open (NodeDetail)', () => {
+  async function bootHubServed(page) {
+    await page.addInitScript((data) => {
+      window.__RTL_BUDDY_VIEW_DATA__ = data
+      // What the hub injects when it serves the bundle: the WS
+      // address, plus one data-presence global per sibling app.
+      window.__RTL_BUDDY_HUB__ = '127.0.0.1:8399'
+      window.__RTL_BUDDY_GRAPH_URL__ = '/graph.json'
+      window.__RTL_BUDDY_COV_URL__ = '/cov.json'
+      window.__opened__ = []
+      window.open = (url, target, features) => {
+        window.__opened__.push([String(url), String(target), String(features)])
+      }
+    }, PAYLOAD)
+    await page.goto('/')
+    await expect(page.locator('g.node').first()).toBeVisible({ timeout: 30_000 })
+  }
+
+  test('send → graph pushes a graph_focus and opens nothing', async ({ page }) => {
+    const mock = await installMockHub(page)
+    await bootHubServed(page)
+    await expect(page.locator('.hub-status')).toHaveAttribute('data-state', 'ready', { timeout: 5_000 })
+
+    // The mock welcome advertises view/wave/src — no graph peer — so
+    // "send" must be refused until one joins.
+    await expect(page.locator('.send-graph')).toBeHidden()
+    await page.locator('g.node').first().click()
+    await expect(page.locator('.send-graph')).toBeDisabled()
+
+    mock.sendFromMock({
+      v: 1, id: uuid(), origin: 'graph', kind: 'event',
+      type: 'peer_joined', payload: {},
+    })
+    await expect(page.locator('.send-graph')).toBeEnabled({ timeout: 5_000 })
+    await page.locator('.send-graph').click()
+
+    await expect.poll(() => mock.recv.filter((e) => e.type === 'graph_focus').length, {
+      timeout: 5_000,
+    }).toBe(1)
+    const focus = mock.recv.find((e) => e.type === 'graph_focus')
+    expect(focus.origin).toBe('view')
+    expect(focus.kind).toBe('event')
+    expect(focus.payload.node).toMatch(/^module:/)
+    expect(await page.evaluate(() => window.__opened__)).toEqual([])
+  })
+
+  test('open coverage ↗ emits the focus first, then opens the tab', async ({ page }) => {
+    const mock = await installMockHub(page)
+    await bootHubServed(page)
+    await expect(page.locator('.hub-status')).toHaveAttribute('data-state', 'ready', { timeout: 5_000 })
+    await page.locator('g.node').first().click()
+
+    await page.locator('.open-cov').click()
+    await expect.poll(() => mock.recv.filter((e) => e.type === 'cov_focus').length, {
+      timeout: 5_000,
+    }).toBe(1)
+    expect(mock.recv.find((e) => e.type === 'cov_focus').payload.target).toMatch(/^module:/)
+    expect(await page.evaluate(() => window.__opened__)).toEqual([
+      ['/cov', '_blank', 'noopener'],
+    ])
+  })
+})

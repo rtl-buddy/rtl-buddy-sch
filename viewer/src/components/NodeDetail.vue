@@ -61,6 +61,44 @@
       >{{ copied === 'file' ? '✓' : '📋' }}</button>
       <span class="open-via" :data-mode="openVia" :title="openTitle">{{ openViaLabel }}</span>
     </div>
+    <!-- The selected node, elsewhere. "send" pushes a focus to an app
+         that is ALREADY open (no navigation here, no tab opened);
+         "open ↗" emits the same focus FIRST and then opens the tab,
+         which lands on the node because the hub replays its cached
+         focus slot to every peer that registers later. Ordering is
+         load-bearing: open-then-emit would race the new tab's hello
+         and land it on nothing. -->
+    <div v-if="showElsewhere" class="elsewhere-actions" data-testid="node-elsewhere">
+      <span class="elsewhere-label">elsewhere</span>
+      <button
+        type="button"
+        class="send-graph"
+        :disabled="!graphConnected"
+        :title="sendGraphTitle"
+        @click="sendToGraph"
+      >send → graph</button>
+      <button
+        type="button"
+        class="send-cov"
+        :disabled="!covConnected"
+        :title="sendCovTitle"
+        @click="sendToCov"
+      >send → coverage</button>
+      <button
+        v-if="graphOpenHref"
+        type="button"
+        class="open-graph"
+        :title="openGraphTitle"
+        @click="openGraph"
+      >open graph ↗</button>
+      <button
+        v-if="covOpenHref"
+        type="button"
+        class="open-cov"
+        :title="openCovTitle"
+        @click="openCov"
+      >open coverage ↗</button>
+    </div>
     <dl>
       <dt>Module</dt><dd>{{ node.module }}</dd>
       <dt v-if="node.is_blackbox">Status</dt>
@@ -188,7 +226,7 @@ import { copyText } from '../clipboard.js'
 import { relativeSourcePath } from '../sourcePaths.js'
 import { heatColor } from '../overlays/coverage.js'
 import { covSummaryText, COV_PANE_ROUTE } from '../covData.js'
-import { isHubServed } from '../hubApps.js'
+import { isHubServed, siblingAppHref } from '../hubApps.js'
 import { bpLevel } from '../palette.js'
 import { themeVersion } from '../theme.js'
 import { formatBandwidth as fmtBps } from '../format.js'
@@ -419,6 +457,101 @@ const openTitle = computed(() =>
 function openInEditor() {
   if (node.value) hub.requestOpenSource(node.value)
 }
+
+// --- the selected node, elsewhere ------------------------------------
+//
+// The graph pane and the coverage pane are both keyed by MODULE (one
+// graph node per module type, one coverage roll-up per module), so the
+// only coordinate this instance tree can hand them is the selected
+// node's module. That is the same 1→N relation in reverse that
+// ``focusGraphNode`` resolves on the way in.
+const ELSEWHERE_TARGET_PREFIX = 'module:'
+const elsewhereTarget = computed(() =>
+  node.value && node.value.module ? ELSEWHERE_TARGET_PREFIX + node.value.module : '',
+)
+// Nothing to send to outside a hub: from embed.py or the dev server
+// there are no peers and ``/graph`` / ``/cov`` are 404s. And nothing
+// to send WITH if the node carries no module — every control in the
+// row is that one coordinate.
+const showElsewhere = computed(() => isHubServed() && elsewhereTarget.value.length > 0)
+// ``open ↗`` is offered per app on the SAME data-presence gate the
+// switcher uses, so we never open a route the hub isn't serving.
+const graphOpenHref = computed(() => siblingAppHref('graph'))
+const covOpenHref = computed(() => siblingAppHref('cov'))
+// ``send`` needs a live peer on the other end — a focus broadcast at
+// nobody is a click that does nothing and says nothing.
+const graphConnected = computed(() => (hub.peers.value || []).includes('graph'))
+const covConnected = computed(() => (hub.peers.value || []).includes('cov'))
+
+// Focus events are BROADCASTS, not point-to-point messages: the hub
+// fans them out to every peer. Saying so in the tooltip is the
+// difference between a control the user can predict and one that
+// surprises them by moving a third window.
+const BROADCAST_NOTE =
+  'Focus is broadcast — other open apps that understand it may follow too.'
+
+const sendGraphTitle = computed(() =>
+  graphConnected.value
+    ? `Focus the open graph pane on ${elsewhereTarget.value}. ${BROADCAST_NOTE}`
+    : 'graph is not connected — use open ↗',
+)
+const sendCovTitle = computed(() =>
+  covConnected.value
+    ? `Focus the open coverage pane on ${elsewhereTarget.value}. ${BROADCAST_NOTE}`
+    : 'coverage is not connected — use open ↗',
+)
+// One client per origin: a new tab's hello takes the slot and the hub
+// closes the old tab's socket (hub/server.py's takeover path). The
+// button stays enabled — that flow is supported and sometimes exactly
+// what you want — but the tooltip says what it costs.
+function openTitleFor(app, connected) {
+  const parts = [`Open ${app} in a new tab, landed on ${elsewhereTarget.value}`]
+  if (connected) parts.push(`replaces the currently open ${app} tab's hub connection`)
+  if (hub.state.value !== 'ready') {
+    parts.push('hub not connected — the new tab would land on nothing, so this will not open one')
+  }
+  return parts.join(' — ')
+}
+const openGraphTitle = computed(() => openTitleFor('graph', graphConnected.value))
+const openCovTitle = computed(() => openTitleFor('coverage', covConnected.value))
+
+// Hub-offline feedback. ``requestOpenSource`` never needs this — it
+// falls back to the ``rtlbuddy://`` URI through the OS — but a
+// hub-served pane has no offline equivalent, so the alternative here
+// is a click that silently does nothing. Rendered by the same toast
+// the hub's own ``error`` envelopes get, on the same closed-catalog
+// code the hub would have used.
+function reportHubOffline(what) {
+  store.applyHubError({
+    code: 'not_connected',
+    message: `hub not connected — could not focus ${what}`,
+    at: Date.now(),
+  })
+}
+
+function sendToGraph() {
+  if (!hub.focusGraph(elsewhereTarget.value)) reportHubOffline('the graph pane')
+}
+function sendToCov() {
+  if (!hub.focusCov({ target: elsewhereTarget.value })) reportHubOffline('the coverage pane')
+}
+// Emit, THEN open — and only if the emit landed. An unfocused tab is
+// worse than no tab: it hides the failure behind a page that looks
+// like it worked.
+function openGraph() {
+  if (!hub.focusGraph(elsewhereTarget.value)) {
+    reportHubOffline('the graph pane')
+    return
+  }
+  window.open(graphOpenHref.value, '_blank', 'noopener')
+}
+function openCov() {
+  if (!hub.focusCov({ target: elsewhereTarget.value })) {
+    reportHubOffline('the coverage pane')
+    return
+  }
+  window.open(covOpenHref.value, '_blank', 'noopener')
+}
 </script>
 
 <style scoped>
@@ -453,13 +586,28 @@ function openInEditor() {
   font-size: 0.75rem;
 }
 .empty { color: var(--fg-muted); font-size: 0.85rem; }
-.nav-actions {
+.nav-actions,
+.elsewhere-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem;
   margin-bottom: 0.25rem;
 }
-.nav-actions button {
+.elsewhere-actions {
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+/* Same word treatment as a <dt>: this row is a labelled group, not a
+   fourth kind of control. */
+.elsewhere-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  margin-right: 0.15rem;
+}
+.nav-actions button,
+.elsewhere-actions button {
   border: 1px solid var(--line-strong);
   background: var(--panel);
   color: var(--fg);
