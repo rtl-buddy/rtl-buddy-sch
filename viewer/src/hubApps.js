@@ -62,6 +62,23 @@ export function isHubServed(win = typeof window !== 'undefined' ? window : null)
 }
 
 /**
+ * A sibling app's same-origin route, or ``null`` when opening it
+ * would 404.
+ *
+ * Same two rules the switcher follows (hub-served, and the app's own
+ * data-presence global set), exposed for the affordances that open a
+ * sibling from somewhere other than the switcher — NodeDetail's
+ * "open graph ↗" / "open coverage ↗". Sharing the ``SIBLINGS`` table
+ * keeps one gate per app rather than a second copy that can drift.
+ */
+export function siblingAppHref(key, win = typeof window !== 'undefined' ? window : null) {
+  if (!isHubServed(win)) return null
+  const app = SIBLINGS.find((s) => s.key === key)
+  if (!app) return null
+  return typeof win[app.gate] === 'string' && win[app.gate].length > 0 ? app.href : null
+}
+
+/**
  * The switcher entries for the current page, in display order.
  *
  * Returns ``[]`` when the hub is not serving us, which is App.vue's

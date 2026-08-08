@@ -486,6 +486,104 @@ describe('useHub.notifyClick', () => {
   })
 })
 
+describe('useHub cross-app focus emitters', () => {
+  let store
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    store = useViewerStore()
+    _testing.reset()
+    _testing.setStore({
+      applyHubSelection: (id) => store.applyHubSelection(id),
+      applyHubError: (e) => store.applyHubError(e),
+    })
+  })
+  afterEach(() => { _testing.reset() })
+
+  function connected() {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({ store })
+    sock.open()
+    sock.receive(
+      env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }),
+    )
+    // Drop the hello so [0] is the envelope under test.
+    sock.sent.length = 0
+    return sock
+  }
+
+  it('focusGraph emits a graph_focus event from origin view', () => {
+    const sock = connected()
+    expect(useHub().focusGraph('module:afifo')).toBe(true)
+    expect(sock.sent.length).toBe(1)
+    const sent = JSON.parse(sock.sent[0])
+    expect(sent.v).toBe(1)
+    expect(sent.origin).toBe('view')
+    expect(sent.kind).toBe('event')
+    expect(sent.type).toBe('graph_focus')
+    expect(sent.payload).toStrictEqual({ node: 'module:afifo' })
+    expect(typeof sent.id).toBe('string')
+    expect(sent.id.length).toBeGreaterThan(0)
+  })
+
+  it('focusCov emits a cov_focus event and accepts a bare target string', () => {
+    const sock = connected()
+    expect(useHub().focusCov({ target: 'module:afifo' })).toBe(true)
+    expect(useHub().focusCov('file:rtl/afifo.sv')).toBe(true)
+    const first = JSON.parse(sock.sent[0])
+    expect(first.origin).toBe('view')
+    expect(first.kind).toBe('event')
+    expect(first.type).toBe('cov_focus')
+    expect(first.payload).toStrictEqual({ target: 'module:afifo' })
+    expect(JSON.parse(sock.sent[1]).payload).toStrictEqual({ target: 'file:rtl/afifo.sv' })
+  })
+
+  it('focusCov forwards only the payload keys the wire type declares', () => {
+    // ``cov_focus`` is additionalProperties:false — spreading the
+    // caller's object would let a stray key fail hub validation.
+    const sock = connected()
+    useHub().focusCov({
+      target: 'file:rtl/afifo.sv',
+      metric: 'branch',
+      line: 42,
+      item: 'b3',
+      bogus: 'nope',
+    })
+    expect(JSON.parse(sock.sent[0]).payload).toStrictEqual({
+      target: 'file:rtl/afifo.sv',
+      metric: 'branch',
+      line: 42,
+      item: 'b3',
+    })
+  })
+
+  it('both return false with nothing sent when the socket is not open', () => {
+    const hub = useHub()
+    expect(hub.focusGraph('module:afifo')).toBe(false)
+    expect(hub.focusCov({ target: 'module:afifo' })).toBe(false)
+  })
+
+  it('both return false for an empty target without touching the socket', () => {
+    const sock = connected()
+    const hub = useHub()
+    expect(hub.focusGraph('')).toBe(false)
+    expect(hub.focusGraph(null)).toBe(false)
+    expect(hub.focusCov({})).toBe(false)
+    expect(hub.focusCov(null)).toBe(false)
+    expect(sock.sent.length).toBe(0)
+  })
+
+  it('advertises both focus vocabularies in the hello capabilities', () => {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({ store })
+    sock.open()
+    const hello = JSON.parse(sock.sent[0])
+    expect(hello.payload.capabilities).toContain('graph_focus')
+    expect(hello.payload.capabilities).toContain('cov_focus')
+  })
+})
+
 describe('useHub disambiguation picker (rtl-buddy-view#55)', () => {
   let store
   beforeEach(() => {

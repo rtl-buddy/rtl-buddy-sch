@@ -251,6 +251,27 @@ function sendEnvelope(env) {
   }
 }
 
+// One construction site for the fire-and-forget EVENT envelopes this
+// client produces. Returns ``sendEnvelope``'s boolean so a caller can
+// tell "the hub has it" from "we are not connected" — which is what
+// the cross-app "open X ↗" buttons need before they open a tab that
+// would otherwise land unfocused.
+function sendEvent(type, payload) {
+  return sendEnvelope({
+    v: PROTOCOL_VERSION,
+    id: makeId(),
+    origin: 'view',
+    kind: 'event',
+    type,
+    payload,
+  })
+}
+
+// Optional narrowing hints ``cov_focus`` accepts beside ``target``.
+// The payload is ``additionalProperties: false``, so we forward these
+// by name rather than spreading whatever the caller handed us.
+const COV_FOCUS_HINTS = ['metric', 'line', 'item']
+
 function flushWaveValues() {
   _waveTimer = null
   const pending = _wavePending
@@ -301,9 +322,13 @@ function sendHello() {
       'signal_selected',
       'wave_values_changed',
       'diagnostics_set',
-      // Consumed, never produced: the graph and coverage panes send
-      // it, we resolve it onto an instance (see focusGraphNode).
+      // Both directions: the graph and coverage panes send it and we
+      // resolve it onto an instance (focusGraphNode), and NodeDetail's
+      // "send → graph" produces it for the selected node.
       'graph_focus',
+      // Produced only — the coverage pane consumes it. Advertised so a
+      // hub roster shows which app can drive the cov pane's focus.
+      'cov_focus',
     ],
   }
   // ``takeover`` is opt-in per-hello: the hub kicks any pre-
@@ -743,6 +768,44 @@ export function useHub() {
         return true
       }
       return false
+    },
+    /**
+     * Push a focus onto the graph pane: ``graph_focus {node}``.
+     *
+     * ``node`` is a knowledge-graph node id (``module:<name>`` is the
+     * only part of that vocabulary this app can name from a selected
+     * instance). Two callers, one envelope: "send → graph" stops
+     * there, and "open graph ↗" opens the tab only once this returned
+     * true — the hub caches the latest focus and replays it to a peer
+     * that registers later, so the emit has to land BEFORE the tab
+     * exists or the new tab comes up on nothing.
+     *
+     * Returns false when the socket is not open (nothing was sent).
+     */
+    focusGraph(nodeRef) {
+      if (typeof nodeRef !== 'string' || nodeRef.length === 0) return false
+      return sendEvent('graph_focus', { node: nodeRef })
+    },
+    /**
+     * The same push for the coverage pane: ``cov_focus {target, …}``.
+     *
+     * Accepts a bare target string or the full payload object; the
+     * optional narrowing hints (``metric``, ``line``, ``item``) are
+     * forwarded by name because the payload is closed.
+     *
+     * Returns false when there is no usable target or the socket is
+     * not open.
+     */
+    focusCov(payload) {
+      const target = typeof payload === 'string' ? payload : payload && payload.target
+      if (typeof target !== 'string' || target.length === 0) return false
+      const out = { target }
+      if (payload && typeof payload === 'object') {
+        for (const key of COV_FOCUS_HINTS) {
+          if (payload[key] !== undefined) out[key] = payload[key]
+        }
+      }
+      return sendEvent('cov_focus', out)
     },
     disconnect,
     superseded,
