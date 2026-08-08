@@ -28,6 +28,8 @@
 // same-tab link: the landing page is never a peer, so leaving for it
 // costs nothing that going Back does not restore.
 
+import { displayOrigin } from './displayNames.js'
+
 /** Where the hub serves its landing page. */
 export const HUB_LANDING_ROUTE = '/'
 
@@ -39,17 +41,21 @@ export const HUB_LANDING_ROUTE = '/'
  * the global is simply never set until that lands, so the entry costs
  * nothing and the switcher needs no second edit when it does.
  */
+//
+// Labels carry the family's SHORT display names (displayNames.js) —
+// ``key``, ``href`` and ``gate`` are wire/route names and unchanged.
+// Titles stay natural English: the short names are labels, not prose.
 const SIBLINGS = [
   {
     key: 'graph',
-    label: 'graph ↗',
+    label: `${displayOrigin('graph')} ↗`,
     href: '/graph',
     gate: '__RTL_BUDDY_GRAPH_URL__',
     title: 'Open the design knowledge graph pane in a new tab',
   },
   {
     key: 'cov',
-    label: 'coverage ↗',
+    label: `${displayOrigin('cov')} ↗`,
     href: '/cov',
     gate: '__RTL_BUDDY_COV_URL__',
     title: 'Open the coverage pane in a new tab',
@@ -68,7 +74,7 @@ export function isHubServed(win = typeof window !== 'undefined' ? window : null)
  * Same two rules the switcher follows (hub-served, and the app's own
  * data-presence global set), exposed for the affordances that open a
  * sibling from somewhere other than the switcher — NodeDetail's
- * "open graph ↗" / "open coverage ↗". Sharing the ``SIBLINGS`` table
+ * "open in cov ↗" link. Sharing the ``SIBLINGS`` table
  * keeps one gate per app rather than a second copy that can drift.
  */
 export function siblingAppHref(key, win = typeof window !== 'undefined' ? window : null) {

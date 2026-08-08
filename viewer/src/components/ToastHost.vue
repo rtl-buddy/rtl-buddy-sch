@@ -55,7 +55,7 @@ function dismiss() {
   store.dismissHubError()
 }
 
-// "Another view tab is connected": the fix is to evict it. Same
+// "Another schematic tab is connected": the fix is to evict it. Same
 // takeover hello the composable retries with automatically — this is
 // the manual handle for when that retry was refused too.
 function takeOver() {

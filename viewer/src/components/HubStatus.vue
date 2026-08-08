@@ -17,11 +17,13 @@
     </button>
 
     <!-- middle slot: who else is attached right now, in the panes'
-         one-line form (``peers: view, graph`` / ``peers: none``). The
-         full roster — every origin a user CAN have open, connected or
-         not — is one click away in the popover; putting it inline here
-         instead was the SPA disagreeing with the panes about what the
-         middle slot of the strip says. -->
+         one-line form (``peers: sch, gph`` / ``peers: none``). Names
+         come from displayNames.js — the wire origins are still
+         ``view``/``graph``, the strip just prints what a user calls
+         them. The full roster — every origin a user CAN have open,
+         connected or not — is one click away in the popover; putting
+         it inline here instead was the SPA disagreeing with the panes
+         about what the middle slot of the strip says. -->
     <span
       class="peers-inline"
       aria-label="Hub peers"
@@ -99,7 +101,7 @@
               :title="peer.connected ? 'connected' : 'not connected'"
             >
               <span class="peer-dot" aria-hidden="true"></span>
-              <code>{{ peer.origin }}</code>
+              <code>{{ peer.display }}</code>
               <span class="peer-label">{{ peer.label }}</span>
             </li>
           </ul>
@@ -146,6 +148,7 @@ import { computed, ref } from 'vue'
 import { useHub } from '../composables/useHub.js'
 import { humanizeHubError } from '../hubErrors.js'
 import { readBundleHash, shortServerVersion, versionLabel } from '../buildInfo.js'
+import { displayOrigin, displayOrigins } from '../displayNames.js'
 
 const hub = useHub()
 const open = ref(false)
@@ -168,12 +171,16 @@ const bundleHash = readBundleHash()
 // NOT ``lastError`` — the latter is the popover's permanent log row.
 const noticeCopy = computed(() => humanizeHubError(hub.errorNotice.value))
 
-// The panes' inline form, verbatim: ``peers: view, graph`` when some
-// are attached, ``peers: none`` when none are (see ``setPeers`` in
+// The panes' inline form, verbatim: ``peers: sch, gph`` when some are
+// attached, ``peers: none`` when none are (see ``setPeers`` in
 // rtl_buddy hub/graph_page.html). Only CONNECTED peers — the roster of
 // everything that could connect is the popover's job.
+//
+// ``hub.peers`` holds WIRE origins; every rendering of them goes
+// through ``displayOrigins`` so the strip, the popover and the panes
+// all say the same words.
 const peerSummary = computed(() => {
-  const list = hub.peers.value || []
+  const list = displayOrigins(hub.peers.value || [])
   return list.length > 0 ? list.join(', ') : 'none'
 })
 
@@ -190,8 +197,11 @@ const peerSummary = computed(() => {
 // protocol schema first (rtl-buddy/rtl-buddy-view#133). Until a hub
 // speaks it the row simply reads "not connected", which is the honest
 // answer either way.
+//
+// The keys are WIRE origins (they are matched against ``hub.peers``);
+// ``display`` is what the row prints, from displayNames.js.
 const PEER_ROLES = [
-  { origin: 'view', label: '(this SPA)' },
+  { origin: 'view', label: '(this schematic)' },
   { origin: 'src', label: '(editor)' },
   { origin: 'wave', label: '(surfer)' },
   { origin: 'graph', label: '(graph pane)' },
@@ -201,6 +211,7 @@ const peerRows = computed(() => {
   const list = hub.peers.value || []
   return PEER_ROLES.map((role) => ({
     ...role,
+    display: displayOrigin(role.origin),
     connected: list.includes(role.origin),
   }))
 })
@@ -208,7 +219,7 @@ const peerRows = computed(() => {
 // state, so "who is missing" is answerable without opening anything.
 const peerRosterHint = computed(() =>
   peerRows.value
-    .map((r) => `${r.origin} ${r.label} — ${r.connected ? 'connected' : 'not connected'}`)
+    .map((r) => `${r.display} ${r.label} — ${r.connected ? 'connected' : 'not connected'}`)
     .join('\n'),
 )
 

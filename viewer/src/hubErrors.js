@@ -10,6 +10,12 @@
 // slot gets ``short`` — a few words, no second copy of the sentence —
 // and the raw ``code — message`` survives as secondary detail plus the
 // hover title, so nothing is lost for the person debugging a producer.
+//
+// The copy here is OURS, so it uses the display vocabulary ("another
+// schematic tab"). The producer's own ``message`` is rendered verbatim
+// and still speaks the wire's names ("view client already registered")
+// — that is hub-authored text and must stay as the hub wrote it,
+// which is also why ``match`` below keys off the wire wording.
 
 /**
  * @typedef {Object} HubErrorCopy
@@ -28,8 +34,8 @@ const RULES = [
   {
     code: 'not_connected',
     match: /already registered/i,
-    headline: 'Another view tab is connected to the hub.',
-    short: 'another view tab holds the hub slot',
+    headline: 'Another schematic tab is connected to the hub.',
+    short: 'another schematic tab holds the hub slot',
     takeover: true,
   },
   {
@@ -40,7 +46,7 @@ const RULES = [
   {
     code: 'unresolvable',
     headline: 'The hub could not resolve that target in the current design.',
-    short: 'target not found in this view',
+    short: 'target not found in this design',
   },
   {
     code: 'bad_request',

@@ -7,7 +7,9 @@
     <header class="app-header">
       <div class="app-identity">
         <img class="app-logo" :src="LOGO_URL" alt="" width="18" height="18" />
-        <h1>rtl-buddy-view</h1>
+        <!-- Display name only (displayNames.js): the package, the repo
+             and the ``view`` wire origin are unchanged. -->
+        <h1>{{ APP_DISPLAY_NAME }}</h1>
         <span class="design-name" v-if="store.graph">{{ store.graph.top }}</span>
         <!-- The rtl-buddy / spa build chips used to sit here. They
              answer a once-a-session question and now live in the hub
@@ -211,6 +213,7 @@ import {
   SIDEBAR_MAX_WIDTH_PX,
 } from './layout/constants.js'
 import { hubApps, switcherLinkAttrs } from './hubApps.js'
+import { APP_DISPLAY_NAME } from './displayNames.js'
 import { LOGO_URL } from './identity.js'
 import { initTheme, themePreference, setThemePreference } from './theme.js'
 import { AXI_PERF_HINT } from './cliHints.js'

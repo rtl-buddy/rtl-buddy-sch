@@ -290,7 +290,7 @@ test.describe('cross-app send / open (NodeDetail)', () => {
     await expect(page.locator('g.node').first()).toBeVisible({ timeout: 30_000 })
   }
 
-  test('send → graph pushes a graph_focus and opens nothing', async ({ page }) => {
+  test('send → gph pushes a graph_focus and opens nothing', async ({ page }) => {
     const mock = await installMockHub(page)
     await bootHubServed(page)
     await expect(page.locator('.hub-status')).toHaveAttribute('data-state', 'ready', { timeout: 5_000 })
@@ -318,7 +318,7 @@ test.describe('cross-app send / open (NodeDetail)', () => {
     expect(await page.evaluate(() => window.__opened__)).toEqual([])
   })
 
-  test('send → coverage emits cov_focus and opens nothing', async ({ page }) => {
+  test('send → cov emits cov_focus and opens nothing', async ({ page }) => {
     // The row is sends-only — opening an app fresh is the top bar's job.
     const mock = await installMockHub(page)
     await bootHubServed(page)

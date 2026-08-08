@@ -143,9 +143,11 @@ describe('NodeDetail "elsewhere" row', () => {
     const labels = w
       .findAll('[data-testid="node-elsewhere"] button')
       .map((b) => b.text())
+    // Short display names (displayNames.js); the wire types the
+    // buttons produce (``graph_focus`` / ``cov_focus``) are unchanged.
     expect(labels).toEqual([
-      'send → graph',
-      'send → coverage',
+      'send → gph',
+      'send → cov',
       'send → editor',
     ])
   })
@@ -160,7 +162,7 @@ describe('NodeDetail "elsewhere" row', () => {
     expect(sendGraph.attributes('disabled')).toBeUndefined()
     expect(sendCov.attributes('disabled')).toBeDefined()
     expect(sendCov.attributes('title')).toBe(
-      'coverage is not connected — open it from the top bar',
+      'The coverage pane is not connected — open it from the top bar',
     )
     // …and says focus is a broadcast, because it is.
     expect(sendGraph.attributes('title')).toContain('module:afifo')
@@ -175,7 +177,7 @@ describe('NodeDetail "elsewhere" row', () => {
     expect(w.get('.send-cov').attributes('disabled')).toBeDefined()
   })
 
-  it('"send → graph" emits graph_focus for the selected node\'s module', async () => {
+  it('"send → gph" emits graph_focus for the selected node\'s module', async () => {
     serve()
     loadAndSelect(store)
     const sock = connect(store)
@@ -190,7 +192,7 @@ describe('NodeDetail "elsewhere" row', () => {
     expect(opened).toEqual([])
   })
 
-  it('"send → coverage" emits cov_focus for the same module', async () => {
+  it('"send → cov" emits cov_focus for the same module', async () => {
     serve()
     loadAndSelect(store)
     const sock = connect(store)

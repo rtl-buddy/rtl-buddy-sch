@@ -7,6 +7,10 @@
 // user can have open one click away in the popover), and a message
 // area on the shared severity tokens. All three are asserted here; the
 // colours themselves are the e2e theme suite's job.
+//
+// Peers are rendered through the family display map (displayNames.js):
+// the wire origins stay ``view``/``graph``, the strip prints
+// ``sch``/``gph``.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -93,11 +97,18 @@ describe('HubStatus strip', () => {
 
   it('names the connected peers inline, in the panes\' exact form', () => {
     hub.state.value = 'ready'
+    // WIRE origins in, DISPLAY labels out.
     hub.peers.value = ['view', 'graph']
     const w = mount(HubStatus)
     // ``setPeers`` in rtl_buddy hub/graph_page.html writes exactly
     // this string; the SPA is the third app in the same strip.
-    expect(w.get('.peers-inline').text()).toBe('peers: view, graph')
+    expect(w.get('.peers-inline').text()).toBe('peers: sch, gph')
+  })
+
+  it('passes an origin with no display label through untouched', () => {
+    hub.state.value = 'ready'
+    hub.peers.value = ['src', 'wave', 'cov']
+    expect(mount(HubStatus).get('.peers-inline').text()).toBe('peers: src, wave, cov')
   })
 
   it('says "peers: none" rather than going blank when nobody is attached', () => {
@@ -116,18 +127,20 @@ describe('HubStatus strip', () => {
     const rows = w.findAll('.peer-list li')
     // `cli` and `notebook` are excluded on purpose: one is a one-shot
     // (`rb hub send`), the other is a single marimo session.
+    // Display labels, same order — the roster keys are still the wire
+    // origins, which is what ``registered_clients`` is matched against.
     expect(rows.map((r) => r.find('code').text())).toEqual([
-      'view', 'src', 'wave', 'graph', 'cov',
+      'sch', 'src', 'wave', 'gph', 'cov',
     ])
     const byOrigin = Object.fromEntries(
       rows.map((r) => [r.find('code').text(), r.attributes('data-state')]),
     )
     expect(byOrigin.wave).toBe('connected')
-    expect(byOrigin.view).toBe('disconnected')
+    expect(byOrigin.sch).toBe('disconnected')
     // `cov` is display-only until the pane lands (rtl_buddy#400) — it
     // must not claim to be connected on the strength of being listed.
     expect(byOrigin.cov).toBe('disconnected')
-    expect(byOrigin.graph).toBe('disconnected')
+    expect(byOrigin.gph).toBe('disconnected')
   })
 
   it('shows the hub version in the strip, only once a welcome has named it', async () => {

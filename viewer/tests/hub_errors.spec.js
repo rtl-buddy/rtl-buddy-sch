@@ -31,7 +31,7 @@ describe('humanizeHubError', () => {
       code: 'not_connected',
       message: 'view client already registered',
     })
-    expect(copy.headline).toBe('Another view tab is connected to the hub.')
+    expect(copy.headline).toBe('Another schematic tab is connected to the hub.')
     expect(copy.takeover).toBe(true)
     expect(copy.known).toBe(true)
     // The machine facts survive as SECONDARY detail, not the headline.
@@ -161,7 +161,7 @@ describe('ToastHost', () => {
     })
     const w = mount(ToastHost)
     expect(w.get('.toast .message').text()).toBe(
-      'Another view tab is connected to the hub.',
+      'Another schematic tab is connected to the hub.',
     )
     expect(w.get('.toast .detail').text()).toBe(
       'not_connected — view client already registered',

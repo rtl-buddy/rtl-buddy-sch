@@ -187,7 +187,7 @@ test.describe('live coverage tinting', () => {
       'L 20.0% · B 25.0% · E 100.0%',
     )
     const link = section.locator('a.live-cov-link')
-    await expect(link).toHaveText('open in coverage ↗')
+    await expect(link).toHaveText('open in cov ↗')
     await expect(link).toHaveAttribute('href', '/cov')
     await expect(link).toHaveAttribute('target', '_blank')
     await expect(link).toHaveAttribute('rel', 'noopener')

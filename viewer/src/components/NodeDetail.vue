@@ -67,7 +67,7 @@
         :disabled="!graphConnected"
         :title="sendGraphTitle"
         @click="sendToGraph"
-      >send → graph</button>
+      >send → {{ GRAPH_LABEL }}</button>
       <button
         v-if="elsewhereTarget"
         type="button"
@@ -75,7 +75,7 @@
         :disabled="!covConnected"
         :title="sendCovTitle"
         @click="sendToCov"
-      >send → coverage</button>
+      >send → {{ COV_LABEL }}</button>
       <button
         v-if="hasOpenable"
         type="button"
@@ -154,7 +154,7 @@
             target="_blank"
             rel="noopener"
             title="Open the hub's coverage pane in a new tab"
-          >open in coverage ↗</a>
+          >open in {{ COV_LABEL }} ↗</a>
         </dd>
       </template>
       <template v-if="axiPins.length || axiInterconnect">
@@ -212,6 +212,7 @@ import { relativeSourcePath } from '../sourcePaths.js'
 import { heatColor } from '../overlays/coverage.js'
 import { covSummaryText, COV_PANE_ROUTE } from '../covData.js'
 import { isHubServed } from '../hubApps.js'
+import { displayOrigin } from '../displayNames.js'
 import { bpLevel } from '../palette.js'
 import { themeVersion } from '../theme.js'
 import { formatBandwidth as fmtBps } from '../format.js'
@@ -451,6 +452,11 @@ function openInEditor() {
 // node's module. That is the same 1→N relation in reverse that
 // ``focusGraphNode`` resolves on the way in.
 const ELSEWHERE_TARGET_PREFIX = 'module:'
+// Button/link LABELS carry the family's short display names; the wire
+// types (``graph_focus`` / ``cov_focus``), the peer origins these gate
+// on and the CSS classes are unchanged. One knob: displayNames.js.
+const GRAPH_LABEL = displayOrigin('graph')
+const COV_LABEL = displayOrigin('cov')
 const elsewhereTarget = computed(() =>
   node.value && node.value.module ? ELSEWHERE_TARGET_PREFIX + node.value.module : '',
 )
@@ -476,12 +482,12 @@ const BROADCAST_NOTE =
 const sendGraphTitle = computed(() =>
   graphConnected.value
     ? `Focus the open graph pane on ${elsewhereTarget.value}. ${BROADCAST_NOTE}`
-    : 'graph is not connected — open it from the top bar',
+    : 'The graph pane is not connected — open it from the top bar',
 )
 const sendCovTitle = computed(() =>
   covConnected.value
     ? `Focus the open coverage pane on ${elsewhereTarget.value}. ${BROADCAST_NOTE}`
-    : 'coverage is not connected — open it from the top bar',
+    : 'The coverage pane is not connected — open it from the top bar',
 )
 
 // Hub-offline feedback. ``requestOpenSource`` never needs this — it

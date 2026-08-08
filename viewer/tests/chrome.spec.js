@@ -58,7 +58,7 @@ describe('app switcher', () => {
       __RTL_BUDDY_GRAPH_URL__: '/graph.json',
       __RTL_BUDDY_COV_URL__: '/cov.json',
     })
-    expect(apps.map((a) => a.label)).toEqual(['⌂ hub', 'graph ↗', 'coverage ↗'])
+    expect(apps.map((a) => a.label)).toEqual(['⌂ hub', 'gph ↗', 'cov ↗'])
   })
 
   it('opens siblings in a new tab so the view peer slot survives', () => {
