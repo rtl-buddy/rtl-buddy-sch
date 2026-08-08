@@ -1,12 +1,9 @@
 // NodeDetail's "elsewhere" row: send the selected node to another hub
 // app, or open that app on it.
 //
-// The contract worth pinning is the ORDER. "open X ↗" works because
-// the hub caches the latest focus and replays it to a peer that
-// registers later, so the envelope has to be on the wire BEFORE the
-// tab exists. If the emit fails there is nothing to replay, and a tab
-// opened anyway would come up on whatever the pane defaults to while
-// looking like the click worked — so it must not open at all.
+// The row is sends-only: opening an app fresh is the top bar's job
+// (the switcher links), so there are no open-↗ variants — and the
+// editor action lives here too, as "send → editor".
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
@@ -38,7 +35,11 @@ class MockSocket {
 
 const NODES = [
   { id: 'top', module: 'top' },
-  { id: 'top.u_afifo', module: 'afifo' },
+  {
+    id: 'top.u_afifo',
+    module: 'afifo',
+    source: { file: '/proj/design/afifo.sv', start_line: 12, start_column: 1 },
+  },
 ]
 
 function loadAndSelect(store, selection = 'top.u_afifo') {
@@ -145,21 +146,8 @@ describe('NodeDetail "elsewhere" row', () => {
     expect(labels).toEqual([
       'send → graph',
       'send → coverage',
-      'open graph ↗',
-      'open coverage ↗',
+      'send → editor',
     ])
-  })
-
-  it('omits an "open ↗" for an app the hub has no data for', () => {
-    // Same data-presence gate the switcher uses — opening ``/cov`` on a
-    // hub with no coverage is a 404, so the button is not offered.
-    serve({ cov: null })
-    loadAndSelect(store)
-    const w = mount(NodeDetail)
-    const labels = w
-      .findAll('[data-testid="node-elsewhere"] button')
-      .map((b) => b.text())
-    expect(labels).toEqual(['send → graph', 'send → coverage', 'open graph ↗'])
   })
 
   it('disables "send" for an app that is not a connected peer', () => {
@@ -171,7 +159,9 @@ describe('NodeDetail "elsewhere" row', () => {
     const sendCov = w.get('.send-cov')
     expect(sendGraph.attributes('disabled')).toBeUndefined()
     expect(sendCov.attributes('disabled')).toBeDefined()
-    expect(sendCov.attributes('title')).toBe('coverage is not connected — use open ↗')
+    expect(sendCov.attributes('title')).toBe(
+      'coverage is not connected — open it from the top bar',
+    )
     // …and says focus is a broadcast, because it is.
     expect(sendGraph.attributes('title')).toContain('module:afifo')
     expect(sendGraph.attributes('title')).toContain('broadcast')
@@ -212,53 +202,62 @@ describe('NodeDetail "elsewhere" row', () => {
     expect(opened).toEqual([])
   })
 
-  it('"open graph ↗" emits the focus BEFORE opening the tab', async () => {
+  it('"send → editor" appears only for nodes with a source anchor', () => {
     serve()
-    loadAndSelect(store)
-    const sock = connect(store, ['view'])
-    let sentWhenOpened = -1
-    window.open = (...args) => {
-      sentWhenOpened = sock.sent.length
-      opened.push(args)
-    }
-    const w = mount(NodeDetail)
-    await w.get('.open-graph').trigger('click')
-    expect(JSON.parse(sock.sent[0]).type).toBe('graph_focus')
-    expect(sentWhenOpened).toBe(1)
-    expect(opened).toEqual([['/graph', '_blank', 'noopener']])
-  })
-
-  it('"open coverage ↗" does the same for the coverage pane', async () => {
-    serve()
-    loadAndSelect(store)
-    const sock = connect(store, ['view'])
-    const w = mount(NodeDetail)
-    await w.get('.open-cov').trigger('click')
-    expect(JSON.parse(sock.sent[0]).type).toBe('cov_focus')
-    expect(opened).toEqual([['/cov', '_blank', 'noopener']])
-  })
-
-  it('opens no tab when the focus could not be sent, and says why', async () => {
-    serve()
-    loadAndSelect(store)
-    // No connect(): the hub is not there, so the emit fails and the
-    // tab would land unfocused.
-    const w = mount(NodeDetail)
-    await w.get('.open-graph').trigger('click')
-    expect(opened).toEqual([])
-    expect(store.hubError).toMatchObject({ code: 'not_connected' })
-    expect(store.hubError.message).toContain('graph')
-  })
-
-  it('warns that opening supersedes an app that is already connected', () => {
-    serve()
-    loadAndSelect(store)
-    connect(store, ['view', 'graph'])
-    const w = mount(NodeDetail)
-    expect(w.get('.open-graph').attributes('title')).toContain(
-      "replaces the currently open graph tab's hub connection",
+    store.loadFromText(
+      JSON.stringify({
+        schema_version: '1.0',
+        top: 'top',
+        nodes: [
+          { id: 'top', module: 'top', is_blackbox: false, parameters: {}, ports: [], overlays: {} },
+        ],
+        edges: [],
+        overlays_present: [],
+      }),
     )
-    // Nothing connected on the coverage side — no such warning.
-    expect(w.get('.open-cov').attributes('title')).not.toContain('replaces')
+    store.select('top')
+    const w = mount(NodeDetail)
+    expect(w.find('.send-editor').exists()).toBe(false)
+    // …and for a node WITH one, it is there (main fixture).
+    loadAndSelect(store)
+    const w2 = mount(NodeDetail)
+    expect(w2.find('.send-editor').exists()).toBe(true)
+  })
+
+  it('"send → editor" requests open_source — no tab, no navigation', async () => {
+    serve()
+    loadAndSelect(store)
+    const sock = connect(store)
+    const w = mount(NodeDetail)
+    await w.get('.send-editor').trigger('click')
+    const sent = JSON.parse(sock.sent[0])
+    expect(sent.type).toBe('open_source')
+    expect(sent.kind).toBe('request')
+    expect(sent.payload.file).toBe('/proj/design/afifo.sv')
+    expect(opened).toEqual([])
+  })
+
+  it('module-less nodes with a source still show the row (editor only)', () => {
+    serve()
+    store.loadFromText(
+      JSON.stringify({
+        schema_version: '1.0',
+        top: 'top',
+        nodes: [
+          {
+            id: 'top', module: '', is_blackbox: false, parameters: {}, ports: [], overlays: {},
+            source: { file: '/proj/top.sv', start_line: 1, start_column: 1 },
+          },
+        ],
+        edges: [],
+        overlays_present: [],
+      }),
+    )
+    store.select('top')
+    const w = mount(NodeDetail)
+    const labels = w
+      .findAll('[data-testid="node-elsewhere"] button')
+      .map((b) => b.text())
+    expect(labels).toEqual(['send → editor'])
   })
 })

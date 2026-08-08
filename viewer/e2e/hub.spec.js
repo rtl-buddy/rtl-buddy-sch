@@ -318,19 +318,24 @@ test.describe('cross-app send / open (NodeDetail)', () => {
     expect(await page.evaluate(() => window.__opened__)).toEqual([])
   })
 
-  test('open coverage ↗ emits the focus first, then opens the tab', async ({ page }) => {
+  test('send → coverage emits cov_focus and opens nothing', async ({ page }) => {
+    // The row is sends-only — opening an app fresh is the top bar's job.
     const mock = await installMockHub(page)
     await bootHubServed(page)
     await expect(page.locator('.hub-status')).toHaveAttribute('data-state', 'ready', { timeout: 5_000 })
     await page.locator('g.node').first().click()
 
-    await page.locator('.open-cov').click()
+    // No cov peer in the mock welcome — let one join so send enables.
+    mock.sendFromMock({
+      v: 1, id: uuid(), origin: 'cov', kind: 'event',
+      type: 'peer_joined', payload: {},
+    })
+    await expect(page.locator('.send-cov')).toBeEnabled({ timeout: 5_000 })
+    await page.locator('.send-cov').click()
     await expect.poll(() => mock.recv.filter((e) => e.type === 'cov_focus').length, {
       timeout: 5_000,
     }).toBe(1)
     expect(mock.recv.find((e) => e.type === 'cov_focus').payload.target).toMatch(/^module:/)
-    expect(await page.evaluate(() => window.__opened__)).toEqual([
-      ['/cov', '_blank', 'noopener'],
-    ])
+    expect(await page.evaluate(() => window.__opened__)).toEqual([])
   })
 })
