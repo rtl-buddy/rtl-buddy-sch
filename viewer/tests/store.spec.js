@@ -221,9 +221,21 @@ describe('viewer store', () => {
   })
 
   it('bootstrap stays idle when no payload is present', async () => {
-    const store = useViewerStore()
-    await store.bootstrap()
-    expect(store.status).toBe('idle')
+    // The #130 fall-through probes ``GET /view.json`` to tell "hub up,
+    // nothing selected" from "no hub". With nothing listening the
+    // fetch rejects and we must land on the drop-a-file screen.
+    const originalFetch = window.fetch
+    window.fetch = async () => {
+      throw new TypeError('Failed to fetch')
+    }
+    try {
+      const store = useViewerStore()
+      await store.bootstrap()
+      expect(store.status).toBe('idle')
+      expect(store.hubDetected).toBe(false)
+    } finally {
+      window.fetch = originalFetch
+    }
   })
 
   // ---------------------------------------------------------------------------

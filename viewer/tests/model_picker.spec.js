@@ -121,3 +121,55 @@ describe('ModelPicker — TB-mode test list', () => {
     expect(tbOptionTexts(wrapper)).toEqual(['lone'])
   })
 })
+
+describe('ModelPicker — DUT-mode view_status badges (#130)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  function optionsOf(wrapper) {
+    return wrapper
+      .findAll('option')
+      .filter((o) => o.attributes('value'))
+  }
+
+  it('badges failed and never_built models, leaves ok ones clean', () => {
+    const store = useViewerStore()
+    store.availableModels = [
+      { name: 'good', models_file: 'm', view_status: 'ok' },
+      { name: 'apb_intf', models_file: 'm', view_status: 'failed',
+        error: 'rtl-buddy-view exited with code 1' },
+      { name: 'fresh', models_file: 'm', view_status: 'never_built' },
+      // Pre-#130 hub: no view_status at all.
+      { name: 'legacy', models_file: 'm', has_cdc: true },
+    ]
+    store.activeModel = 'good'
+
+    const wrapper = mount(ModelPicker)
+    const opts = optionsOf(wrapper)
+    expect(opts.map((o) => norm(o.text()))).toEqual([
+      'good',
+      'apb_intf ⚠',
+      'fresh ⚠',
+      'legacy ⚡',
+    ])
+  })
+
+  it("the failed option's tooltip carries the hub's error one-liner", () => {
+    const store = useViewerStore()
+    store.availableModels = [
+      { name: 'apb_intf', models_file: 'm', view_status: 'failed',
+        error: "cannot resolve interface port 'apb'" },
+      { name: 'fresh', models_file: 'm', view_status: 'never_built' },
+    ]
+    store.activeModel = 'apb_intf'
+
+    const wrapper = mount(ModelPicker)
+    const [failed, never] = optionsOf(wrapper)
+    expect(failed.attributes('title')).toBe(
+      "view generation failed — cannot resolve interface port 'apb'",
+    )
+    expect(failed.attributes('data-view-status')).toBe('failed')
+    expect(never.attributes('title')).toContain('never built')
+  })
+})

@@ -126,53 +126,17 @@
     >
       <AxiPerfView />
     </div>
-    <div class="empty-state" v-else-if="store.status === 'idle'">
-      <h2>Load a view.json</h2>
-      <p>
-        Drop a <code>view.json</code> file here, or pass
-        <code>?view=path/to/view.json</code> in the URL.
-      </p>
-      <p class="empty-hint">
-        Or start the hub:
-        <code>rb hub start --serve-viewer --model &lt;model_name&gt;</code><br />
-        then open <code>http://127.0.0.1:&lt;http_port&gt;/</code>.
-        The model picker in the header lets you switch between models
-        without restarting.
-      </p>
-      <input type="file" accept=".json,application/json" @change="onPickFile" />
-    </div>
     <div class="loading" v-else-if="store.status === 'loading'">
       <div class="spinner" aria-hidden="true"></div>
       <span>Loading…</span>
     </div>
-    <div class="error" v-else-if="store.status === 'error'">
-      <h2>Could not load this view</h2>
-      <p class="error-status" v-if="store.errorMeta && store.errorMeta.status">
-        The hub responded HTTP {{ store.errorMeta.status }}.
-      </p>
-      <pre>{{ store.error }}</pre>
-      <div class="error-reasons">
-        <p class="error-reasons-title">Possible reasons:</p>
-        <ul>
-          <li>
-            The test or model name isn't unique across suites — pick the exact
-            row from the header selector (it disambiguates by testbench + DUT).
-          </li>
-          <li>
-            The name doesn't exist in any <code>tests.yaml</code> /
-            <code>models.yaml</code> the hub discovered.
-          </li>
-          <li>
-            The view build failed (filelist or parse error). Check the hub log
-            at <code>artefacts/hier/&lt;model&gt;/…/hier.log</code>.
-          </li>
-          <li>The hub isn't reachable — not started, restarted, or wrong port.</li>
-        </ul>
-        <p class="error-hint">
-          Pick a different view from the header selector — no reload needed.
-        </p>
-      </div>
-    </div>
+    <!-- ``idle`` and ``error`` both mean "there is no view on screen";
+         the placeholder decides WHICH explanation to give from the
+         store's decoded hub-error envelope (rtl-buddy-view#130). -->
+    <NoViewPlaceholder v-else />
+    <!-- Connection-level, so it sits outside the status switch: the
+         hub can die while a perfectly good graph is rendered. -->
+    <HubGoneOverlay />
     <!-- Bottom status strip, per the hub chrome contract: connection
          dot + one vocabulary (connected / connecting… / offline) on
          the left, peer list in the middle, message area on the right.
@@ -202,6 +166,8 @@ import AxiPerfView from './components/AxiPerfView.vue'
 import HubStatus from './components/HubStatus.vue'
 import ModelPicker from './components/ModelPicker.vue'
 import ToastHost from './components/ToastHost.vue'
+import NoViewPlaceholder from './components/NoViewPlaceholder.vue'
+import HubGoneOverlay from './components/HubGoneOverlay.vue'
 import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
 import CollapsiblePanel from './components/CollapsiblePanel.vue'
 import HierarchyTree from './components/HierarchyTree.vue'
@@ -291,11 +257,6 @@ const themeToggleTitle = computed(
 )
 function cycleTheme() {
   setThemePreference(THEME_CYCLE[themePreference.value] || 'light')
-}
-
-function onPickFile(event) {
-  const file = event.target.files && event.target.files[0]
-  if (file) store.loadFromFile(file)
 }
 
 function onDragOver(e) {

@@ -24,3 +24,14 @@ export const RENDER_WITH_AXI_PERF_HINT =
 // and the tab's own empty state cannot drift apart.
 export const AXI_PERF_HINT =
   `No axi-perf overlay in this view — re-render with \`${RENDER_WITH_AXI_PERF_HINT}\` and reload.`
+
+// The other producer: the hub itself. The "there is no schematic"
+// placeholders (rtl-buddy-view#130) print this in four places between
+// them — no-active-model, both idle flavours, and the hub-gone
+// overlay — and a flag that drifts in one of them is a command the
+// user pastes and watches fail. ``<model_name>`` is a placeholder the
+// reader substitutes, spelled the way ``rb hub start --help`` spells
+// it; the angle brackets are plain text (Vue escapes them on render).
+export const HUB_START_HINT = 'rb hub start --serve-viewer'
+
+export const HUB_START_WITH_MODEL_HINT = `${HUB_START_HINT} --model <model_name>`

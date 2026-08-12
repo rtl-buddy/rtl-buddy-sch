@@ -79,6 +79,8 @@ src/
 │   ├── OverlayPanel.vue      # per-overlay toggles + legend
 │   ├── NodeDetail.vue        # selected-node ports/params/overlay values
 │   ├── HubStatus.vue         # the bottom status strip (dot + peers + messages)
+│   ├── NoViewPlaceholder.vue # "why is there no schematic" (#130)
+│   ├── HubGoneOverlay.vue    # full-pane "the hub died" placeholder (#130)
 │   ├── ToastHost.vue         # surfaces hub error envelopes
 │   └── DiagnosticsPanel.vue  # findings from diagnostics_set (per source)
 ├── overlays/           # one module per overlay name (mirrors Python's overlays/)
@@ -148,6 +150,44 @@ top bar's app switcher lists.
 When no hub is reachable the `HubStatus` pill stays `disconnected` and
 left-clicks fall back to the right-click behaviour — `node.link`
 dispatched to the OS. Phase 5 (offline) ergonomics are preserved.
+
+### When there is no schematic ([#130](https://github.com/rtl-buddy/rtl-buddy-view/issues/130))
+
+An empty canvas is never an acceptable answer — the SPA always says
+*why* there is nothing on screen and what to do next.
+`NoViewPlaceholder.vue` derives the case from `store.status` plus the
+hub's error envelope; `HubGoneOverlay.vue` handles the
+connection-level one. The copy follows the family rebrand
+(`displayNames.js`): the pane is **the schematic** in prose, while
+`view.json`, `?view=` and the `view` wire origin keep their names.
+
+| Situation | How it's detected | What the user sees |
+|---|---|---|
+| Nothing requested, no hub | bootstrap's `GET /view.json` probe rejects or returns non-JSON | the drop-a-file screen |
+| Nothing requested, hub serving us | probe/`GET /models`/`/ws` welcome proves a hub | "the hub is reachable — nothing has asked it for a schematic yet" |
+| Hub up, no model selected | `409 {"error": {"kind": "no_active_model"}}` | "no model is active" + picker + `rb hub start --model NAME` |
+| Schematic build failed | `500 {"error": {"kind": "view_generation_failed", …}}` | hub message, scrollable `log_tail`, `log_path`, known causes, Retry |
+| Stale `?model=` link | `404 {"error": {"kind": "unknown_model"}}` | "no such model" + pick from the picker |
+| Hub process died | `/ws` was welcomed, then dropped, then N reconnects failed | full-pane "the hub is gone — restart it and reload" |
+
+Hubs predating the structured-error contract answer with a bare
+`text/plain` 500; that degrades to the generic failure card quoting
+the body verbatim. `GET /models` entries may carry `view_status`
+(`ok` / `failed` / `never_built`) and an `error` one-liner — the
+picker badges anything that isn't `ok` with `⚠` plus a tooltip, so a
+broken model is visible before it's clicked.
+
+The connection-level cases share the status strip's message slot, and
+the rank is **superseded > hub gone > reconnecting**. A superseded tab
+is talking to a *live* hub that evicted it, so it is never told the hub
+died — `HubGoneOverlay` stays hidden and `HubStatus` shows the
+take-back banner instead. Once the hub really is gone the strip stops
+promising a reconnect, because the full-pane overlay is already saying
+the opposite.
+
+The copy-pasteable `rb hub start …` commands in all of these come from
+[`src/cliHints.js`](src/cliHints.js), the one home for producer
+commands the empty states print.
 
 ### Protocol
 

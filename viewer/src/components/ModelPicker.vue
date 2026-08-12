@@ -58,8 +58,10 @@
         v-for="m in store.availableModels"
         :key="m.models_file + '::' + m.name"
         :value="m.name"
+        :title="modelTitle(m)"
+        :data-view-status="m.view_status || null"
       >
-        {{ m.name }}{{ m.has_cdc ? '  ⚡' : '' }}
+        {{ m.name }}{{ m.has_cdc ? '  ⚡' : '' }}{{ healthBadge(m) }}
       </option>
     </select>
   </div>
@@ -72,6 +74,10 @@
 // embed.py mode"). Selecting an option calls store.switchModel,
 // which re-fetches view.json via the hub's ``?model=`` query and
 // updates the URL bar so the link is shareable.
+//
+// The ``⚠`` glyph flags a model whose ``view_status`` is ``failed``
+// or ``never_built`` (rtl-buddy-view#130); the option tooltip carries
+// the hub's error one-liner.
 //
 // The ``⚡`` glyph next to a name flags ``has_cdc=true`` — the
 // model has a resolvable ``cdc:`` back-pointer and the clock-domain
@@ -127,6 +133,26 @@ const activeTestKey = computed(() =>
     ? `${store.activeTestFile || ''}::${store.activeTest}`
     : '',
 )
+
+// rtl-buddy-view#130: ``/models`` entries may carry
+// ``view_status`` ('ok' | 'failed' | 'never_built') plus an optional
+// ``error`` one-liner. Badge anything that isn't known-good so the
+// user isn't invited to discover a broken model by staring at an
+// empty canvas. Picking a badged model is still allowed — it lands
+// on the failure placeholder, which is where the diagnosis lives.
+// Older hubs send neither field and every option renders unbadged.
+function healthBadge(m) {
+  const st = m && m.view_status
+  return st === 'failed' || st === 'never_built' ? '  ⚠' : ''
+}
+
+function modelTitle(m) {
+  const st = m && m.view_status
+  const detail = m && typeof m.error === 'string' && m.error ? ` — ${m.error}` : ''
+  if (st === 'failed') return `view generation failed${detail}`
+  if (st === 'never_built') return `never built — no view has been generated yet${detail}`
+  return m && m.name ? m.name : ''
+}
 
 const title = computed(() => {
   if (store.viewModeTb) {
