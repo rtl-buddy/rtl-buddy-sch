@@ -112,7 +112,7 @@
                 <td class="axi-tput" :title="'peer: ' + (p.peer || '—')">
                   <span class="rd">R {{ p.rd }}</span> <span class="wr">W {{ p.wr }}</span>
                 </td>
-                <td :class="bpClass(p.bp)">{{ p.bp.toFixed(0) }}%</td>
+                <td class="rb-bp" :data-level="bpLevel(p.bp)">{{ p.bp.toFixed(0) }}%</td>
               </tr>
             </tbody>
           </table>
@@ -146,6 +146,8 @@ import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
 import { useHub } from '../composables/useHub.js'
 import { heatColor } from '../overlays/coverage.js'
+import { bpLevel } from '../palette.js'
+import { themeVersion } from '../theme.js'
 import { formatBandwidth as fmtBps } from '../format.js'
 
 const store = useViewerStore()
@@ -168,6 +170,9 @@ const COVERAGE_CHANNELS = [
   ['toggles', 'toggles'],
 ]
 const coverageRows = computed(() => {
+  // ``heatColor`` resolves --cov-l at call time, so the rows have to be
+  // recomputed when the theme flips (the ramp moves 82% → 38%).
+  themeVersion.value
   if (!coverage.value) return []
   const rows = []
   for (const [key, label] of COVERAGE_CHANNELS) {
@@ -195,11 +200,6 @@ function axiMaxBp(block) {
     if (c && typeof c.bp_pct === 'number' && c.bp_pct > best) best = c.bp_pct
   }
   return best
-}
-function bpClass(bp) {
-  if (bp > 15) return 'bp-hi'
-  if (bp > 5) return 'bp-mid'
-  return 'bp-lo'
 }
 // Initiator (master) first, then target (slave), then by name —
 // matching the AXI Performance tab's ordering.
@@ -323,9 +323,11 @@ function openInEditor() {
 </script>
 
 <style scoped>
-.node-detail { padding: 0.5rem; border-top: 1px solid #e5e7eb; margin-top: 0.5rem; }
+/* No border-top / margin-top: the enclosing CollapsiblePanel already
+   draws the section separator — both drawing it doubled the rule. */
+.node-detail { padding: 0.5rem; }
 .node-detail h3 {
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   margin: 0 0 0.5rem;
   /* Long instance paths (top.u_a.u_b.…) get soft-wrap points at
@@ -335,23 +337,23 @@ function openInEditor() {
   overflow-wrap: break-word;
   line-height: 1.3;
 }
-.node-detail h3 .sep { color: #94a3b8; }
+.node-detail h3 .sep { color: var(--fg-faint); }
 .node-detail dt {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #64748b;
+  color: var(--fg-muted);
   margin-top: 0.5rem;
 }
 .node-detail dd { margin: 0.1rem 0 0; font-size: 0.85rem; }
 .node-detail dd ul { margin: 0; padding-left: 1rem; }
 .node-detail dd pre {
-  background: #f1f5f9;
+  background: var(--panel-2);
   padding: 0.25rem 0.5rem;
-  border-radius: 4px;
+  border-radius: var(--radius-2);
   font-size: 0.75rem;
 }
-.empty { color: #64748b; font-size: 0.85rem; }
+.empty { color: var(--fg-muted); font-size: 0.85rem; }
 .nav-actions {
   display: flex;
   flex-wrap: wrap;
@@ -359,18 +361,16 @@ function openInEditor() {
   margin-bottom: 0.25rem;
 }
 .nav-actions button {
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--fg);
   padding: 0.15rem 0.5rem;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-2);
   font-size: 0.75rem;
 }
-.nav-actions button:disabled {
-  color: #94a3b8;
-  background: #f1f5f9;
-  cursor: not-allowed;
-}
+/* Disabled styling is the shared ``button:disabled`` rule in app.css —
+   this component used to carry one of four different treatments. */
 /* Open-in-editor sits next to the navigation buttons (always at
    the top of the panel) so it doesn't migrate as the per-node
    data section grows/shrinks. The file:line hint lives on its
@@ -388,7 +388,7 @@ function openInEditor() {
 }
 .open-target {
   font-size: 0.7rem;
-  color: #64748b;
+  color: var(--fg-muted);
   word-break: break-all;
 }
 /* "(via hub)" / "(via OS)" tag tells the user how the next click
@@ -400,17 +400,17 @@ function openInEditor() {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 0.05rem 0.3rem;
-  border-radius: 3px;
+  border-radius: var(--radius-1);
 }
 .open-via[data-mode='hub'] {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--ok-bg);
+  color: var(--ok);
 }
 .open-via[data-mode='os'] {
-  background: #f1f5f9;
-  color: #64748b;
+  background: var(--panel-2);
+  color: var(--fg-muted);
 }
-.blackbox { color: #b45309; }
+.blackbox { color: var(--warn); }
 .coverage-block { font-size: 0.78rem; }
 .cov-row {
   display: flex;
@@ -420,14 +420,14 @@ function openInEditor() {
 }
 .cov-label {
   width: 4.5rem;
-  color: #475569;
+  color: var(--fg-muted);
 }
 .cov-bar {
   flex: 1;
   height: 0.55rem;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
-  border-radius: 3px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
   overflow: hidden;
   display: inline-block;
 }
@@ -436,7 +436,7 @@ function openInEditor() {
   height: 100%;
 }
 .cov-nums {
-  color: #64748b;
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -444,7 +444,7 @@ function openInEditor() {
   display: inline-block;
   margin-top: 0.25rem;
   font-size: 0.75rem;
-  color: #2563eb;
+  color: var(--accent);
 }
 .ports-table {
   width: 100%;
@@ -458,21 +458,21 @@ function openInEditor() {
 .port-name-cell {
   width: 1%;
   white-space: nowrap;
-  color: #1e293b;
+  color: var(--fg);
 }
 .port-expr-cell {
-  color: #475569;
+  color: var(--fg-muted);
   word-break: break-all;
 }
-.port-expr { color: #475569; }
+.port-expr { color: var(--fg-muted); }
 .port-iface-tag {
   margin-left: 0.5em;
-  color: #92400e;       /* amber-800 — matches the block-flow tint */
-  background: #fef3c7;  /* amber-100 */
+  color: var(--warn);        /* matches the block-flow interface tint */
+  background: var(--warn-bg);
   font-style: italic;
   font-size: 0.85em;
   padding: 0 0.3em;
-  border-radius: 3px;
+  border-radius: var(--radius-1);
 }
 .axi-table {
   width: 100%;
@@ -482,7 +482,7 @@ function openInEditor() {
 .axi-table th {
   text-align: left;
   font-weight: 600;
-  color: #64748b;
+  color: var(--fg-muted);
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -493,24 +493,25 @@ function openInEditor() {
   vertical-align: top;
   white-space: nowrap;
 }
-.axi-err { color: #dc2626; margin-left: 0.25em; }
+.axi-err { color: var(--err); margin-left: 0.25em; }
 .axi-role {
   font-size: 0.7rem;
   padding: 0 0.35em;
-  border-radius: 3px;
+  border-radius: var(--radius-1);
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
-.axi-role[data-role='master'] { background: #dbeafe; color: #1e40af; }  /* blue — initiator */
-.axi-role[data-role='slave'] { background: #ede9fe; color: #5b21b6; }   /* violet — target */
-.axi-tput .rd { color: #0369a1; }
-.axi-tput .wr { color: #9a3412; margin-left: 0.4em; }
-.bp-lo { color: #16a34a; }
-.bp-mid { color: #f59e0b; }
-.bp-hi { color: #dc2626; font-weight: 600; }
+/* Initiator reads as the accent, target as a neutral chip. The old
+   blue/violet pair spent two hues on a two-value enum and pulled the
+   retired indigo in with it. */
+.axi-role[data-role='master'] { background: var(--accent); color: var(--accent-contrast); }
+.axi-role[data-role='slave'] { background: var(--panel-2); color: var(--fg-muted); }
+.axi-tput .rd { color: var(--info); }
+.axi-tput .wr { color: var(--warn); margin-left: 0.4em; }
+/* Backpressure colours are the shared ``.rb-bp`` ramp in app.css. */
 .axi-ic {
   margin-top: 0.3em;
   font-size: 0.75rem;
-  color: #475569;
+  color: var(--fg-muted);
 }
 </style>

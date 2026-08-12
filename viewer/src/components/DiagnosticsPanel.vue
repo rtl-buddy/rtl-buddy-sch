@@ -19,7 +19,7 @@
           :data-severity="d.severity"
           @click="onClick(d)"
         >
-          <span class="severity" :data-severity="d.severity">{{ d.severity }}</span>
+          <span class="severity rb-sev" :data-severity="d.severity">{{ d.severity }}</span>
           <span class="loc">{{ d.file }}:{{ d.line }}</span>
           <span v-if="d.code" class="code">{{ d.code }}</span>
           <span class="msg">{{ d.message }}</span>
@@ -56,15 +56,12 @@ function onClick(item) {
 </script>
 
 <style scoped>
-.diagnostics-panel {
-  margin-top: 1rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid #e5e7eb;
-}
+/* No border-top / margin-top: the enclosing CollapsiblePanel already
+   draws the section separator — both drawing it doubled the rule. */
 .diagnostics-panel h3 {
   font-size: 0.85rem;
   margin: 0 0 0.5rem 0;
-  color: #475569;
+  color: var(--fg-muted);
 }
 .source-group {
   margin-bottom: 0.6rem;
@@ -73,13 +70,13 @@ function onClick(item) {
   display: flex;
   justify-content: space-between;
   font-size: 0.75rem;
-  font-family: ui-monospace, Menlo, monospace;
-  color: #64748b;
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
   margin-bottom: 0.2rem;
 }
 .source-group .count {
-  background: #e2e8f0;
-  color: #1f2937;
+  background: var(--line);
+  color: var(--fg);
   padding: 0 0.4rem;
   border-radius: 999px;
 }
@@ -95,30 +92,27 @@ function onClick(item) {
   align-items: baseline;
   padding: 0.2rem 0.3rem;
   font-size: 0.75rem;
-  border-radius: 4px;
+  border-radius: var(--radius-2);
   cursor: pointer;
 }
 .source-group li:hover {
-  background: #f8fafc;
+  background: var(--panel-2);
 }
+/* Colour comes from the shared ``.rb-sev`` map in app.css — this
+   component only owns the chip's shape. */
 .severity {
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   text-transform: uppercase;
   font-size: 0.65rem;
   padding: 0 0.3rem;
-  border-radius: 3px;
-  color: #ffffff;
-  background: #94a3b8;
+  border-radius: var(--radius-1);
+  color: var(--accent-contrast);
 }
-.severity[data-severity='error']   { background: #dc2626; }
-.severity[data-severity='warning'] { background: #d97706; }
-.severity[data-severity='info']    { background: #0ea5e9; }
-.severity[data-severity='hint']    { background: #64748b; }
 .loc, .code {
-  font-family: ui-monospace, Menlo, monospace;
-  color: #475569;
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
   white-space: nowrap;
 }
-.code { color: #1f2937; }
-.msg { color: #1f2937; }
+.code { color: var(--fg); }
+.msg { color: var(--fg); }
 </style>

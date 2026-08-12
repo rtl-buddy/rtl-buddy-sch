@@ -71,11 +71,12 @@
 // layout step and so click handlers can recover the model node.
 import { computed, onMounted, ref, watch, onBeforeUnmount } from 'vue'
 import { useViewerStore } from '../store.js'
-import { layoutGraph, layoutDot, clusterIdFor } from '../layout/viz.js'
+import { layoutGraph, layoutDot, clusterIdFor, hasEmbeddedDot } from '../layout/viz.js'
 import { buildBlockFlowDot } from '../layout/blockFlow.js'
 import { applyOverlays } from '../overlays/index.js'
 import { useHub } from '../composables/useHub.js'
 import { registerSvgProvider, unregisterSvgProvider } from '../capture.js'
+import { token, themeVersion } from '../theme.js'
 import NodeBadge from './NodeBadge.vue'
 import SelectionCandidates from './SelectionCandidates.vue'
 
@@ -132,6 +133,13 @@ function jumpToScope(path) {
 async function renderSvg() {
   if (!graph.value || !svgHostEl.value) return
   let svgText
+  // Which DOT source this render used. Only the producer's embedded
+  // DOT gets the stylesheet's re-tint safety net — the in-JS builders
+  // bake theme-resolved tokens (CDC red, clock pastels, the
+  // unconstrained-source marker) and a blanket re-tint would neutralise
+  // every one of them. Block-flow always builds its own DOT.
+  const producerDot = store.viewMode !== 'flow' && hasEmbeddedDot(graph.value)
+  svgHostEl.value.classList.toggle('producer-dot', producerDot)
   try {
     if (store.viewMode === 'flow') {
       // Block-flow view builds its DOT in the SPA from the graph's
@@ -286,7 +294,7 @@ function applyDutBoundary(svgRoot, graph) {
       frame.setAttribute('rx', '6')
       frame.setAttribute('ry', '6')
       frame.setAttribute('fill', 'none')
-      frame.setAttribute('stroke', '#475569')
+      frame.setAttribute('stroke', token('--fg-muted'))
       frame.setAttribute('stroke-width', '2')
       frame.setAttribute('stroke-dasharray', '6,4')
       frame.setAttribute('pointer-events', 'none')
@@ -302,9 +310,9 @@ function applyDutBoundary(svgRoot, graph) {
       // letters don't kiss the dashed stroke.
       label.setAttribute('x', String(bb.x - pad + 6))
       label.setAttribute('y', String(bb.y - pad - 4))
-      label.setAttribute('fill', '#475569')
+      label.setAttribute('fill', token('--fg-muted'))
       label.setAttribute('font-size', '10')
-      label.setAttribute('font-family', 'ui-monospace, Menlo, monospace')
+      label.setAttribute('font-family', token('--font-mono'))
       label.setAttribute('font-weight', '700')
       label.setAttribute('letter-spacing', '0.05em')
       label.setAttribute('pointer-events', 'none')
@@ -385,6 +393,11 @@ function highlightEdgesForPort(nodeId, portName) {
 }
 
 watch(graph, renderSvg)
+// Graphviz bakes colours into the SVG it emits, so a theme flip needs
+// a fresh layout — there is no ``var(--…)`` for the sheet to
+// re-resolve after the fact. Cheap in practice: the theme changes when
+// a person changes it, not per frame.
+watch(themeVersion, renderSvg)
 // Tab switch + scope drill-down trigger a full re-layout. Both
 // produce a different DOT, so the SVG must be rebuilt.
 watch(() => store.viewMode, renderSvg)
@@ -928,7 +941,7 @@ onBeforeUnmount(() => {
   flex: 1;
   position: relative;
   overflow: hidden;
-  background: #f8fafc;
+  background: var(--bg);
 }
 .canvas-tabs {
   position: absolute;
@@ -941,17 +954,18 @@ onBeforeUnmount(() => {
   font-size: 0.85rem;
 }
 .canvas-tab {
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--fg);
   padding: 0.25rem 0.6rem;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-2);
   font-family: inherit;
 }
 .canvas-tab.active {
-  background: #1e293b;
-  color: #ffffff;
-  border-color: #1e293b;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
 }
 .flow-breadcrumb {
   display: inline-flex;
@@ -960,32 +974,33 @@ onBeforeUnmount(() => {
   gap: 0.15rem;
   font-size: 0.75rem;
   margin-left: 0.5rem;
-  color: #64748b;
+  color: var(--fg-muted);
 }
 .flow-scope-label {
   margin-right: 0.15rem;
 }
 .crumb-sep {
-  color: #94a3b8;
+  color: var(--fg-faint);
   padding: 0 0.05rem;
 }
 .crumb {
   font: inherit;
-  background: #f1f5f9;
+  background: var(--panel-2);
   border: 1px solid transparent;
-  color: #1e293b;
+  color: var(--fg);
   padding: 0.05rem 0.35rem;
-  border-radius: 3px;
+  border-radius: var(--radius-1);
   cursor: pointer;
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
 }
 .crumb:hover:not(:disabled) {
-  background: #e2e8f0;
-  border-color: #cbd5e1;
+  background: var(--line);
+  border-color: var(--line-strong);
 }
+/* ``.current`` is a disabled button, so app.css's shared disabled
+   treatment paints it; the accent border is what says "you are here". */
 .crumb.current {
-  background: #1e293b;
-  color: #ffffff;
+  border-color: var(--accent);
   cursor: default;
 }
 .graph-toolbar {
@@ -997,11 +1012,12 @@ onBeforeUnmount(() => {
   z-index: 10;
 }
 .graph-toolbar button {
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--fg);
   padding: 0.25rem 0.5rem;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-2);
 }
 .svg-host {
   width: 100%;
@@ -1049,12 +1065,12 @@ onBeforeUnmount(() => {
    Amber so it doesn't collide with the blue selected-node accent
    or the existing edge palette. */
 .svg-host :deep([data-rb-edge-highlighted]) path {
-  stroke: #f59e0b !important;
+  stroke: var(--warn) !important;
   stroke-width: 2.5 !important;
 }
 .svg-host :deep([data-rb-edge-highlighted]) polygon {
-  fill: #f59e0b !important;
-  stroke: #f59e0b !important;
+  fill: var(--warn) !important;
+  stroke: var(--warn) !important;
 }
 
 /* Selected-node accent. Painted by ``applySelectionHighlight``,
@@ -1067,14 +1083,50 @@ onBeforeUnmount(() => {
    panned in from the edge of the viewport. */
 .svg-host :deep([data-rb-selected]) > polygon,
 .svg-host :deep([data-rb-selected]) > path {
-  stroke: #2563eb;
+  stroke: var(--accent);
   stroke-width: 3 !important;
-  filter: drop-shadow(0 0 4px rgba(37, 99, 235, 0.55));
+  /* The glow was a baked ``rgba(37, 99, 235, .55)``. ``color-mix``
+     keeps the same 55% so the halo reads as a halo and not a second
+     stroke, while following the accent into dark. */
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 55%, transparent));
 }
 /* For HTML-table labels (block-flow boxes), the outer table is a
    nested polygon — accent that one too. */
 .svg-host :deep([data-rb-selected] polygon:first-of-type) {
-  stroke: #2563eb;
+  stroke: var(--accent);
   stroke-width: 3 !important;
+}
+
+/* Theme safety net for the *producer-supplied* layout DOT — and ONLY
+   for it. ``pickDot`` prefers ``graph.layout.dot`` when the producer
+   embedded one, and that string was generated by the Python renderer
+   with the light palette baked in; this repo cannot rebuild it, so
+   these rules re-tint the parts that would otherwise be unreadable in
+   dark. Graphviz emits them as presentation attributes, which a
+   stylesheet outranks.
+
+   The ``.producer-dot`` gate is load-bearing, not decoration.
+   ``renderSvg`` sets that class only when it fed viz.js the producer's
+   DOT. Ungated, the same rules apply to the in-JS builders' output,
+   where "a stylesheet outranks a presentation attribute" is exactly
+   the problem: ``graphToDot`` / ``buildBlockFlowDot`` resolve tokens at
+   build time and re-run on a theme flip, so their CDC-red edge labels
+   and arrowheads and the ``?`` unconstrained-source marker are already
+   correct for the active theme — and a blanket ``fill: var(--fg)``
+   silently repaints them body-text grey.
+   Overlay paint is inline style, so it still wins over all of this. */
+.svg-host.producer-dot :deep(text) {
+  fill: var(--fg);
+}
+.svg-host.producer-dot :deep(g.edge path) {
+  stroke: var(--line-strong);
+}
+.svg-host.producer-dot :deep(g.edge polygon) {
+  fill: var(--line-strong);
+  stroke: var(--line-strong);
+}
+.svg-host.producer-dot :deep(g.cluster > polygon) {
+  fill: none;
+  stroke: var(--fg-faint);
 }
 </style>

@@ -3,10 +3,26 @@
 // inputs are: ?view= URL query param (highest priority), the
 // `window.__RTL_BUDDY_VIEW_DATA__` injection point (for embed.py
 // self-contained HTML), drag-and-drop, and the file picker.
+//
+// Stylesheet order is load-bearing: the vendored hub token sheet
+// first (it defines every ``--token`` and the light/dark blocks),
+// then the SPA's own tokens, then the global element + utility
+// styles that consume them. Component <style> blocks land after all
+// three regardless of import order.
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
+import './theme.css'
+import './tokens.css'
+import './app.css'
 import App from './App.vue'
 import { useViewerStore } from './store.js'
+import { installFavicon } from './identity.js'
+import { applyStoredThemePreference } from './theme.js'
+
+installFavicon()
+// Before mount: a remembered ``data-theme`` pin has to be on <html>
+// for the first paint, or the page flashes the OS palette first.
+applyStoredThemePreference()
 
 const app = createApp(App)
 const pinia = createPinia()

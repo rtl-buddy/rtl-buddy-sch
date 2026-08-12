@@ -4,7 +4,7 @@
 // is pure string transformation.
 
 import { describe, expect, it } from 'vitest'
-import { graphToDot, dotEscape, dotId, pickDot } from '../src/layout/viz.js'
+import { graphToDot, dotEscape, dotId, pickDot, hasEmbeddedDot } from '../src/layout/viz.js'
 
 const graph = {
   top: 'top',
@@ -105,5 +105,34 @@ describe('pickDot', () => {
   it('falls back when layout.dot is not a string', () => {
     expect(pickDot({ ...graph, layout: { engine: 'dot', dot: 42 } })).toBe(graphToDot(graph))
     expect(pickDot({ ...graph, layout: {} })).toBe(graphToDot(graph))
+  })
+})
+
+describe('hasEmbeddedDot', () => {
+  // GraphCanvas asks this, not "did the SVG come out different" —
+  // it decides whether to wear the ``.producer-dot`` class that gates
+  // the canvas's theme re-tint rules. Those rules exist because the
+  // producer's DOT is baked light and unrebuildable here; applied to
+  // the in-JS builder's output they would repaint its deliberate
+  // colours (CDC red) in body grey. So the predicate has to agree with
+  // ``pickDot`` on every input, including the reject cases.
+  const cases = [
+    ['missing layout', graph, false],
+    ['empty layout', { ...graph, layout: {} }, false],
+    ['empty string', { ...graph, layout: { dot: '' } }, false],
+    ['whitespace only', { ...graph, layout: { dot: '   \n' } }, false],
+    ['non-string', { ...graph, layout: { dot: 42 } }, false],
+    ['real dot', { ...graph, layout: { dot: 'digraph g { "top"; }' } }, true],
+  ]
+  for (const [name, g, expected] of cases) {
+    it(`${name} → ${expected}, and pickDot agrees`, () => {
+      expect(hasEmbeddedDot(g)).toBe(expected)
+      expect(pickDot(g) === g.layout?.dot).toBe(expected)
+    })
+  }
+
+  it('tolerates a missing graph', () => {
+    expect(hasEmbeddedDot(null)).toBe(false)
+    expect(hasEmbeddedDot(undefined)).toBe(false)
   })
 })

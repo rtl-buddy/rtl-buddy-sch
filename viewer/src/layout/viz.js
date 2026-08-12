@@ -12,6 +12,9 @@
 // Vue + Pinia shell) stays small enough to drag-drop a 300 KB
 // view.json into the browser before the WASM is fetched.
 
+import { buildClockPalette, isUnconstrained } from '../palette.js'
+import { token } from '../theme.js'
+
 let _vizPromise = null
 
 async function getViz() {
@@ -67,11 +70,24 @@ export async function layoutDot(dot) {
 // builder otherwise. Exported for tests so the precedence rule is
 // pinnable without standing up the WASM engine.
 export function pickDot(graph) {
-  const embedded = graph?.layout?.dot
-  if (typeof embedded === 'string' && embedded.trim().length > 0) {
-    return embedded
-  }
+  if (hasEmbeddedDot(graph)) return graph.layout.dot
   return graphToDot(graph)
+}
+
+/**
+ * True when ``pickDot`` will use the producer's embedded DOT rather
+ * than the in-JS builder.
+ *
+ * GraphCanvas needs the distinction for more than layout: the
+ * producer's DOT has the Python renderer's light palette baked in and
+ * cannot be rebuilt here, so it needs the canvas's ``:deep`` re-tint
+ * rules; ``graphToDot`` bakes theme-resolved tokens (including the CDC
+ * red on crossing edges, labels and the unconstrained-source marker),
+ * and the same blanket re-tint would throw those away.
+ */
+export function hasEmbeddedDot(graph) {
+  const embedded = graph?.layout?.dot
+  return typeof embedded === 'string' && embedded.trim().length > 0
 }
 
 /**
@@ -88,12 +104,24 @@ export function pickDot(graph) {
  * of children with no scope title.
  */
 export function graphToDot(graph) {
+  // Colours are resolved from design tokens HERE, at DOT-build time,
+  // because Graphviz bakes them into the SVG it emits — there is no
+  // ``var(--…)`` to inherit later. GraphCanvas re-runs layout when the
+  // theme flips, which is what makes the baked values honest.
+  const nodeFill = token('--panel-2')
+  const nodeText = token('--fg')
+  const frame = token('--fg-faint')
+  const cdc = token('--err')
   const lines = []
   lines.push('digraph view {')
   lines.push('  rankdir="LR";')
   lines.push('  compound=true;')
-  lines.push('  node [shape=box, style="rounded,filled", fillcolor="#f5f5f5"];')
-  lines.push('  edge [arrowsize=0.7];')
+  lines.push(
+    `  node [shape=box, style="rounded,filled", fillcolor="${nodeFill}", ` +
+      `color="${frame}", fontcolor="${nodeText}"];`,
+  )
+  lines.push(`  edge [arrowsize=0.7, color="${frame}", fontcolor="${nodeText}"];`)
+  lines.push(`  bgcolor="transparent"; fontcolor="${nodeText}";`)
 
   const rootId = graph.top
   const rootNode = graph.nodes.find((n) => n.id === rootId)
@@ -123,26 +151,28 @@ export function graphToDot(graph) {
     lines.push('  subgraph cluster_top {')
     lines.push(`    label="${labelEscape(rootLabel)}";`)
     lines.push('    labelloc="t";')
+    lines.push(`    fontcolor="${nodeText}";`)
     lines.push('    style="rounded";')
-    lines.push('    color="#94a3b8";')
+    lines.push(`    color="${frame}";`)
     lines.push('    penwidth=2;')
     if (needUnconstrained) {
       lines.push(`    ${dotId(UNCONSTRAINED_ID)} [shape=plaintext, ` +
-        `label="?", fontcolor="#dc2626", fontsize=14, ` +
+        `label="?", fontcolor="${cdc}", fontsize=14, ` +
         `tooltip="async crossing whose src_clock is unconstrained in SDC"];`)
     }
     emitInsideRootCluster(
       rootNode, '    ', graph, palette, pairsByNode, childrenById, lines,
+      { frame, text: nodeText, neutral: nodeFill },
     )
     lines.push('  }')
   } else {
     if (needUnconstrained) {
       lines.push(`  ${dotId(UNCONSTRAINED_ID)} [shape=plaintext, ` +
-        `label="?", fontcolor="#dc2626", fontsize=14, ` +
+        `label="?", fontcolor="${cdc}", fontsize=14, ` +
         `tooltip="async crossing whose src_clock is unconstrained in SDC"];`)
     }
     for (const node of graph.nodes) {
-      lines.push('  ' + emitNode(node, palette, pairsByNode))
+      lines.push('  ' + emitNode(node, palette, pairsByNode, nodeFill))
     }
   }
 
@@ -162,14 +192,14 @@ export function graphToDot(graph) {
     if (realPairs.length === 0 && unconPairs.length === 0) continue
     for (const p of realPairs) {
       const label = `${p.src_clock} → ${p.dst_clock}`
-      const attrs = ` [label="${labelEscape(label)}", color="#dc2626", style="dashed", fontcolor="#dc2626", fontsize=9]`
+      const attrs = ` [label="${labelEscape(label)}", color="${cdc}", style="dashed", fontcolor="${cdc}", fontsize=9]`
       const fromRef = portRefForPair(edge.from, p, 'outgoing', pairsByNode)
       const toRef = portRefForPair(edge.to, p, 'incoming', pairsByNode)
       lines.push(`  ${fromRef} -> ${toRef}${attrs};`)
     }
     for (const p of unconPairs) {
       const label = `${p.src_clock} → ${p.dst_clock}`
-      const attrs = ` [label="${labelEscape(label)}", color="#dc2626", style="dashed", fontcolor="#dc2626", fontsize=9]`
+      const attrs = ` [label="${labelEscape(label)}", color="${cdc}", style="dashed", fontcolor="${cdc}", fontsize=9]`
       const toRef = portRefForUnconstrainedDst(edge.to, p, pairsByNode)
       lines.push(`  ${dotId(UNCONSTRAINED_ID)} -> ${toRef}${attrs};`)
     }
@@ -218,14 +248,14 @@ function buildChildrenMap(graph) {
 //     emitSubtree which uses nested ``subgraph cluster_<id>`` for
 //     each non-leaf descendant.
 function emitInsideRootCluster(
-  rootNode, indent, graph, palette, pairsByNode, childrenById, lines,
+  rootNode, indent, graph, palette, pairsByNode, childrenById, lines, style,
 ) {
   const rootId = rootNode.id
   const rootChildren = childrenById.get(rootId) || []
   if (rootChildren.length === 0) {
     // Leaf scope — no children to recurse into, render the root as a
     // flat node so cluster_top has something inside it.
-    lines.push(indent + emitNode(rootNode, palette, pairsByNode))
+    lines.push(indent + emitNode(rootNode, palette, pairsByNode, style.neutral))
     return
   }
   // Container scope (CDC bridge or non-CDC). The scope's identity is
@@ -235,28 +265,28 @@ function emitInsideRootCluster(
   // into the children — they'll cluster / grid / striped themselves
   // as needed.
   for (const childId of rootChildren) {
-    emitSubtree(childId, indent, graph, palette, pairsByNode, childrenById, lines)
+    emitSubtree(childId, indent, graph, palette, pairsByNode, childrenById, lines, style)
   }
 }
 
 // Recursive subtree emit. Cluster vs flat-node decision is the
 // same as for the root, minus the cluster_top framing.
 function emitSubtree(
-  nodeId, indent, graph, palette, pairsByNode, childrenById, lines,
+  nodeId, indent, graph, palette, pairsByNode, childrenById, lines, style,
 ) {
   const node = graph.nodes.find((n) => n.id === nodeId)
   if (!node) return
   const children = childrenById.get(nodeId) || []
   const pairs = pairsByNode.get(nodeId) || []
   if (children.length === 0) {
-    lines.push(indent + emitNode(node, palette, pairsByNode))
+    lines.push(indent + emitNode(node, palette, pairsByNode, style.neutral))
     return
   }
   if (pairs.length >= 2) {
     // CDC bridge: flat HTML-TABLE + children as siblings.
-    lines.push(indent + emitGridNode(node, palette, pairs))
+    lines.push(indent + emitGridNode(node, palette, pairs, style.neutral))
     for (const childId of children) {
-      emitSubtree(childId, indent, graph, palette, pairsByNode, childrenById, lines)
+      emitSubtree(childId, indent, graph, palette, pairsByNode, childrenById, lines, style)
     }
     return
   }
@@ -268,15 +298,16 @@ function emitSubtree(
   lines.push(`${indent}  label="${labelEscape(scopeLabel(node))}";`)
   lines.push(`${indent}  labelloc="t";`)
   lines.push(`${indent}  labeljust="l";`)
+  lines.push(`${indent}  fontcolor="${style.text}";`)
   lines.push(`${indent}  style="rounded";`)
-  lines.push(`${indent}  color="#94a3b8";`)
+  lines.push(`${indent}  color="${style.frame}";`)
   lines.push(`${indent}  penwidth=1;`)
   lines.push(
     `${indent}  ${dotId(nodeId)} [shape=point, style=invis, width=0, height=0];`,
   )
   for (const childId of children) {
     emitSubtree(
-      childId, indent + '  ', graph, palette, pairsByNode, childrenById, lines,
+      childId, indent + '  ', graph, palette, pairsByNode, childrenById, lines, style,
     )
   }
   lines.push(`${indent}}`)
@@ -300,45 +331,11 @@ export function clusterIdFor(instanceId) {
 //   2+ pairs → HTML-TABLE: header text row + one (src | dst) row per pair
 // ---------------------------------------------------------------------------
 
-// Same palette + sorted-alphabetical assignment scheme used by the
-// clock-overlay renderer in ``overlays/clock.js`` — kept here as a
-// local constant so the DOT generator can bake matching colours
-// directly into HTML cells / striped fills without depending on
-// overlay-apply order.
-const CLOCK_PALETTE = [
-  '#dbeafe', '#dcfce7', '#fef9c3', '#fce7f3',
-  '#ede9fe', '#fed7aa', '#cffafe',
-]
-
-function buildClockPalette(graph) {
-  const seen = new Set()
-  for (const node of graph.nodes || []) {
-    const ov = node.overlays && node.overlays.clock
-    if (ov && ov.clock) seen.add(ov.clock)
-  }
-  for (const edge of graph.edges || []) {
-    const pairs = edge?.overlays?.clock?.pairs
-    if (!Array.isArray(pairs)) continue
-    for (const p of pairs) {
-      if (typeof p.src_clock === 'string' && !isUnconstrained(p.src_clock)) {
-        seen.add(p.src_clock)
-      }
-      if (typeof p.dst_clock === 'string') seen.add(p.dst_clock)
-    }
-  }
-  const sorted = Array.from(seen).sort()
-  const out = new Map()
-  sorted.forEach((name, idx) => out.set(name, CLOCK_PALETTE[idx % CLOCK_PALETTE.length]))
-  return out
-}
-
-// ``<unconstrained>`` sources (signals not bound to a clock in the
-// SDC — often reset ports) get filtered out to match dot.py's
-// ``_crossing_pairs_into``: a real clock pair anchors a direction;
-// an unconstrained source doesn't.
-function isUnconstrained(clockName) {
-  return clockName.startsWith('<') && clockName.endsWith('>')
-}
+// The palette and the clock->colour assignment come from
+// ``palette.js``: the DOT generator bakes colours directly into HTML
+// cells / striped fills, and the clock overlay paints node fills at
+// runtime. Two definitions over two different clock sets is how the
+// legend swatch and the bridge cell came to disagree.
 
 // Collect deduped CDC (src, dst) pairs per node by walking each
 // edge's ``overlays.clock.pairs`` and attributing the pairs to the
@@ -382,10 +379,10 @@ function collectCdcPairsByNode(graph) {
   return out
 }
 
-function emitNode(node, palette, pairsByNode) {
+function emitNode(node, palette, pairsByNode, neutral) {
   const pairs = pairsByNode.get(node.id) || []
-  if (pairs.length >= 2) return emitGridNode(node, palette, pairs)
-  if (pairs.length === 1) return emitStripedNode(node, palette, pairs[0])
+  if (pairs.length >= 2) return emitGridNode(node, palette, pairs, neutral)
+  if (pairs.length === 1) return emitStripedNode(node, palette, pairs[0], neutral)
   const label = nodeLabel(node)
   return `${dotId(node.id)} [label="${labelEscape(label)}"];`
 }
@@ -406,7 +403,7 @@ function emitNode(node, palette, pairsByNode) {
 // src_clock. For sync flops this collapses to "in=src, out=dst";
 // for FIFOs both clocks appear on both sides because both
 // directions of pointer crossings get aggregated.)
-function emitGridNode(node, palette, pairs) {
+function emitGridNode(node, palette, pairs, neutral) {
   const header = [node.instance_name || node.module, node.module]
     .filter((line, idx, arr) => idx === 0 || line !== arr[idx - 1])
     .map((line) => htmlLabelEscape(line))
@@ -425,7 +422,7 @@ function emitGridNode(node, palette, pairs) {
     const outClk = outputClocks[i]
     const cells = []
     if (inClk) {
-      const color = palette.get(inClk) || '#f1f5f9'
+      const color = palette.get(inClk) || neutral
       cells.push(
         `<TD BGCOLOR="${color}" PORT="in_${htmlLabelEscape(inClk)}" WIDTH="60">` +
           `<FONT POINT-SIZE="10">${htmlLabelEscape(inClk)}</FONT></TD>`,
@@ -434,7 +431,7 @@ function emitGridNode(node, palette, pairs) {
       cells.push('<TD BORDER="0"></TD>')
     }
     if (outClk) {
-      const color = palette.get(outClk) || '#f1f5f9'
+      const color = palette.get(outClk) || neutral
       cells.push(
         `<TD BGCOLOR="${color}" PORT="out_${htmlLabelEscape(outClk)}" WIDTH="60">` +
           `<FONT POINT-SIZE="10">${htmlLabelEscape(outClk)}</FONT></TD>`,
@@ -459,10 +456,10 @@ function sortedUnique(arr) {
 // — typically a single-stage sync flop where data flows from src to
 // dst. ``style="rounded,striped"`` splits the box left-half / right-
 // half by the colon-separated palette pair.
-function emitStripedNode(node, palette, pair) {
+function emitStripedNode(node, palette, pair, neutral) {
   const label = nodeLabel(node)
-  const srcColor = palette.get(pair.src_clock) || '#f1f5f9'
-  const dstColor = palette.get(pair.dst_clock) || '#f1f5f9'
+  const srcColor = palette.get(pair.src_clock) || neutral
+  const dstColor = palette.get(pair.dst_clock) || neutral
   const attrs = [
     `label="${labelEscape(label)}"`,
     'style="rounded,striped"',

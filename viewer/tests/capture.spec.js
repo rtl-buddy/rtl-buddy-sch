@@ -7,10 +7,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  backdropFor,
   captureGraphImage,
   registerSvgProvider,
   unregisterSvgProvider,
 } from '../src/capture.js'
+import { token, TOKEN_FALLBACKS } from '../src/theme.js'
 
 function makeFakeSvg() {
   // Same shape as hub.spec.js's helper — attached to the document
@@ -84,5 +86,52 @@ describe('captureGraphImage PNG rasterise timeout (#101)', () => {
     )
     // No timeout fires — the precondition error is synchronous.
     expect(warnSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('PNG backdrop', () => {
+  // Pin a dark ``--bg`` inline on <html> so "active theme" and "light
+  // fallback" are two visibly different answers — otherwise both
+  // branches return the same string under happy-dom (no stylesheet)
+  // and the assertions would pass whichever branch ran.
+  const DARK_BG = 'rgb(15, 17, 21)'
+
+  beforeEach(() => {
+    document.documentElement.style.setProperty('--bg', DARK_BG)
+  })
+
+  afterEach(() => {
+    document.documentElement.style.removeProperty('--bg')
+    document.body.innerHTML = ''
+  })
+
+  function hostedSvg(cls) {
+    const host = document.createElement('div')
+    host.className = cls
+    const svg = makeFakeSvg()
+    host.appendChild(svg)
+    document.body.appendChild(host)
+    return svg
+  }
+
+  it('follows the active theme for the in-JS builders', () => {
+    // Their colours are baked for whatever theme was live at layout
+    // time, so the plate has to match.
+    expect(token('--bg')).toBe(DARK_BG)
+    expect(backdropFor(hostedSvg('svg-host'))).toBe(DARK_BG)
+  })
+
+  it('pins light for a producer-supplied layout DOT', () => {
+    // That DOT is baked light; its dark-theme legibility on screen is
+    // entirely the canvas's :deep re-tint, and document CSS does not
+    // travel with the standalone SVG the rasteriser serialises. A dark
+    // plate would be black text on near-black.
+    expect(backdropFor(hostedSvg('svg-host producer-dot'))).toBe(TOKEN_FALLBACKS['--bg'])
+  })
+
+  it('follows the active theme for a detached SVG', () => {
+    // ``embed.py`` exports and unit tests hand over SVGs with no host
+    // element — no marker means no producer claim.
+    expect(backdropFor(makeFakeSvg())).toBe(DARK_BG)
   })
 })

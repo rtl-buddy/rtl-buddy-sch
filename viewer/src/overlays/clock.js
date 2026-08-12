@@ -8,16 +8,14 @@
 // The visual contribution is: fill the node's <g> with a
 // clock-keyed pastel; mark edges where ``overlays.clock.crossing``
 // is true with a CDC accent.
+//
+// The palette and the clock→colour assignment live in ``palette.js``
+// — shared with the in-JS DOT builder, which bakes the same colours
+// into bridge HTML cells. Two copies over two different clock sets
+// was how the legend swatch and the node fill came to disagree.
 
-const PALETTE = [
-  '#dbeafe', // blue
-  '#dcfce7', // green
-  '#fef9c3', // yellow
-  '#fce7f3', // pink
-  '#ede9fe', // purple
-  '#fed7aa', // orange
-  '#cffafe', // cyan
-]
+import { buildClockPalette } from '../palette.js'
+import { token } from '../theme.js'
 
 // Same hashing scheme as the dot renderer's ``_palette_color`` so
 // the same clock lands in the same colour across the desktop +
@@ -27,37 +25,6 @@ async function djb2(str) {
   let hash = 5381
   for (let i = 0; i < str.length; i++) hash = ((hash << 5) + hash + str.charCodeAt(i)) >>> 0
   return hash
-}
-
-// Build the canonical clock→colour assignment for a graph. Both
-// ``apply`` and ``legend`` must use this so the swatch shown in the
-// panel matches the fill painted on each node. Sorted-alphabetical
-// gives a stable order independent of node traversal — a clock's
-// colour doesn't move when the user rolls back to an earlier
-// view.json.
-function buildClockPalette(graph) {
-  const seen = new Set()
-  for (const node of graph.nodes || []) {
-    const ov = node.overlays && node.overlays.clock
-    if (ov && ov.clock) seen.add(ov.clock)
-  }
-  // Producers may also publish a top-level clock manifest so
-  // single-source-of-truth clocks (declared in SDC but bound to no
-  // flop) still appear in the legend — see view-v1's optional
-  // ``overlay_meta.clock.clocks`` field.
-  const meta = graph.overlay_meta && graph.overlay_meta.clock
-  if (meta && Array.isArray(meta.clocks)) {
-    for (const entry of meta.clocks) {
-      const name = typeof entry === 'string' ? entry : entry && entry.name
-      if (typeof name === 'string' && name.length > 0) seen.add(name)
-    }
-  }
-  const sorted = Array.from(seen).sort()
-  const out = new Map()
-  sorted.forEach((name, idx) => {
-    out.set(name, PALETTE[idx % PALETTE.length])
-  })
-  return out
 }
 
 export const clockOverlay = {
@@ -112,11 +79,19 @@ export const clockOverlay = {
       )
       if (!path) continue
       if (enabled && ov && ov.crossing) {
-        path.setAttribute('stroke', '#dc2626')
+        // Inline style, not the ``stroke`` attribute: the canvas
+        // gives every edge a themed default stroke via CSS, and a
+        // presentation attribute loses to a stylesheet rule. The
+        // ``data-overlay-clock`` marker is what the reset overlay
+        // reads for precedence — comparing colour strings broke the
+        // moment the colour became a token.
+        path.style.stroke = token('--err')
         path.setAttribute('stroke-dasharray', '4,3')
+        path.setAttribute('data-overlay-clock', 'crossing')
       } else {
-        path.setAttribute('stroke', '')
+        path.style.stroke = ''
         path.removeAttribute('stroke-dasharray')
+        path.removeAttribute('data-overlay-clock')
       }
     }
   },
@@ -138,7 +113,7 @@ export const clockOverlay = {
     if (hasCdcCrossing) {
       entries.push({
         label: 'CDC crossing',
-        swatch: '#dc2626',
+        swatch: token('--err'),
         kind: 'dashed-line',
       })
     }

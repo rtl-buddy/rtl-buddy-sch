@@ -13,7 +13,7 @@
     @mouseenter="updatePlacement"
     @focus="updatePlacement"
   >
-    <span class="dot" :title="badgeTitle"></span>
+    <span class="dot rb-sev" :data-severity="worstSeverity" :title="badgeTitle"></span>
     <span v-if="items.length > 1" class="count">{{ items.length }}</span>
     <div class="popup" role="tooltip">
       <ul>
@@ -22,7 +22,7 @@
           :key="i"
           :data-severity="d.severity || 'info'"
         >
-          <span class="sev" :data-severity="d.severity || 'info'">
+          <span class="sev rb-sev" :data-severity="d.severity || 'info'">
             {{ (d.severity || 'info').toUpperCase() }}
           </span>
           <span v-if="d.code" class="code">{{ d.code }}</span>
@@ -45,6 +45,7 @@
 // the diagnostics map changes.
 
 import { computed, ref } from 'vue'
+import { worstSeverity as pickWorstSeverity } from '../severity.js'
 
 const props = defineProps({
   nodeId: { type: String, required: true },
@@ -93,21 +94,9 @@ function updatePlacement() {
 
 // Severity rank: error > warning > info > hint. Pick the worst the
 // items contain so the collapsed dot conveys the highest-priority
-// finding at a glance.
-const _SEV_RANK = { error: 3, warning: 2, info: 1, hint: 0 }
-const worstSeverity = computed(() => {
-  let bestKey = 'info'
-  let bestRank = -1
-  for (const d of props.items) {
-    const k = d?.severity || 'info'
-    const r = _SEV_RANK[k] ?? 0
-    if (r > bestRank) {
-      bestRank = r
-      bestKey = k
-    }
-  }
-  return bestKey
-})
+// finding at a glance. The rank order lives in ``severity.js`` — it
+// used to be a second copy of the table DiagnosticsPanel carried.
+const worstSeverity = computed(() => pickWorstSeverity(props.items))
 
 const badgeTitle = computed(() => {
   if (props.items.length === 1) {
@@ -131,24 +120,22 @@ const badgeTitle = computed(() => {
   transform: translate(-50%, -50%);
   cursor: pointer;
   z-index: 5;
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
 }
+/* Fill comes from the shared ``.rb-sev`` map in app.css; the ring and
+   the drop shadow are what keep the dot readable over any node fill an
+   overlay may have applied. */
 .dot {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #94a3b8;
-  border: 2px solid #ffffff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.35);
+  border: 2px solid var(--panel);
+  box-shadow: var(--shadow-1);
 }
-.node-badge[data-severity='error']   .dot { background: #dc2626; }
-.node-badge[data-severity='warning'] .dot { background: #d97706; }
-.node-badge[data-severity='info']    .dot { background: #0ea5e9; }
-.node-badge[data-severity='hint']    .dot { background: #64748b; }
 .count {
   font-size: 0.65rem;
-  background: #1f2937;
-  color: #ffffff;
+  background: var(--fg);
+  color: var(--bg);
   padding: 0 0.3rem;
   border-radius: 999px;
   line-height: 1.3;
@@ -162,13 +149,13 @@ const badgeTitle = computed(() => {
      pin the box style + transition + hidden-by-default state. */
   min-width: 18rem;
   max-width: 28rem;
-  background: #ffffff;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.18);
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-2);
   padding: 0.4rem 0;
   font-size: 0.75rem;
-  color: #1f2937;
+  color: var(--fg);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease-out;
@@ -197,24 +184,19 @@ const badgeTitle = computed(() => {
   gap: 0.4rem;
   align-items: baseline;
   padding: 0.3rem 0.6rem;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--line);
 }
 .popup li:last-child { border-bottom: none; }
 .popup .sev {
   font-size: 0.6rem;
   padding: 0.05rem 0.3rem;
-  border-radius: 3px;
-  color: #ffffff;
-  background: #94a3b8;
+  border-radius: var(--radius-1);
+  color: var(--accent-contrast);
   letter-spacing: 0.02em;
 }
-.popup .sev[data-severity='error']   { background: #dc2626; }
-.popup .sev[data-severity='warning'] { background: #d97706; }
-.popup .sev[data-severity='info']    { background: #0ea5e9; }
-.popup .sev[data-severity='hint']    { background: #64748b; }
 .popup .code {
   font-size: 0.7rem;
-  color: #1f2937;
+  color: var(--fg);
   font-weight: 600;
 }
 .popup .msg {
@@ -229,6 +211,6 @@ const badgeTitle = computed(() => {
   grid-column: 1 / -1;
   margin-top: 0.1rem;
   font-size: 0.65rem;
-  color: #64748b;
+  color: var(--fg-muted);
 }
 </style>

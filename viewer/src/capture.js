@@ -10,6 +10,8 @@
 // Graph-only by design: side panels, toolbar, and the overlay legend
 // are not included. v1 scope (rtl_buddy hub-side capture feature).
 
+import { token, TOKEN_FALLBACKS } from './theme.js'
+
 // Cap PNG rasterisation so the hub never has to wait out its own
 // 15s envelope timeout when the browser's Image+canvas pipeline
 // wedges (issue #101). The wedge has been observed after a hub
@@ -78,7 +80,7 @@ export async function captureGraphImage(
   }
   const w = Math.max(1, Math.ceil(width * scale))
   const h = Math.max(1, Math.ceil(height * scale))
-  const dataUrl = await renderSvgToPng(xml, w, h, timeoutMs)
+  const dataUrl = await renderSvgToPng(xml, w, h, timeoutMs, backdropFor(svg))
   // ``data:image/png;base64,XXXX`` → ``XXXX``.
   const idx = dataUrl.indexOf(',')
   const bytes_b64 = idx >= 0 ? dataUrl.slice(idx + 1) : dataUrl
@@ -86,6 +88,32 @@ export async function captureGraphImage(
 }
 
 // --- internals ---
+
+/**
+ * Pick the opaque plate the PNG is composited onto.
+ *
+ * Normally the ACTIVE theme's ``--bg``: the DOT builders resolve tokens
+ * at build time, so a dark-theme graph already carries dark-theme
+ * colours and would be pale text on a white plate.
+ *
+ * The producer-supplied layout DOT is the exception. It is baked light
+ * and stays legible on screen only because of GraphCanvas's ``:deep``
+ * re-tint rules — and document CSS does not travel with the
+ * ``cloneNode`` + ``XMLSerializer`` standalone SVG we rasterise. On a
+ * dark plate that capture is black text on near-black, so pin it to the
+ * light ``--bg`` the producer baked for. ``renderSvg`` marks the host
+ * ``.producer-dot`` exactly when that DOT is what got laid out.
+ *
+ * Exported so the rule is testable without driving Image + canvas to
+ * completion, which happy-dom cannot do.
+ */
+export function backdropFor(svg) {
+  const host = typeof svg.closest === 'function' ? svg.closest('.svg-host') : null
+  if (host && host.classList.contains('producer-dot')) {
+    return TOKEN_FALLBACKS['--bg']
+  }
+  return token('--bg')
+}
 
 function serializeSvg(svg) {
   // Clone so we can patch xmlns + dimensions without mutating the
@@ -121,7 +149,13 @@ function svgDimensions(svg) {
   return { width: w, height: h }
 }
 
-function renderSvgToPng(svgXml, width, height, timeoutMs = PNG_RASTERISE_TIMEOUT_MS) {
+function renderSvgToPng(
+  svgXml,
+  width,
+  height,
+  timeoutMs = PNG_RASTERISE_TIMEOUT_MS,
+  backdrop = null,
+) {
   return new Promise((resolve, reject) => {
     const blob = new Blob([svgXml], { type: 'image/svg+xml;charset=utf-8' })
     const url = URL.createObjectURL(blob)
@@ -171,10 +205,18 @@ function renderSvgToPng(svgXml, width, height, timeoutMs = PNG_RASTERISE_TIMEOUT
           canvas.width = width
           canvas.height = height
           const ctx = canvas.getContext('2d')
-          // Solid white backdrop — the SVG has no background and most
+          // Solid backdrop — the SVG has no background and most
           // consumers (slides, docs, agent reads) prefer opaque PNGs
           // to checker-pattern transparency.
-          ctx.fillStyle = '#ffffff'
+          //
+          // It follows the ACTIVE theme rather than being pinned
+          // white, because the graph's own colours are already baked
+          // for that theme: the DOT builders resolve tokens at build
+          // time, so a dark-theme capture on a white plate is pale
+          // text on white. A caller that wants a light plate flips the
+          // theme first — the canvas re-lays-out on the flip.
+          // (``backdropFor`` overrides this for the producer DOT.)
+          ctx.fillStyle = backdrop || token('--bg')
           ctx.fillRect(0, 0, width, height)
           ctx.drawImage(img, 0, 0, width, height)
           resolve(canvas.toDataURL('image/png'))

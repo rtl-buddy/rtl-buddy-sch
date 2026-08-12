@@ -12,6 +12,7 @@
         <button
           type="button"
           class="open-marimo-btn"
+          :class="{ 'is-busy': store.axiNotebookLaunching }"
           :disabled="store.axiNotebookLaunching"
           @click="onOpenInMarimo"
         >
@@ -64,7 +65,7 @@
               R {{ fmtBps(b.throughput.read_bps) }} ·
               W {{ fmtBps(b.throughput.write_bps) }}
             </div>
-            <div class="bundle-bp" :class="bpClass(b.maxBp)">
+            <div class="bundle-bp rb-bp" :data-level="bpLevel(b.maxBp)">
               max bp {{ b.maxBp.toFixed(1) }}%
             </div>
           </li>
@@ -175,6 +176,8 @@ import {
 import { useViewerStore } from '../store.js'
 import { useEventSync } from '../composables/useEventSync.js'
 import { formatBandwidth as fmtBps } from '../format.js'
+import { bpLevel } from '../palette.js'
+import { token, themeVersion } from '../theme.js'
 
 ChartJS.register(BarElement, CategoryScale, LinearScale, Title, Tooltip, Legend)
 
@@ -315,6 +318,10 @@ const selectedBundleErrors = computed(() => {
 })
 
 const channelBarData = computed(() => {
+  // chart.js wants concrete colours, so read the tokens here and take
+  // a dependency on themeVersion — a theme flip re-runs the computed
+  // and chart.js redraws with the new palette.
+  themeVersion.value
   const b = selectedBundle.value
   if (!b) return { labels: [], datasets: [] }
   const ch = b.channels
@@ -324,24 +331,52 @@ const channelBarData = computed(() => {
       {
         label: 'util %',
         data: ['ar', 'aw', 'r', 'w', 'b'].map((k) => ch[k]?.util_pct ?? 0),
-        backgroundColor: '#3b82f6',
+        backgroundColor: token('--accent'),
       },
       {
         label: 'bp %',
         data: ['ar', 'aw', 'r', 'w', 'b'].map((k) => ch[k]?.bp_pct ?? 0),
-        backgroundColor: '#f59e0b',
+        backgroundColor: token('--warn'),
       },
     ],
   }
 })
 
-const channelBarOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  scales: { y: { max: 100, ticks: { callback: (v) => v + '%' } } },
+// chart.js's own chrome — tick labels, grid lines, the legend text —
+// defaults to a mid grey that is only legible on a light surface. It
+// takes concrete strings, not var(), so both option objects are
+// computed on the theme like the datasets are.
+function chartChrome() {
+  themeVersion.value
+  const fg = token('--fg-muted')
+  const line = token('--line')
+  return {
+    color: fg,
+    plugins: { legend: { labels: { color: fg } } },
+    scaleDefaults: { ticks: { color: fg }, grid: { color: line }, border: { color: line } },
+  }
 }
 
+const channelBarOptions = computed(() => {
+  const c = chartChrome()
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    color: c.color,
+    plugins: c.plugins,
+    scales: {
+      x: { ...c.scaleDefaults },
+      y: {
+        ...c.scaleDefaults,
+        max: 100,
+        ticks: { ...c.scaleDefaults.ticks, callback: (v) => v + '%' },
+      },
+    },
+  }
+})
+
 const latencyHistData = computed(() => {
+  themeVersion.value
   const hist = selectedBundle.value?.latency_cycles?.ar_to_r_first?.hist_log2 || []
   return {
     labels: hist.map((_, i) => `2^${i}`),
@@ -349,17 +384,25 @@ const latencyHistData = computed(() => {
       {
         label: 'count',
         data: hist,
-        backgroundColor: '#6366f1',
+        backgroundColor: token('--accent'),
       },
     ],
   }
 })
 
-const latencyHistOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  scales: { y: { beginAtZero: true } },
-}
+const latencyHistOptions = computed(() => {
+  const c = chartChrome()
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    color: c.color,
+    plugins: c.plugins,
+    scales: {
+      x: { ...c.scaleDefaults },
+      y: { ...c.scaleDefaults, beginAtZero: true },
+    },
+  }
+})
 
 function maxBp(block) {
   let m = 0
@@ -368,12 +411,6 @@ function maxBp(block) {
     if (c && typeof c.bp_pct === 'number' && c.bp_pct > m) m = c.bp_pct
   }
   return m
-}
-
-function bpClass(bp) {
-  if (bp > 15) return 'bp-bad'
-  if (bp > 5) return 'bp-warn'
-  return 'bp-ok'
 }
 
 // "Open in marimo" — auto-fills test + suite_dir from view.json's
@@ -442,7 +479,7 @@ async function onOpenInMarimo() {
   flex-direction: column;
   height: 100%;
   width: 100%;
-  background: #f9fafb;
+  background: var(--bg);
 }
 .axi-perf-view.empty-state {
   align-items: center;
@@ -452,8 +489,8 @@ async function onOpenInMarimo() {
 }
 .view-header {
   padding: 0.5rem 1rem;
-  border-bottom: 1px solid #e5e7eb;
-  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
   display: flex;
   align-items: baseline;
   gap: 1rem;
@@ -463,7 +500,7 @@ async function onOpenInMarimo() {
   font-size: 1rem;
 }
 .header-stats {
-  color: #475569;
+  color: var(--fg-muted);
   font-size: 0.75rem;
 }
 .header-actions {
@@ -472,15 +509,14 @@ async function onOpenInMarimo() {
 .open-marimo-btn {
   font-size: 0.75rem;
   padding: 0.25rem 0.65rem;
-  border: 1px solid #4f46e5;
-  background: #4f46e5;
-  color: #ffffff;
-  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-radius: var(--radius-2);
   cursor: pointer;
 }
 .open-marimo-btn:hover:not(:disabled) {
-  background: #4338ca;
-  border-color: #4338ca;
+  filter: brightness(0.92);
 }
 .time-window-chip {
   display: inline-flex;
@@ -488,46 +524,45 @@ async function onOpenInMarimo() {
   gap: 0.4rem;
   font-size: 0.7rem;
   padding: 0.15rem 0.45rem;
-  background: #eef2ff;
-  border: 1px solid #c7d2fe;
-  color: #3730a3;
+  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  color: var(--fg-muted);
   border-radius: 999px;
 }
 .time-window-clear {
   border: 0;
   background: transparent;
-  color: #3730a3;
+  color: var(--fg-muted);
   font-size: 0.9rem;
   line-height: 1;
   cursor: pointer;
   padding: 0;
 }
 .time-window-clear:hover {
-  color: #4338ca;
+  color: var(--fg);
 }
-.open-marimo-btn:disabled {
-  opacity: 0.5;
-  cursor: progress;
-}
+/* The launching state is the one deliberate exception to the shared
+   disabled treatment: "a request is in flight" is a different message
+   from "you can't do this here". app.css owns ``button.is-busy``. */
 .open-marimo-err {
   flex-basis: 100%;
   font-size: 0.75rem;
-  color: #b91c1c;
-  background: #fee2e2;
+  color: var(--err);
+  background: var(--err-bg);
   padding: 0.4rem 0.65rem;
-  border-radius: 4px;
+  border-radius: var(--radius-2);
   cursor: pointer;
 }
 .view-body {
   flex: 1;
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: var(--sidebar-w) 1fr;
   min-height: 0;
 }
 .bundle-list {
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid var(--line);
   overflow-y: auto;
-  background: #ffffff;
+  background: var(--panel);
 }
 .bundle-list h3 {
   margin: 0;
@@ -535,9 +570,9 @@ async function onOpenInMarimo() {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #64748b;
-  background: #f1f5f9;
-  border-bottom: 1px solid #e5e7eb;
+  color: var(--fg-muted);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
 }
 .bundle-list ul {
   margin: 0;
@@ -546,44 +581,44 @@ async function onOpenInMarimo() {
 }
 .bundle-list li {
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--line);
   cursor: pointer;
 }
-.bundle-list li:hover { background: #f1f5f9; }
+.bundle-list li:hover { background: var(--panel-2); }
 .bundle-list li.selected {
-  background: #e0e7ff;
-  border-left: 3px solid #4f46e5;
+  background: var(--panel-2);
+  border-left: 3px solid var(--accent);
   padding-left: calc(0.75rem - 3px);
 }
 .bundle-name {
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
-  color: #1e293b;
+  color: var(--fg);
 }
 .bundle-meta {
   font-size: 0.7rem;
-  color: #64748b;
+  color: var(--fg-muted);
   word-break: break-all;
 }
-.bundle-throughput { font-size: 0.7rem; color: #475569; }
+.bundle-throughput { font-size: 0.7rem; color: var(--fg-muted); }
+/* Backpressure colours are the shared ``.rb-bp`` ramp in app.css. This
+   view used to carry a third set of class names (bp-ok/warn/bad) and a
+   third amber. */
 .bundle-bp { font-size: 0.7rem; }
-.bp-ok { color: #16a34a; }
-.bp-warn { color: #d97706; }
-.bp-bad { color: #dc2626; font-weight: 600; }
 .bundle-detail {
   overflow-y: auto;
   padding: 1rem;
 }
 .bundle-detail-inner h3,
 .interconnect-detail h3 {
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.9rem;
   margin: 0 0 0.5rem;
   word-break: break-all;
 }
 .bundle-detail h4 {
   font-size: 0.8rem;
-  color: #475569;
+  color: var(--fg-muted);
   margin: 1rem 0 0.25rem;
 }
 .meta {
@@ -595,7 +630,7 @@ async function onOpenInMarimo() {
   margin-bottom: 0.5rem;
 }
 .meta dt {
-  color: #64748b;
+  color: var(--fg-muted);
   text-transform: uppercase;
   font-size: 0.65rem;
   letter-spacing: 0.05em;
@@ -604,17 +639,17 @@ async function onOpenInMarimo() {
   margin: 0;
   word-break: break-all;
 }
-.meta .bad { color: #dc2626; font-weight: 600; }
-.meta .muted { color: #94a3b8; }
-.lat-summary { margin: 0 0 0.25rem; font-size: 0.75rem; color: #475569; }
+.meta .bad { color: var(--err); font-weight: 600; }
+.meta .muted { color: var(--fg-faint); }
+.lat-summary { margin: 0 0 0.25rem; font-size: 0.75rem; color: var(--fg-muted); }
 .chart-wrap {
   height: 220px;
-  background: #ffffff;
-  border-radius: 4px;
+  background: var(--panel);
+  border-radius: var(--radius-2);
   padding: 0.25rem;
 }
 .empty {
-  color: #94a3b8;
+  color: var(--fg-faint);
   font-size: 0.85rem;
 }
 </style>

@@ -11,16 +11,15 @@
 // flag); default 'lines'. The per-channel progress bars live in
 // NodeDetail.vue, which imports `heatColor` so the bar colours match
 // the canvas tint.
+//
+// The ramp itself lives in ``palette.js`` — the shared hub token sheet
+// pins its lightness (``--cov-l``: 82% light, 38% dark) so the
+// schematic overlay, the graph pane and the coverage app agree.
 
-const NO_DATA_FILL = '#e5e7eb' // gray-200 — "this module has no LCOV data"
+import { coverageColor, coverageNoDataColor } from '../palette.js'
 
-export function heatColor(pct) {
-  // Hue ramp 0 (red) → 120 (green), pastel to match the clock
-  // overlay's palette weight so the two tint modes feel related.
-  const clamped = Math.max(0, Math.min(100, pct))
-  const hue = Math.round(clamped * 1.2)
-  return `hsl(${hue}, 70%, 82%)`
-}
+/** Continuous coverage tint. Re-exported: NodeDetail.vue imports it. */
+export const heatColor = coverageColor
 
 export function tintMetric(graph) {
   const meta = graph && graph.overlay_meta && graph.overlay_meta.coverage
@@ -66,7 +65,7 @@ export const coverageOverlay = {
         shape.style.fill = heatColor(channel.pct)
         group.setAttribute('data-overlay-coverage', String(channel.pct))
       } else if (enabled && hasCoverage) {
-        shape.style.fill = NO_DATA_FILL
+        shape.style.fill = coverageNoDataColor()
         group.setAttribute('data-overlay-coverage', 'no-data')
       } else {
         shape.style.fill = ''
@@ -82,7 +81,7 @@ export const coverageOverlay = {
       { label: `0% ${metric}`, swatch: heatColor(0), kind: 'fill' },
       { label: `50% ${metric}`, swatch: heatColor(50), kind: 'fill' },
       { label: `100% ${metric}`, swatch: heatColor(100), kind: 'fill' },
-      { label: 'no coverage data', swatch: NO_DATA_FILL, kind: 'fill' },
+      { label: 'no coverage data', swatch: coverageNoDataColor(), kind: 'fill' },
     ]
   },
 }

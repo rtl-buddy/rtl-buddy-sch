@@ -6,11 +6,13 @@
 // view.json v1.
 //
 // Visual contributions:
-//   - Synchroniser-set members get a teal border (#0d9488).
-//   - RDC-crossing edges get a dashed-orange stroke (#ea580c).
+//   - Synchroniser-set members get a teal border (``--reset-sync``).
+//   - RDC-crossing edges get a dashed-orange stroke (``--reset-bind``).
 //   - Other flops with a reset binding pick up a faint orange
 //     border so the reset overlay reads as a distinct family
 //     from the clock overlay's fill-based palette.
+
+import { token } from '../theme.js'
 
 export const resetOverlay = {
   name: 'reset',
@@ -24,13 +26,14 @@ export const resetOverlay = {
       const shape = group.querySelector('polygon, ellipse, rect, path')
       if (!shape) continue
       if (enabled && ov) {
-        const stroke = ov.is_synchronizer ? '#0d9488' : '#ea580c'
-        shape.setAttribute('stroke', stroke)
-        shape.setAttribute('stroke-width', '2')
+        shape.style.stroke = ov.is_synchronizer
+          ? token('--reset-sync')
+          : token('--reset-bind')
+        shape.style.strokeWidth = '2'
         group.setAttribute('data-overlay-reset', ov.reset || (ov.is_synchronizer ? 'sync' : ''))
       } else {
-        shape.removeAttribute('stroke')
-        shape.removeAttribute('stroke-width')
+        shape.style.stroke = ''
+        shape.style.strokeWidth = ''
         group.removeAttribute('data-overlay-reset')
       }
     }
@@ -41,17 +44,20 @@ export const resetOverlay = {
       )
       if (!path) continue
       if (enabled && ov && ov.crossing) {
-        // Only override colour when the clock overlay hasn't
-        // already claimed the edge (CDC red wins on dual-issue
-        // edges — same precedence as the dot renderer).
-        const existing = path.getAttribute('stroke')
-        if (!existing || existing === '#ea580c') {
-          path.setAttribute('stroke', '#ea580c')
+        // Only claim the edge when the clock overlay hasn't (CDC red
+        // wins on dual-issue edges — same precedence as the dot
+        // renderer). The marker attribute is the test, not the
+        // stroke colour: the colours are tokens now, so a string
+        // compare would break on a theme flip.
+        if (!path.hasAttribute('data-overlay-clock')) {
+          path.style.stroke = token('--reset-bind')
           path.setAttribute('stroke-dasharray', '6,3')
+          path.setAttribute('data-overlay-reset', 'crossing')
         }
-      } else if (path.getAttribute('stroke') === '#ea580c') {
-        path.removeAttribute('stroke')
+      } else if (path.getAttribute('data-overlay-reset') === 'crossing') {
+        path.style.stroke = ''
         path.removeAttribute('stroke-dasharray')
+        path.removeAttribute('data-overlay-reset')
       }
     }
   },
@@ -68,14 +74,14 @@ export const resetOverlay = {
     if (hasBinding) {
       entries.push({
         label: 'reset-binding',
-        swatch: '#ea580c',
+        swatch: token('--reset-bind'),
         kind: 'stroke',
       })
     }
     if (hasSync) {
       entries.push({
         label: 'reset-synchroniser',
-        swatch: '#0d9488',
+        swatch: token('--reset-sync'),
         kind: 'stroke',
       })
     }
@@ -85,7 +91,7 @@ export const resetOverlay = {
     if (hasRdcCrossing) {
       entries.push({
         label: 'RDC crossing',
-        swatch: '#ea580c',
+        swatch: token('--reset-bind'),
         kind: 'dashed-line',
       })
     }

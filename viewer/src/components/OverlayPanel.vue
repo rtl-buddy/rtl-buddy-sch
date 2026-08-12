@@ -59,12 +59,17 @@
 import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
 import { getOverlay, overlaySummary } from '../overlays/index.js'
+import { token, themeVersion } from '../theme.js'
 
 const store = useViewerStore()
 const summary = computed(() =>
   store.graph ? overlaySummary(store.graph) : [],
 )
 function legendFor(name) {
+  // Legend swatches are concrete colours an overlay resolved from a
+  // token, so a theme flip has to re-run this. Reading themeVersion
+  // during render is what registers the flip as a render dependency.
+  themeVersion.value
   const overlay = getOverlay(name)
   if (!overlay || typeof overlay.legend !== 'function') return []
   return overlay.legend(store.graph) || []
@@ -119,16 +124,17 @@ function _overlayReachesTbScope(overlayName) {
 // markers. Auto-filters per current graph and refreshes via Vue
 // reactivity when ``store.graph`` rebinds.
 const layoutLegend = computed(() => {
+  themeVersion.value // the swatch below is a resolved token, not a var()
   const dot = store.graph && store.graph.layout && store.graph.layout.dot
   if (typeof dot !== 'string' || dot.length === 0) return []
   const entries = []
   // Port→child signal flow edges. ``_emit_port_signal_edges`` emits
   // ``"_in_<port>" -> "<child>"`` / ``"<child>" -> "_out_<port>"``
-  // pairs with ``color="#cbd5e1"`` when no clock typing is known.
+  // pairs at the neutral line colour when no clock typing is known.
   if (dot.includes('"_in_') || dot.includes('"_out_')) {
     entries.push({
       label: 'port → instance signal',
-      swatch: '#cbd5e1',
+      swatch: token('--line-strong'),
       kind: 'solid-line',
     })
   }
@@ -160,28 +166,28 @@ function swatchStyle(item) {
   font-size: 0.85rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #64748b;
+  color: var(--fg-muted);
 }
 .overlay-panel ul { list-style: none; padding: 0; margin: 0; }
 .overlay-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.9rem;
   cursor: pointer;
 }
 .tag-unknown {
   font-size: 0.7rem;
-  background: #f1f5f9;
-  color: #64748b;
+  background: var(--panel-2);
+  color: var(--fg-muted);
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
 }
 .legend {
   margin-left: 1.5rem;
   font-size: 0.75rem;
-  color: #475569;
+  color: var(--fg-muted);
 }
 .legend li { display: flex; align-items: center; gap: 0.5rem; padding: 0.1rem 0; }
 /* Phase 6d (#99): TB-scope explanatory footnote on the clock/reset
@@ -190,7 +196,7 @@ function swatchStyle(item) {
 .legend-note {
   font-style: italic;
   font-size: 0.7rem;
-  color: #94a3b8;
+  color: var(--fg-faint);
   margin-top: 0.15rem;
   padding-left: 1.25rem;
 }
@@ -198,7 +204,7 @@ function swatchStyle(item) {
   width: 16px;
   height: 12px;
   border-radius: 2px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--line-strong);
   display: inline-block;
   box-sizing: border-box;
 }
@@ -235,7 +241,7 @@ function swatchStyle(item) {
 .layout-legend { margin-left: 0; }
 .empty {
   font-size: 0.85rem;
-  color: #64748b;
+  color: var(--fg-muted);
   margin: 0;
 }
 </style>
