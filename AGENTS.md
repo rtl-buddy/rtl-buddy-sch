@@ -294,6 +294,29 @@ consumer-side contract is enforced in `annotations.py`:
 When rtl-buddy-cdc bumps the schema, update both `annotations.py`'s
 loader and `tests/fixtures/domain_maps/` in the same change set.
 
+## Cross-repo coupling — hub protocol (this repo is source of truth)
+
+`schemas/hub-protocol-v1.json` + `docs/hub-protocol.md` are the wire
+contract for `rtl-buddy-hub`. rtl_buddy **vendors the schema file
+byte-for-byte** at `src/rtl_buddy/hub/schema/hub-protocol-v1.json`, with
+a byte-compare guard in its `tests/test_hub_protocol.py`. Consequences:
+
+- Every schema edit is a lockstep two-repo change set: edit here,
+  copy the exact bytes there, land both together. A reformat is a
+  breaking change to the guard even when the JSON is equivalent.
+- Additions stay on `v: 1`. The version bumps only when a `type` is
+  removed or renamed — consumers already drop unknown `type`s at
+  DEBUG (§11 of the doc), so a new event type is forward-compatible.
+- Adding a peer means adding its `origin` in **eight** places (the
+  envelope, `state_snapshot`'s three cached-state blocks + its peer
+  list, `hello`'s envelope + `client`, `welcome`'s
+  `registered_clients`). `tests/test_hub_protocol_schema.py`
+  enum-sweeps for a half-updated copy and checks the doc's prose
+  origin lists agree.
+- A new pane gets its own origin, never a second `view` — the hub
+  allows one client per origin, so sharing a slot makes two panes
+  evict each other.
+
 ## Commit / branch / release conventions
 
 - Commit messages: imperative subject, blank line, body that explains

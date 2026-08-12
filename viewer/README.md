@@ -122,7 +122,10 @@ dispatched to the OS. Phase 5 (offline) ergonomics are preserved.
 ### Protocol
 
 Envelope shape, error codes, and message types are pinned by
-[`hub-protocol-v1.json`](https://github.com/rtl-buddy/rtl_buddy/blob/main/src/rtl_buddy/hub/schema/hub-protocol-v1.json)
-in `rtl_buddy`. The viewer registers as `origin: "view"`; the hub
+[`schemas/hub-protocol-v1.json`](../schemas/hub-protocol-v1.json) in
+this repo — the source of truth, which `rtl_buddy` vendors
+byte-for-byte at `src/rtl_buddy/hub/schema/hub-protocol-v1.json`
+behind a byte-compare guard test. The viewer registers as
+`origin: "view"`; the hub
 suppresses echo-back to the originating origin class, so a viewer
 click never bounces back as a redundant `selection_changed`.
