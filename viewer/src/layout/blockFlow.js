@@ -48,7 +48,12 @@ function dotStyle() {
     box: token('--panel-2'),
     text: token('--fg'),
     frame: token('--fg-faint'),
-    line: token('--line-strong'),
+    // Edge stroke (and, via ``color``, the arrowhead fill). Was
+    // ``--line-strong``, a surface-divider tier that reads as "barely
+    // there" once it's a 1px polyline on the open canvas rather than a
+    // border between two filled areas. Connectivity is the whole point
+    // of the block-flow view, so the edges get the readable text tier.
+    line: token('--fg-muted'),
     ifaceBg: token('--warn-bg'),
   }
 }

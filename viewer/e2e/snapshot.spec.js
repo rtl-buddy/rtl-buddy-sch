@@ -107,7 +107,7 @@ for (const { name } of CASES) {
       // ``evaluate`` so we don't get blocked by Playwright's
       // visibility/scroll-into-view actionability checks.
       await firstNode.dispatchEvent('click')
-      const detail = page.locator('.node-detail h3')
+      const detail = page.locator('.node-detail h3 .inst-path')
       await expect(detail).toHaveText(targetId)
     })
 

@@ -6,7 +6,7 @@
 
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 
-import { hubApps, isHubServed, switcherLinkAttrs } from '../src/hubApps.js'
+import { hubApps, isHubServed, siblingAppHref, switcherLinkAttrs } from '../src/hubApps.js'
 import { installFavicon, FAVICON_16_URL, FAVICON_32_URL, LOGO_URL } from '../src/identity.js'
 import {
   applyStoredThemePreference,
@@ -58,7 +58,7 @@ describe('app switcher', () => {
       __RTL_BUDDY_GRAPH_URL__: '/graph.json',
       __RTL_BUDDY_COV_URL__: '/cov.json',
     })
-    expect(apps.map((a) => a.label)).toEqual(['⌂ hub', 'graph ↗', 'coverage ↗'])
+    expect(apps.map((a) => a.label)).toEqual(['⌂ hub', 'gph ↗', 'cov ↗'])
   })
 
   it('opens siblings in a new tab so the view peer slot survives', () => {
@@ -79,6 +79,22 @@ describe('app switcher', () => {
     // same-tab costs nothing that Back does not undo.
     expect(byKey.hub).toEqual({ href: '/' })
     expect(byKey.hub.target).toBeUndefined()
+  })
+
+  it('siblingAppHref answers on the same gate, for callers off the switcher', () => {
+    // NodeDetail's "open graph ↗" / "open coverage ↗" ask this rather
+    // than re-deriving the gate, so there is one rule per app.
+    const win = {
+      __RTL_BUDDY_HUB__: '127.0.0.1:8123',
+      __RTL_BUDDY_GRAPH_URL__: '/graph.json',
+    }
+    expect(siblingAppHref('graph', win)).toBe('/graph')
+    expect(siblingAppHref('cov', win)).toBe(null)
+    expect(siblingAppHref('graph', { ...win, __RTL_BUDDY_GRAPH_URL__: '' })).toBe(null)
+    // Not hub-served, and an app nobody has heard of.
+    expect(siblingAppHref('graph', {})).toBe(null)
+    expect(siblingAppHref('hub', win)).toBe(null)
+    expect(siblingAppHref('nope', win)).toBe(null)
   })
 })
 

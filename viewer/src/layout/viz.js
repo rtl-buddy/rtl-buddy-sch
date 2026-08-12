@@ -17,6 +17,22 @@ import { token } from '../theme.js'
 
 let _vizPromise = null
 
+// Typeface for every DOT the SPA builds itself. The producer's
+// embedded DOT already sets this; ``graphToDot`` used to set nothing,
+// so viz.js fell back to its built-in Times serif — and because a
+// descended / scoped view ALWAYS goes through ``graphToDot``
+// (``displayGraph`` drops the embedded layout), drilling into a block
+// silently changed the schematic's typeface mid-session. Mono is also
+// the type rule for data (ids, instance paths, signal names).
+export const DOT_FONT = 'Courier,monospace'
+
+// Node text inset, in inches — ``x,y``. Graphviz's default (0.11,0.055)
+// leaves barely a character of horizontal padding, so a long instance
+// path (``demo_tiny_alu_subsys_csr``) visibly touches, and at some
+// font metrics overruns, its box. 0.4 horizontal matches the producer
+// DOT's node margin exactly, so the two renderers size boxes the same.
+export const NODE_MARGIN = '0.4,0.06'
+
 async function getViz() {
   if (_vizPromise == null) {
     // ``instance()`` returns a single shared Viz instance per
@@ -111,6 +127,13 @@ export function graphToDot(graph) {
   const nodeFill = token('--panel-2')
   const nodeText = token('--fg')
   const frame = token('--fg-faint')
+  // Edges are a separate tier from the node/cluster frames. ``--fg-faint``
+  // is a hairline colour that works for a box outline sitting on a filled
+  // body, but a 1px unfilled polyline in the same value all but vanishes
+  // against the canvas. Connectivity is the point of the diagram, so edges
+  // (and their arrowheads, which inherit ``color``) get the readable
+  // ``--fg-muted`` tier instead.
+  const edgeLine = token('--fg-muted')
   const cdc = token('--err')
   const lines = []
   lines.push('digraph view {')
@@ -118,10 +141,19 @@ export function graphToDot(graph) {
   lines.push('  compound=true;')
   lines.push(
     `  node [shape=box, style="rounded,filled", fillcolor="${nodeFill}", ` +
-      `color="${frame}", fontcolor="${nodeText}"];`,
+      `color="${frame}", fontcolor="${nodeText}", fontname="${DOT_FONT}", ` +
+      `margin="${NODE_MARGIN}"];`,
   )
-  lines.push(`  edge [arrowsize=0.7, color="${frame}", fontcolor="${nodeText}"];`)
-  lines.push(`  bgcolor="transparent"; fontcolor="${nodeText}";`)
+  lines.push(
+    `  edge [arrowsize=0.7, color="${edgeLine}", fontcolor="${nodeText}", ` +
+      `fontname="${DOT_FONT}"];`,
+  )
+  // Graph-scope ``fontname`` covers the root graph label AND is what
+  // subgraphs inherit — but each cluster re-states it below anyway, so
+  // the attribute survives anyone reordering these defaults later.
+  lines.push(
+    `  bgcolor="transparent"; fontcolor="${nodeText}"; fontname="${DOT_FONT}";`,
+  )
 
   const rootId = graph.top
   const rootNode = graph.nodes.find((n) => n.id === rootId)
@@ -152,6 +184,7 @@ export function graphToDot(graph) {
     lines.push(`    label="${labelEscape(rootLabel)}";`)
     lines.push('    labelloc="t";')
     lines.push(`    fontcolor="${nodeText}";`)
+    lines.push(`    fontname="${DOT_FONT}";`)
     lines.push('    style="rounded";')
     lines.push(`    color="${frame}";`)
     lines.push('    penwidth=2;')
@@ -299,6 +332,7 @@ function emitSubtree(
   lines.push(`${indent}  labelloc="t";`)
   lines.push(`${indent}  labeljust="l";`)
   lines.push(`${indent}  fontcolor="${style.text}";`)
+  lines.push(`${indent}  fontname="${DOT_FONT}";`)
   lines.push(`${indent}  style="rounded";`)
   lines.push(`${indent}  color="${style.frame}";`)
   lines.push(`${indent}  penwidth=1;`)

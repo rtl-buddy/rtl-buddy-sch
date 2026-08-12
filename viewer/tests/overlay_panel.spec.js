@@ -191,3 +191,69 @@ describe('OverlayPanel TB-scope legend note (#99 / 6d)', () => {
     expect(wrapper.text()).not.toContain('(no reset map above DUT)')
   })
 })
+
+// --- live coverage entry ---------------------------------------------
+//
+// The hub's ``/cov.json`` is not in ``overlays_present`` — it isn't
+// something the producer wrote — so the panel lists it separately,
+// with the run it came from. These cover the gating (data present or
+// no entry at all) and the toggle's write-through to the store.
+describe('OverlayPanel live coverage', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  function withCoverage(store) {
+    store.covData = {
+      generated_at: '2026-08-07T09:15:00Z',
+      files: [{ path: 'dut.sv', modules: ['dut'], totals: { line: { found: 10, hit: 7 } } }],
+    }
+  }
+
+  it('lists no live entry when the hub has no coverage', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(dutPayload()))
+    const wrapper = mount(OverlayPanel)
+    expect(wrapper.find('[data-testid="cov-live-toggle"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain("from the hub's latest run")
+  })
+
+  it('lists coverage with its provenance date once the payload lands', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(dutPayload()))
+    withCoverage(store)
+    const wrapper = mount(OverlayPanel)
+    expect(wrapper.find('[data-testid="cov-live-toggle"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain("from the hub's latest run · 2026-08-07")
+    // Tagged ``live`` so it can't be confused with a payload overlay
+    // that happens to share the name.
+    expect(wrapper.find('.tag-live').text()).toBe('live')
+    // Legend: the ramp anchors plus the no-data grey.
+    expect(wrapper.text()).toContain('100% lines')
+    expect(wrapper.text()).toContain('no coverage data')
+  })
+
+  it('defaults to ticked, and the toggle writes through to the store', async () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(dutPayload()))
+    withCoverage(store)
+    const wrapper = mount(OverlayPanel)
+    const box = wrapper.find('[data-testid="cov-live-toggle"]')
+    expect(box.element.checked).toBe(true)
+    await box.trigger('change')
+    expect(store.covEnabled).toBe(false)
+    expect(store.covEnabledTouched).toBe(true)
+  })
+
+  it('replaces the "no overlays" empty state rather than sitting under it', () => {
+    // A payload with no overlays at all, on a hub that has coverage:
+    // the panel is not empty, so the "produce them with…" hint would
+    // be wrong.
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(dutPayload({ overlays_present: [] })))
+    withCoverage(store)
+    const wrapper = mount(OverlayPanel)
+    expect(wrapper.text()).not.toContain('No overlays in this view.')
+    expect(wrapper.find('[data-testid="cov-live-toggle"]').exists()).toBe(true)
+  })
+})

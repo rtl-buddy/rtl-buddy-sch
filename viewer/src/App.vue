@@ -7,31 +7,33 @@
     <header class="app-header">
       <div class="app-identity">
         <img class="app-logo" :src="LOGO_URL" alt="" width="18" height="18" />
-        <h1>rtl-buddy-view</h1>
+        <!-- Display name only (displayNames.js): the package, the repo
+             and the ``view`` wire origin are unchanged. -->
+        <h1>{{ APP_DISPLAY_NAME }}</h1>
         <span class="design-name" v-if="store.graph">{{ store.graph.top }}</span>
-        <span
-          v-if="hub.serverVersion.value"
-          class="build-chip"
-          :title="`rtl-buddy ${hub.serverVersion.value}`"
-        >rtl-buddy <code>{{ shortVersion }}</code></span>
-        <span
-          v-if="bundleHash"
-          class="build-chip"
-          :title="`SPA bundle index-${bundleHash}.js`"
-        >spa <code>{{ bundleHash }}</code></span>
+        <!-- The rtl-buddy / spa build chips used to sit here. They
+             answer a once-a-session question and now live in the hub
+             popover's "versions" section; the top bar keeps only
+             wordmark, model name, tabs, DUT/TB, picker, switcher. -->
       </div>
       <div class="app-controls">
+        <!-- "Design", not "Hierarchy": the canvas has its own
+             Hierarchy/Flow mode tabs visible at the same time, and two
+             controls with the same word on them a few pixels apart is
+             the collision this rename removes. The store's tab id
+             stays ``hierarchy`` (it is on URLs and in tests). -->
         <nav class="app-tabs" v-if="store.status === 'ready'">
           <button
             type="button"
             :class="{ active: store.activeTab === 'hierarchy' }"
+            title="The design hierarchy canvas with its overlays"
             @click="store.setActiveTab('hierarchy')"
-          >Hierarchy</button>
+          >Design</button>
           <button
             type="button"
             :class="{ active: store.activeTab === 'axi-perf' }"
             :disabled="!hasAxiPerf"
-            :title="hasAxiPerf ? '' : 'Load a view.json with --overlay axi-perf=...'"
+            :title="hasAxiPerf ? 'AXI throughput and backpressure per bundle' : AXI_PERF_HINT"
             @click="store.setActiveTab('axi-perf')"
           >AXI Performance</button>
         </nav>
@@ -65,6 +67,12 @@
       v-if="store.graph && (store.status !== 'ready' || store.activeTab === 'hierarchy')"
     >
       <aside class="sidebar" :style="{ width: sidebarWidth + 'px' }">
+        <!-- The hierarchy outline goes FIRST: it is the design's index
+             and the thing every other panel is about. Verdi/Vivado both
+             put it here for the same reason. -->
+        <CollapsiblePanel title="Hierarchy" persist-key="hierarchy">
+          <HierarchyTree ref="treeRef" />
+        </CollapsiblePanel>
         <CollapsiblePanel title="Overlays" persist-key="overlays">
           <OverlayPanel />
         </CollapsiblePanel>
@@ -196,6 +204,7 @@ import ModelPicker from './components/ModelPicker.vue'
 import ToastHost from './components/ToastHost.vue'
 import DiagnosticsPanel from './components/DiagnosticsPanel.vue'
 import CollapsiblePanel from './components/CollapsiblePanel.vue'
+import HierarchyTree from './components/HierarchyTree.vue'
 import { initHub, useHub } from './composables/useHub.js'
 import { initEventSync } from './composables/useEventSync.js'
 import {
@@ -204,8 +213,11 @@ import {
   SIDEBAR_MAX_WIDTH_PX,
 } from './layout/constants.js'
 import { hubApps, switcherLinkAttrs } from './hubApps.js'
+import { APP_DISPLAY_NAME } from './displayNames.js'
 import { LOGO_URL } from './identity.js'
 import { initTheme, themePreference, setThemePreference } from './theme.js'
+import { AXI_PERF_HINT } from './cliHints.js'
+import { makeGlobalKeydownHandler } from './keyboard.js'
 
 const store = useViewerStore()
 const hub = useHub()
@@ -265,31 +277,6 @@ const diagnosticsCount = computed(() => {
   return n
 })
 
-// Truncate the long ``rtl-buddy`` build string to its leading
-// semver portion for the header chip; full version lives in the
-// tooltip.
-const shortVersion = computed(() => {
-  const raw = hub.serverVersion.value || ''
-  const m = raw.match(/^[0-9]+\.[0-9]+\.[0-9]+(?:\.[a-z0-9]+)?/i)
-  return m ? m[0] : raw
-})
-
-// Extract the SPA bundle hash from the loaded ``index-<hash>.js``
-// filename so the user can confirm which build they're on (handy
-// when an editable-install hub re-stages the bundle but the
-// browser tab might still be on the old one). Empty under the
-// Vite dev server (no hashed asset) or the offline embed flow —
-// both surface as "no chip".
-function readBundleHash() {
-  if (typeof document === 'undefined') return ''
-  for (const s of document.querySelectorAll('script[src]')) {
-    const m = s.src.match(/index-([\w-]+)\.js/)
-    if (m) return m[1]
-  }
-  return ''
-}
-const bundleHash = readBundleHash()
-
 // App switcher (top-bar right). Empty unless the hub is serving us —
 // off the hub, ``/`` and ``/graph`` are not ours to link to.
 const switcherApps = hubApps()
@@ -321,9 +308,21 @@ function onDrop(e) {
   if (file) store.loadFromFile(file)
 }
 
+// Global keyboard shortcuts (Esc / u / "/"). The behaviour lives in
+// keyboard.js so it can be unit-tested against a bare KeyboardEvent;
+// App.vue owns nothing but the listener's lifetime and the one DOM
+// handle the shortcuts need (the hierarchy filter box).
+const treeRef = ref(null)
+const onGlobalKeydown = makeGlobalKeydownHandler({
+  store,
+  hub,
+  focusTreeFilter: () => treeRef.value?.focusFilter?.() ?? false,
+})
+
 onMounted(() => {
   document.addEventListener('dragover', onDragOver)
   document.addEventListener('drop', onDrop)
+  document.addEventListener('keydown', onGlobalKeydown)
   // Watch for OS colour-scheme flips and ``data-theme`` pins so the
   // canvas — whose colours are baked, not inherited — redraws.
   initTheme()
@@ -337,6 +336,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('dragover', onDragOver)
   document.removeEventListener('drop', onDrop)
+  document.removeEventListener('keydown', onGlobalKeydown)
 })
 </script>
 
@@ -390,17 +390,6 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.build-chip {
-  font-size: var(--fs-small);
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
-.build-chip code {
-  background: var(--panel-2);
-  padding: 0.05rem 0.35rem;
-  border-radius: var(--radius-1);
-  margin-left: 0.25rem;
 }
 .app-tabs { display: flex; gap: 0; }
 .app-tabs button {

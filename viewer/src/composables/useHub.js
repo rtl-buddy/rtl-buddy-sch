@@ -10,7 +10,9 @@
 //   - state: 'disconnected' | 'connecting' | 'ready' | 'error'
 //   - peers: ref<string[]>          — registered_clients from welcome
 //   - serverVersion: ref<string|null>
-//   - lastError: ref<{code,message,at}|null>
+//   - lastError: ref<{code,message,at}|null>  — sticky, popover log
+//   - errorNotice: ref<same|null>   — the expiring copy the status
+//                                     strip's message slot renders
 //   - lastClick: ref<Node|null>     — Phase 5 surface, kept for compat
 //   - notifyClick(node)             — primary action: send selection_changed
 //                                     when live; fall back to opening
@@ -39,18 +41,38 @@ const RECONNECT_FACTOR = 1.8
 // (latest-wins per signal). This gives ~30 Hz worst-case redraw and
 // is the throttling layer #24's acceptance criteria asks for.
 const WAVE_VALUES_FLUSH_MS = 33
-// How long the disambiguation popover stays visible after a multi-
-// match ``selection_changed`` lands. The smallest-range default
-// (``instance_path[0]``) is applied immediately so the canvas reacts;
-// the picker just gives the user a window to override before it
-// auto-dismisses. 4s is short enough not to clutter the toolbar but
-// long enough to read a handful of paths and click one.
-const SELECTION_PICKER_AUTODISMISS_MS = 4000
+// How long a hub ``error`` stays in the status strip's message slot.
+// The toast is the full rendering; the strip carries a few-word status
+// so a glance at the chrome says "something went wrong" — and then
+// stops saying it. Before this, an error from the first second of the
+// session was still red in the strip half an hour later.
+const HUB_ERROR_STRIP_TTL_MS = 8000
+// Settle window after ``welcome`` during which incoming focus /
+// selection events are treated as the hub REPLAYING its cached slot to
+// us (HubState._replay_cached_state does exactly that for a freshly
+// joining peer). Replayed events are not a user gesture, so a picker
+// popping open on page load is unexplained UI — inside the window we
+// apply the default silently instead.
+//
+// TRADE-OFF: a genuinely concurrent click in another pane during the
+// same window also applies silently (the user gets the default match
+// with no chance to override). That is the cheap side of the trade —
+// the selection is still applied and correct for the common case, and
+// the alternative (a picker nobody asked for on every page load) was
+// the reported defect.
+const HUB_REPLAY_SETTLE_MS = 1500
 
 const state = ref('disconnected')
 const peers = ref([])
 const serverVersion = ref(null)
+// Sticky record of the last hub error — the popover's "last error"
+// row keeps showing it for as long as it is the last thing that
+// happened, because that row is a log, not a notification.
 const lastError = ref(null)
+// The SAME error, but only while the status strip should still be
+// talking about it. Expires on ``HUB_ERROR_STRIP_TTL_MS`` and clears
+// on a welcome, so the strip's message slot returns to neutral.
+const errorNotice = ref(null)
 const lastClick = ref(null)
 // When the hub kicks us with code=superseded, we know another
 // browser tab took over the view slot — fighting to reconnect
@@ -84,16 +106,102 @@ let _wavePending = null
 // existing view registration. Set when a prior hello got an
 // "already registered" error so the retry takes over.
 let _pendingTakeover = false
-// Auto-dismiss timer for the disambiguation popover. Lives on the
-// composable singleton (not in the component) so a Vue remount mid-
-// timeout doesn't strand the picker open.
-let _pickerDismissTimer = null
+// Expiry timer for the status strip's error slot.
+let _errorNoticeTimer = null
+// Timestamp of the last ``welcome``, in ms. Anchors the replay settle
+// window; 0 means we have never been welcomed this session.
+let _welcomeAt = 0
 
-function clearPickerDismissTimer() {
-  if (_pickerDismissTimer) {
-    clearTimeout(_pickerDismissTimer)
-    _pickerDismissTimer = null
+function clearErrorNoticeTimer() {
+  if (_errorNoticeTimer) {
+    clearTimeout(_errorNoticeTimer)
+    _errorNoticeTimer = null
   }
+}
+
+// Put an error in the strip's message slot and arm its expiry. One
+// event, one full rendering: the toast (driven by store.hubError) says
+// the sentence, this says a few words and then goes quiet.
+function raiseErrorNotice(err) {
+  clearErrorNoticeTimer()
+  errorNotice.value = err
+  _errorNoticeTimer = setTimeout(() => {
+    errorNotice.value = null
+    _errorNoticeTimer = null
+  }, HUB_ERROR_STRIP_TTL_MS)
+}
+
+function clearErrorNotice() {
+  clearErrorNoticeTimer()
+  errorNotice.value = null
+}
+
+// True while incoming state events are most likely the hub replaying
+// its cached slot at us rather than reporting a live user gesture.
+function inReplaySettleWindow() {
+  return _welcomeAt > 0 && Date.now() - _welcomeAt < HUB_REPLAY_SETTLE_MS
+}
+
+// Show the disambiguation picker for an ambiguous incoming selection.
+// Two wire types produce ambiguity — a ``selection_changed`` carrying
+// several instance paths, and a ``graph_focus`` naming a module
+// instantiated more than once — and they must behave identically, so
+// the presentation decision lives here rather than once per case.
+//
+// The picker has no timer: it dismisses on a pick, Esc, a click
+// outside it, or the next selection to arrive. A popover that
+// disappears while the user is still reading the paths is a worse
+// failure than one that waits to be told.
+function presentSelectionCandidates(paths) {
+  if (inReplaySettleWindow()) {
+    // Replayed state, not a click — apply the default (paths[0], the
+    // shallowest match) with no picker. See HUB_REPLAY_SETTLE_MS.
+    const first = Array.isArray(paths) ? paths[0] : null
+    if (typeof first === 'string' && first.length > 0) {
+      _store?.applyHubSelection(first)
+    }
+    return
+  }
+  _store?.presentSelectionCandidates(paths)
+}
+
+// ``graph_focus`` node ids the SPA can act on. The knowledge graph's
+// id vocabulary is wider than this view's (``inst:``, ``test:``,
+// ``covitem:``, …); ``module:<name>`` is the only one that names
+// something a hierarchy of instances can be resolved against.
+const MODULE_TARGET_PREFIX = 'module:'
+
+/**
+ * Resolve a ``graph_focus`` target onto the loaded view.
+ *
+ * The graph pane and the coverage pane both speak in MODULE types
+ * (one graph node per module, one coverage row per module) while this
+ * view is a tree of INSTANCES, so a focus is a 1→N resolution: every
+ * node whose ``module`` is the named type. One match selects, several
+ * open the same picker a multi-match ``selection_changed`` does.
+ *
+ * Anything else is a soft miss — a target this consumer cannot
+ * resolve is silently kept, per the ``graph_focus`` description in
+ * schemas/hub-protocol-v1.json. That covers both a foreign id
+ * vocabulary (``inst:``/``test:``) and a module that is real in the
+ * knowledge graph but absent from the model currently loaded here;
+ * neither is an error worth interrupting the user for.
+ */
+function focusGraphNode(target) {
+  if (typeof target !== 'string' || !target.startsWith(MODULE_TARGET_PREFIX)) return
+  const module = target.slice(MODULE_TARGET_PREFIX.length)
+  if (module.length === 0) return
+  const byModule = _store?.nodeIdsByModule
+  const ids = (byModule && byModule.get(module)) || []
+  if (ids.length === 0) return
+  if (ids.length === 1) {
+    _store?.applyHubSelection(ids[0])
+    return
+  }
+  // Already shallowest-first then lexicographic (the store getter
+  // sorts), so ``[0]`` — the default the picker applies immediately —
+  // is the least-nested instance of the module.
+  presentSelectionCandidates(ids.slice())
 }
 
 function makeId() {
@@ -142,6 +250,27 @@ function sendEnvelope(env) {
     return false
   }
 }
+
+// One construction site for the fire-and-forget EVENT envelopes this
+// client produces. Returns ``sendEnvelope``'s boolean so a caller can
+// tell "the hub has it" from "we are not connected" — which is what
+// the cross-app "open X ↗" buttons need before they open a tab that
+// would otherwise land unfocused.
+function sendEvent(type, payload) {
+  return sendEnvelope({
+    v: PROTOCOL_VERSION,
+    id: makeId(),
+    origin: 'view',
+    kind: 'event',
+    type,
+    payload,
+  })
+}
+
+// Optional narrowing hints ``cov_focus`` accepts beside ``target``.
+// The payload is ``additionalProperties: false``, so we forward these
+// by name rather than spreading whatever the caller handed us.
+const COV_FOCUS_HINTS = ['metric', 'line', 'item']
 
 function flushWaveValues() {
   _waveTimer = null
@@ -193,6 +322,13 @@ function sendHello() {
       'signal_selected',
       'wave_values_changed',
       'diagnostics_set',
+      // Both directions: the graph and coverage panes send it and we
+      // resolve it onto an instance (focusGraphNode), and NodeDetail's
+      // "send → graph" produces it for the selected node.
+      'graph_focus',
+      // Produced only — the coverage pane consumes it. Advertised so a
+      // hub roster shows which app can drive the cov pane's focus.
+      'cov_focus',
     ],
   }
   // ``takeover`` is opt-in per-hello: the hub kicks any pre-
@@ -236,6 +372,13 @@ function applyEnvelope(env) {
       // Hello accepted — clear the takeover-retry flag so the next
       // reconnect starts polite again.
       _pendingTakeover = false
+      // A welcome means the connection is healthy again: whatever the
+      // strip was complaining about is history. (``lastError`` is
+      // deliberately NOT cleared — the popover's row is a log.)
+      clearErrorNotice()
+      // Anchor for the replay settle window: the hub replays its
+      // cached focus/selection slot immediately after this envelope.
+      _welcomeAt = Date.now()
       break
     }
 
@@ -255,18 +398,23 @@ function applyEnvelope(env) {
         // we also surface the picker so the user can override if
         // the resolver's tie-break picked the wrong sibling
         // (rtl-buddy-view#55).
-        _store?.presentSelectionCandidates(ip)
-        clearPickerDismissTimer()
-        _pickerDismissTimer = setTimeout(() => {
-          _store?.dismissSelectionCandidates()
-          _pickerDismissTimer = null
-        }, SELECTION_PICKER_AUTODISMISS_MS)
+        presentSelectionCandidates(ip)
         break
       }
       const id = Array.isArray(ip) ? ip[0] : ip
       if (typeof id === 'string' && id.length > 0) {
         _store?.applyHubSelection(id)
       }
+      break
+    }
+
+    case 'graph_focus': {
+      // A node clicked in the /graph pane, or a module pill clicked in
+      // /cov. Nothing is broadcast back — applyHubSelection is a local
+      // write by design, and echoing a selection we were handed is how
+      // two panes end up bouncing one click between them forever.
+      if (env.origin === 'view') break
+      focusGraphNode(env.payload?.node)
       break
     }
 
@@ -310,14 +458,19 @@ function applyEnvelope(env) {
         at: Date.now(),
       }
       lastError.value = err
-      _store?.applyHubError(err)
       // Hub kicked us out because a newer view tab took the slot.
       // Stop auto-reconnect (we'd just keep losing the race) and
       // flip the ``superseded`` flag so the UI can surface a
       // banner. ``reconnect()`` clears it if the user asks to
       // come back.
+      //
+      // ONE EVENT, ONE SURFACE: superseded already owns a dedicated
+      // banner (with its "Take back" affordance) in the strip's
+      // message slot, so it does NOT also raise a toast or an error
+      // notice — that was the same fact rendered three times.
       if (err.code === 'superseded') {
         superseded.value = true
+        clearErrorNotice()
         _autoReconnect = false
         clearReconnectTimer()
         if (_socket) {
@@ -325,6 +478,8 @@ function applyEnvelope(env) {
         }
         break
       }
+      _store?.applyHubError(err)
+      raiseErrorNotice(err)
       // First hello refused because the slot is in use. Retry
       // once with ``takeover=true`` so the new tab wins. We don't
       // loop on this — if takeover ALSO fails (e.g. due to a
@@ -541,6 +696,7 @@ export function useHub() {
     peers,
     serverVersion,
     lastError,
+    errorNotice,
     lastClick,
     notifyClick(node) {
       lastClick.value = node || null
@@ -613,6 +769,44 @@ export function useHub() {
       }
       return false
     },
+    /**
+     * Push a focus onto the graph pane: ``graph_focus {node}``.
+     *
+     * ``node`` is a knowledge-graph node id (``module:<name>`` is the
+     * only part of that vocabulary this app can name from a selected
+     * instance). Two callers, one envelope: "send → graph" stops
+     * there, and "open graph ↗" opens the tab only once this returned
+     * true — the hub caches the latest focus and replays it to a peer
+     * that registers later, so the emit has to land BEFORE the tab
+     * exists or the new tab comes up on nothing.
+     *
+     * Returns false when the socket is not open (nothing was sent).
+     */
+    focusGraph(nodeRef) {
+      if (typeof nodeRef !== 'string' || nodeRef.length === 0) return false
+      return sendEvent('graph_focus', { node: nodeRef })
+    },
+    /**
+     * The same push for the coverage pane: ``cov_focus {target, …}``.
+     *
+     * Accepts a bare target string or the full payload object; the
+     * optional narrowing hints (``metric``, ``line``, ``item``) are
+     * forwarded by name because the payload is closed.
+     *
+     * Returns false when there is no usable target or the socket is
+     * not open.
+     */
+    focusCov(payload) {
+      const target = typeof payload === 'string' ? payload : payload && payload.target
+      if (typeof target !== 'string' || target.length === 0) return false
+      const out = { target }
+      if (payload && typeof payload === 'object') {
+        for (const key of COV_FOCUS_HINTS) {
+          if (payload[key] !== undefined) out[key] = payload[key]
+        }
+      }
+      return sendEvent('cov_focus', out)
+    },
     disconnect,
     superseded,
     wasEverReady,
@@ -621,12 +815,10 @@ export function useHub() {
      * (rtl-buddy-view#55). Updates the store (selection + clears the
      * candidate list) AND broadcasts a ``selection_changed`` envelope
      * from origin=view so the other peers (nvim, wave) lock onto the
-     * same path. Cancels the auto-dismiss timer so a fast double-pick
-     * doesn't get clobbered by a still-pending timeout.
+     * same path.
      */
     chooseSelectionCandidate(path) {
       if (typeof path !== 'string' || path.length === 0) return
-      clearPickerDismissTimer()
       _store?.chooseSelectionCandidate(path)
       sendEnvelope({
         v: PROTOCOL_VERSION,
@@ -639,12 +831,10 @@ export function useHub() {
     },
     /**
      * Dismiss the disambiguation popover without changing the
-     * selection. Used by the close button on the popover, and on
-     * unmount so a dangling timer doesn't keep firing into a
-     * detached store.
+     * selection. Driven by the popover's close button, a click
+     * outside it, and the global Esc handler.
      */
     dismissSelectionCandidates() {
-      clearPickerDismissTimer()
       _store?.dismissSelectionCandidates()
     },
     /**
@@ -659,6 +849,9 @@ export function useHub() {
       _autoReconnect = true
       _reconnectDelay = RECONNECT_INITIAL_MS
       superseded.value = false
+      // A deliberate reconnect retires the strip's complaint: the
+      // user has acted on it.
+      clearErrorNotice()
       _pendingTakeover = takeover
       connect()
     },
@@ -673,7 +866,7 @@ export const _testing = {
   flushWaveValues,
   reset() {
     clearReconnectTimer()
-    clearPickerDismissTimer()
+    clearErrorNoticeTimer()
     if (_socket) {
       try { _socket.close() } catch { /* ignore */ }
       _socket = null
@@ -687,6 +880,7 @@ export const _testing = {
     peers.value = []
     serverVersion.value = null
     lastError.value = null
+    errorNotice.value = null
     lastClick.value = null
     superseded.value = false
     wasEverReady.value = false
@@ -695,11 +889,12 @@ export const _testing = {
     _initialised = false
     _store = null
     _pendingTakeover = false
+    _welcomeAt = 0
     _wsFactory = (url) => new WebSocket(url)
   },
-  // Expose the constant so tests / docs can reference the canonical
-  // auto-dismiss window without duplicating the number.
-  SELECTION_PICKER_AUTODISMISS_MS,
+  // Constants tests / docs reference rather than duplicating.
+  HUB_ERROR_STRIP_TTL_MS,
+  HUB_REPLAY_SETTLE_MS,
   setStore(store) { _store = store },
   setWsFactory(factory) { _wsFactory = factory },
   getSocket() { return _socket },

@@ -305,6 +305,19 @@ The viewer is a Vue/Vite SPA (Phase 5,
 `rtl-buddy/rtl-buddy-view#18`). Because it runs in a browser, it
 cannot speak raw TCP — it bridges via the hub's HTTP/WebSocket layer.
 
+> **Display name.** In chrome the SPA is **rtl-buddy-schematic**,
+> short `sch`; its siblings are **rtl-buddy-graph** (`gph`) and
+> **rtl-buddy-coverage** (`cov`). Short names are for labels — the
+> wordmark, the switcher links, the `peers:` strip, `send → gph` —
+> while prose says "the schematic", "the graph pane", "the coverage
+> pane". This is a DISPLAY-STAGE rename only: on the wire this client
+> is still `view`, in `hello { client: "view" }`, in every envelope's
+> `origin`, and in the `Origin` enum below. It stays `view` at least
+> until protocol v2; `view.json` and the `/view` route keep their
+> names regardless. The SPA's mapping table is
+> `viewer/src/displayNames.js`; the rtl_buddy panes carry the same
+> table.
+
 The hub embeds an HTTP server on `[hub] listen_port + 1` (or a
 separately configured `[hub] http_port`) that:
 
@@ -469,6 +482,18 @@ Because `graph_focus` is a state event the hub caches (like
 `selection_changed`), a focus sent before the tab exists is replayed
 to the pane when it registers — the pane opens already focused rather
 than dropping the event that preceded it.
+
+`graph_focus` is broadcast, so the graph pane is not its only consumer.
+The SPA acts on the `module:<name>` form: it selects the instance of
+that module in the loaded `view.json`, or — when the module is
+instantiated more than once — applies the shallowest instance and
+offers the rest through the same disambiguation picker a multi-match
+`selection_changed` opens. Every other id form, and any module absent
+from the loaded model, is the soft miss §3 specifies: the SPA keeps
+its current selection and says nothing. This is what makes a click in
+either pane land in the schematic when the clicked thing has no
+instance path of its own — a module-tier graph node, or a coverage
+module pill.
 
 ### 4.9 Coverage pane (`cov` client, browser)
 
@@ -889,7 +914,7 @@ applied per connection is the `v` from that connection's `hello`.
 | `instance_path` | A hierarchical instance reference rooted at `view.json.top`, e.g. `top.u_fifo.u_wr_ptr`.                              |
 | `graph.json`    | The design-knowledge-graph contract (`docs/graph-json-v1.md`); its node ids are the coordinate `graph_focus` speaks. |
 | `cov.json`      | The coverage model the hub serves at `GET /cov.json` (rtl_buddy's `rb cov`); its file / module / test keys are the coordinate `cov_focus` speaks. |
-| `origin`        | One of `view`, `wave`, `src`, `cli`, `notebook`, `graph`, `cov` — the conceptual originator of a message.            |
+| `origin`        | One of `view`, `wave`, `src`, `cli`, `notebook`, `graph`, `cov` — the conceptual originator of a message. These are WIRE names; the display labels users see (`view`→`sch`, `graph`→`gph`) are a separate table (§4.4).   |
 | `tb_prefix`     | Configured prefix stripped from wave paths to recover view instance paths.                                            |
 | `view.json`     | The JSON contract emitted by `rtl-buddy-view --format json` once Phase 4 lands; see `rtl-buddy/rtl-buddy-view#17`.   |
 | `wave_scope`    | A path into the surfer-loaded waveform, e.g. `tb.dut.u_fifo`.                                                       |

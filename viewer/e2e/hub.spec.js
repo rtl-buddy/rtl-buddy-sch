@@ -140,7 +140,7 @@ test.describe('Phase 10d hub wiring', () => {
     // NodeDetail in the sidebar shows the selection — scope the
     // assertion to its h3 so we don't match the SVG <title> or
     // graph-edge title text.
-    await expect(page.locator('.node-detail h3')).toHaveText(targetId, { timeout: 5_000 })
+    await expect(page.locator('.node-detail h3 .inst-path')).toHaveText(targetId, { timeout: 5_000 })
   })
 
   test('diagnostics_set populates the panel; empty items clears that source', async ({ page }) => {
@@ -185,7 +185,15 @@ test.describe('Phase 10d hub wiring', () => {
 
     await expect(page.locator('.toast')).toBeVisible({ timeout: 5_000 })
     await expect(page.locator('.toast')).toHaveAttribute('data-code', 'not_connected')
-    await expect(page.locator('.toast .message')).toContainText('no wave client attached')
+    // R7a: the toast leads with a SENTENCE; the raw ``code — message``
+    // is the secondary detail line, not the headline.
+    await expect(page.locator('.toast .message')).toContainText(
+      'peer that request needed is not connected',
+    )
+    await expect(page.locator('.toast .detail')).toContainText('no wave client attached')
+    // R7c: the strip carries a short status, not a second full copy.
+    await expect(page.locator('.hub-message')).not.toContainText('no wave client attached')
+    await expect(page.locator('.hub-message')).toContainText('peer not connected')
   })
 
   test('replay-on-welcome: cached diagnostics appear after handshake', async ({ page }) => {
@@ -256,5 +264,78 @@ test.describe('Phase 10d hub wiring', () => {
         description: 'fixture has no node.link to validate fallback against',
       })
     }
+  })
+})
+
+// The selected node, elsewhere: NodeDetail's cross-app row. The
+// ordering contract is what earns an e2e — "open X ↗" is only correct
+// because the focus envelope is on the wire BEFORE the tab exists, so
+// the hub's replay lands it on the right node. Asserting that against
+// a real WS connection is the closest we get to the hub's own replay.
+test.describe('cross-app send / open (NodeDetail)', () => {
+  async function bootHubServed(page) {
+    await page.addInitScript((data) => {
+      window.__RTL_BUDDY_VIEW_DATA__ = data
+      // What the hub injects when it serves the bundle: the WS
+      // address, plus one data-presence global per sibling app.
+      window.__RTL_BUDDY_HUB__ = '127.0.0.1:8399'
+      window.__RTL_BUDDY_GRAPH_URL__ = '/graph.json'
+      window.__RTL_BUDDY_COV_URL__ = '/cov.json'
+      window.__opened__ = []
+      window.open = (url, target, features) => {
+        window.__opened__.push([String(url), String(target), String(features)])
+      }
+    }, PAYLOAD)
+    await page.goto('/')
+    await expect(page.locator('g.node').first()).toBeVisible({ timeout: 30_000 })
+  }
+
+  test('send → gph pushes a graph_focus and opens nothing', async ({ page }) => {
+    const mock = await installMockHub(page)
+    await bootHubServed(page)
+    await expect(page.locator('.hub-status')).toHaveAttribute('data-state', 'ready', { timeout: 5_000 })
+
+    // The mock welcome advertises view/wave/src — no graph peer — so
+    // "send" must be refused until one joins.
+    await expect(page.locator('.send-graph')).toBeHidden()
+    await page.locator('g.node').first().click()
+    await expect(page.locator('.send-graph')).toBeDisabled()
+
+    mock.sendFromMock({
+      v: 1, id: uuid(), origin: 'graph', kind: 'event',
+      type: 'peer_joined', payload: {},
+    })
+    await expect(page.locator('.send-graph')).toBeEnabled({ timeout: 5_000 })
+    await page.locator('.send-graph').click()
+
+    await expect.poll(() => mock.recv.filter((e) => e.type === 'graph_focus').length, {
+      timeout: 5_000,
+    }).toBe(1)
+    const focus = mock.recv.find((e) => e.type === 'graph_focus')
+    expect(focus.origin).toBe('view')
+    expect(focus.kind).toBe('event')
+    expect(focus.payload.node).toMatch(/^module:/)
+    expect(await page.evaluate(() => window.__opened__)).toEqual([])
+  })
+
+  test('send → cov emits cov_focus and opens nothing', async ({ page }) => {
+    // The row is sends-only — opening an app fresh is the top bar's job.
+    const mock = await installMockHub(page)
+    await bootHubServed(page)
+    await expect(page.locator('.hub-status')).toHaveAttribute('data-state', 'ready', { timeout: 5_000 })
+    await page.locator('g.node').first().click()
+
+    // No cov peer in the mock welcome — let one join so send enables.
+    mock.sendFromMock({
+      v: 1, id: uuid(), origin: 'cov', kind: 'event',
+      type: 'peer_joined', payload: {},
+    })
+    await expect(page.locator('.send-cov')).toBeEnabled({ timeout: 5_000 })
+    await page.locator('.send-cov').click()
+    await expect.poll(() => mock.recv.filter((e) => e.type === 'cov_focus').length, {
+      timeout: 5_000,
+    }).toBe(1)
+    expect(mock.recv.find((e) => e.type === 'cov_focus').payload.target).toMatch(/^module:/)
+    expect(await page.evaluate(() => window.__opened__)).toEqual([])
   })
 })

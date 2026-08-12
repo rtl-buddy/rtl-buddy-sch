@@ -486,6 +486,104 @@ describe('useHub.notifyClick', () => {
   })
 })
 
+describe('useHub cross-app focus emitters', () => {
+  let store
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    store = useViewerStore()
+    _testing.reset()
+    _testing.setStore({
+      applyHubSelection: (id) => store.applyHubSelection(id),
+      applyHubError: (e) => store.applyHubError(e),
+    })
+  })
+  afterEach(() => { _testing.reset() })
+
+  function connected() {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({ store })
+    sock.open()
+    sock.receive(
+      env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }),
+    )
+    // Drop the hello so [0] is the envelope under test.
+    sock.sent.length = 0
+    return sock
+  }
+
+  it('focusGraph emits a graph_focus event from origin view', () => {
+    const sock = connected()
+    expect(useHub().focusGraph('module:afifo')).toBe(true)
+    expect(sock.sent.length).toBe(1)
+    const sent = JSON.parse(sock.sent[0])
+    expect(sent.v).toBe(1)
+    expect(sent.origin).toBe('view')
+    expect(sent.kind).toBe('event')
+    expect(sent.type).toBe('graph_focus')
+    expect(sent.payload).toStrictEqual({ node: 'module:afifo' })
+    expect(typeof sent.id).toBe('string')
+    expect(sent.id.length).toBeGreaterThan(0)
+  })
+
+  it('focusCov emits a cov_focus event and accepts a bare target string', () => {
+    const sock = connected()
+    expect(useHub().focusCov({ target: 'module:afifo' })).toBe(true)
+    expect(useHub().focusCov('file:rtl/afifo.sv')).toBe(true)
+    const first = JSON.parse(sock.sent[0])
+    expect(first.origin).toBe('view')
+    expect(first.kind).toBe('event')
+    expect(first.type).toBe('cov_focus')
+    expect(first.payload).toStrictEqual({ target: 'module:afifo' })
+    expect(JSON.parse(sock.sent[1]).payload).toStrictEqual({ target: 'file:rtl/afifo.sv' })
+  })
+
+  it('focusCov forwards only the payload keys the wire type declares', () => {
+    // ``cov_focus`` is additionalProperties:false — spreading the
+    // caller's object would let a stray key fail hub validation.
+    const sock = connected()
+    useHub().focusCov({
+      target: 'file:rtl/afifo.sv',
+      metric: 'branch',
+      line: 42,
+      item: 'b3',
+      bogus: 'nope',
+    })
+    expect(JSON.parse(sock.sent[0]).payload).toStrictEqual({
+      target: 'file:rtl/afifo.sv',
+      metric: 'branch',
+      line: 42,
+      item: 'b3',
+    })
+  })
+
+  it('both return false with nothing sent when the socket is not open', () => {
+    const hub = useHub()
+    expect(hub.focusGraph('module:afifo')).toBe(false)
+    expect(hub.focusCov({ target: 'module:afifo' })).toBe(false)
+  })
+
+  it('both return false for an empty target without touching the socket', () => {
+    const sock = connected()
+    const hub = useHub()
+    expect(hub.focusGraph('')).toBe(false)
+    expect(hub.focusGraph(null)).toBe(false)
+    expect(hub.focusCov({})).toBe(false)
+    expect(hub.focusCov(null)).toBe(false)
+    expect(sock.sent.length).toBe(0)
+  })
+
+  it('advertises both focus vocabularies in the hello capabilities', () => {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({ store })
+    sock.open()
+    const hello = JSON.parse(sock.sent[0])
+    expect(hello.payload.capabilities).toContain('graph_focus')
+    expect(hello.payload.capabilities).toContain('cov_focus')
+  })
+})
+
 describe('useHub disambiguation picker (rtl-buddy-view#55)', () => {
   let store
   beforeEach(() => {
@@ -507,39 +605,48 @@ describe('useHub disambiguation picker (rtl-buddy-view#55)', () => {
   afterEach(() => { _testing.reset() })
 
   it('chooseSelectionCandidate locks the pick AND broadcasts to the hub', () => {
-    const sock = new MockSocket('ws://stub/ws')
-    _testing.setWsFactory(() => sock)
-    initHub({ store })
-    sock.open()
-    sock.receive(env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }))
+    vi.useFakeTimers()
+    try {
+      const sock = new MockSocket('ws://stub/ws')
+      _testing.setWsFactory(() => sock)
+      initHub({ store })
+      sock.open()
+      sock.receive(env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }))
+      // Step past the post-welcome replay settle window — inside it a
+      // multi-match applies its default silently and no picker opens
+      // (that path has its own tests below).
+      vi.advanceTimersByTime(_testing.HUB_REPLAY_SETTLE_MS + 1)
 
-    // Multi-match arrives → picker opens with [0] selected.
-    sock.receive(
-      env(
-        'selection_changed',
-        'event',
-        { instance_path: ['top.u_a', 'top.u_b'] },
-        'wave',
-      ),
-    )
-    expect(store.selection).toBe('top.u_a')
-    expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
+      // Multi-match arrives → picker opens with [0] selected.
+      sock.receive(
+        env(
+          'selection_changed',
+          'event',
+          { instance_path: ['top.u_a', 'top.u_b'] },
+          'wave',
+        ),
+      )
+      expect(store.selection).toBe('top.u_a')
+      expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
 
-    const sentBefore = sock.sent.length
-    const hub = useHub()
-    hub.chooseSelectionCandidate('top.u_b')
+      const sentBefore = sock.sent.length
+      const hub = useHub()
+      hub.chooseSelectionCandidate('top.u_b')
 
-    // Store locked in on the override and the picker dismissed.
-    expect(store.selection).toBe('top.u_b')
-    expect(store.selectionCandidates).toBeNull()
+      // Store locked in on the override and the picker dismissed.
+      expect(store.selection).toBe('top.u_b')
+      expect(store.selectionCandidates).toBeNull()
 
-    // Wire broadcast: one ``selection_changed`` envelope from origin=view
-    // so peers (nvim, wave) lock onto the same path.
-    const fresh = sock.sent.slice(sentBefore).map((s) => JSON.parse(s))
-    const broadcast = fresh.find((e) => e.type === 'selection_changed')
-    expect(broadcast).toBeDefined()
-    expect(broadcast.origin).toBe('view')
-    expect(broadcast.payload.instance_path).toBe('top.u_b')
+      // Wire broadcast: one ``selection_changed`` envelope from origin=view
+      // so peers (nvim, wave) lock onto the same path.
+      const fresh = sock.sent.slice(sentBefore).map((s) => JSON.parse(s))
+      const broadcast = fresh.find((e) => e.type === 'selection_changed')
+      expect(broadcast).toBeDefined()
+      expect(broadcast.origin).toBe('view')
+      expect(broadcast.payload.instance_path).toBe('top.u_b')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('a fresh single-match selection_changed dismisses the picker', () => {
@@ -578,7 +685,10 @@ describe('useHub disambiguation picker (rtl-buddy-view#55)', () => {
     expect(store.selection).toBe('top.u_a')
   })
 
-  it('the auto-dismiss timer clears the picker after the canonical window', async () => {
+  it('the picker has no timer — it waits to be dismissed (R10)', () => {
+    // The auto-dismiss timer is GONE. A popover that vanishes while
+    // the user is still reading a handful of near-identical instance
+    // paths is a worse failure than one that waits.
     vi.useFakeTimers()
     try {
       _testing.applyEnvelope(
@@ -590,14 +700,167 @@ describe('useHub disambiguation picker (rtl-buddy-view#55)', () => {
         ),
       )
       expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
-      // The selection (smallest-range default) survives the dismiss —
-      // only the picker chip goes away.
-      vi.advanceTimersByTime(_testing.SELECTION_PICKER_AUTODISMISS_MS + 1)
-      expect(store.selectionCandidates).toBeNull()
+      vi.advanceTimersByTime(60_000)
+      expect(store.selectionCandidates).toEqual(['top.u_a', 'top.u_b'])
       expect(store.selection).toBe('top.u_a')
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('exposes no auto-dismiss constant any more', () => {
+    expect(_testing.SELECTION_PICKER_AUTODISMISS_MS).toBeUndefined()
+  })
+})
+
+describe('useHub graph_focus → module selection', () => {
+  // A node clicked in the /graph pane, or a module pill clicked in
+  // /cov, arrives as ``graph_focus {node: "module:<name>"}``. The
+  // panes think in MODULE TYPES; this view is a tree of INSTANCES, so
+  // the SPA resolves 1→N against the currently loaded view.json.
+  let store
+
+  function payload(nodes) {
+    return {
+      schema_version: '1.0',
+      top: 'top',
+      nodes: nodes.map((n) => ({
+        is_blackbox: false,
+        parameters: {},
+        ports: [],
+        overlays: {},
+        ...n,
+      })),
+      edges: [],
+      overlays_present: [],
+    }
+  }
+
+  function load(nodes) {
+    store.loadFromText(JSON.stringify(payload(nodes)))
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    store = useViewerStore()
+    _testing.reset()
+    _testing.setStore({
+      applyHubSelection: (id) => store.applyHubSelection(id),
+      presentSelectionCandidates: (paths) => store.presentSelectionCandidates(paths),
+      dismissSelectionCandidates: () => store.dismissSelectionCandidates(),
+      // A getter, not a snapshot: the resolution has to see whatever
+      // model is loaded at the moment the envelope lands.
+      get nodeIdsByModule() {
+        return store.nodeIdsByModule
+      },
+    })
+    load([
+      { id: 'top', module: 'top' },
+      { id: 'top.u_fifo', module: 'fifo' },
+      { id: 'top.u_core', module: 'core' },
+      { id: 'top.u_core.u_fifo', module: 'fifo' },
+    ])
+  })
+  afterEach(() => { _testing.reset() })
+
+  it('selects the only instance of the named module', () => {
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:core' }, 'graph'))
+    expect(store.selection).toBe('top.u_core')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('opens the picker for a module instantiated more than once, shallowest first', () => {
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:fifo' }, 'graph'))
+    // Same multi-match path a ``selection_changed`` array takes: the
+    // least-nested instance is applied immediately, the full list
+    // surfaces for the user to override.
+    expect(store.selection).toBe('top.u_fifo')
+    expect(store.selectionCandidates).toEqual(['top.u_fifo', 'top.u_core.u_fifo'])
+  })
+
+  it('the multi-match picker stays until dismissed, then keeps the default', () => {
+    vi.useFakeTimers()
+    try {
+      _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:fifo' }, 'graph'))
+      expect(store.selectionCandidates).not.toBeNull()
+      // No timer: waiting changes nothing.
+      vi.advanceTimersByTime(60_000)
+      expect(store.selectionCandidates).not.toBeNull()
+
+      useHub().dismissSelectionCandidates()
+      expect(store.selectionCandidates).toBeNull()
+      // Dismissing the picker does not undo the applied default.
+      expect(store.selection).toBe('top.u_fifo')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('soft-ignores a module this model does not contain', () => {
+    // Schema semantics for graph_focus: an unresolvable target is
+    // silently kept, not an error. The knowledge graph spans every
+    // module in the project; this view holds one elaboration.
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:nowhere' }, 'graph'))
+    expect(store.selection).toBeNull()
+    expect(store.selectionCandidates).toBeNull()
+    expect(store.hubError).toBeNull()
+  })
+
+  it('ignores node ids outside the module: vocabulary', () => {
+    // The knowledge graph's id space is wider than this view's; only
+    // ``module:`` names something a hierarchy can be resolved against.
+    for (const node of [
+      'inst:top/top.u_fifo',
+      'test:smoke#fifo_basic',
+      'fifo',
+      'module:',
+      'MODULE:fifo',
+      '',
+    ]) {
+      _testing.applyEnvelope(env('graph_focus', 'event', { node }, 'graph'))
+      expect(store.selection).toBeNull()
+    }
+    // Non-string payloads are equally inert.
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 42 }, 'graph'))
+    _testing.applyEnvelope(env('graph_focus', 'event', {}, 'graph'))
+    expect(store.selection).toBeNull()
+  })
+
+  it('ignores its own origin so a focus cannot loop', () => {
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:core' }, 'view'))
+    expect(store.selection).toBeNull()
+  })
+
+  it('never echoes a focus back to the hub', () => {
+    const sock = new MockSocket('ws://stub/ws')
+    _testing.setWsFactory(() => sock)
+    initHub({ store: undefined })
+    sock.open()
+    sock.receive(env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }))
+    const before = sock.sent.length
+    sock.receive(env('graph_focus', 'event', { node: 'module:core' }, 'graph'))
+    // Broadcasting the selection we were just handed is how two panes
+    // bounce one click between each other forever.
+    expect(sock.sent.length).toBe(before)
+  })
+
+  it('resolves against the model loaded right now, not the one at connect time', () => {
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:core' }, 'graph'))
+    expect(store.selection).toBe('top.u_core')
+
+    // Model switch: same module name, different hierarchy.
+    load([
+      { id: 'tb', module: 'top' },
+      { id: 'tb.dut', module: 'core' },
+    ])
+    expect(store.selection).toBeNull() // _installGraph wipes selection
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:core' }, 'graph'))
+    expect(store.selection).toBe('tb.dut')
+
+    // And a module that only existed in the previous model is now a
+    // soft miss rather than a stale hit.
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:fifo' }, 'graph'))
+    expect(store.selection).toBe('tb.dut')
   })
 })
 
@@ -838,5 +1101,107 @@ describe('useHub view_capture request handler', () => {
     // No new envelope sent — wrong-kind capture is a silent drop, not
     // an error reply (responses to non-requests would loop).
     expect(sock.sent.length).toBe(sentBefore)
+  })
+})
+
+describe('useHub replay settle window (R9)', () => {
+  // The hub replays its cached focus/selection slot to a freshly
+  // joining peer right after ``welcome`` (HubState._replay_cached_state).
+  // On a fresh page load that used to pop an unexplained multi-match
+  // picker before the user had touched anything.
+  let store
+
+  function loadTwoFifos() {
+    store.loadFromText(
+      JSON.stringify({
+        schema_version: '1.0',
+        top: 'top',
+        nodes: [
+          { id: 'top', module: 'top' },
+          { id: 'top.u_fifo', module: 'fifo' },
+          { id: 'top.u_core', module: 'core' },
+          { id: 'top.u_core.u_fifo', module: 'fifo' },
+        ].map((n) => ({
+          is_blackbox: false,
+          parameters: {},
+          ports: [],
+          overlays: {},
+          ...n,
+        })),
+        edges: [],
+        overlays_present: [],
+      }),
+    )
+  }
+
+  function welcome() {
+    _testing.applyEnvelope(
+      env('welcome', 'response', { server_version: '1.0', registered_clients: ['view'] }, 'view'),
+    )
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    store = useViewerStore()
+    _testing.reset()
+    _testing.setStore({
+      applyHubSelection: (id) => store.applyHubSelection(id),
+      presentSelectionCandidates: (paths) => store.presentSelectionCandidates(paths),
+      dismissSelectionCandidates: () => store.dismissSelectionCandidates(),
+      get nodeIdsByModule() {
+        return store.nodeIdsByModule
+      },
+    })
+    loadTwoFifos()
+  })
+  afterEach(() => {
+    _testing.reset()
+    vi.useRealTimers()
+  })
+
+  it('a replayed multi-match selection_changed applies its default silently', () => {
+    vi.useFakeTimers()
+    welcome()
+    _testing.applyEnvelope(
+      env('selection_changed', 'event', { instance_path: ['top.u_fifo', 'top.u_core.u_fifo'] }, 'wave'),
+    )
+    // Default applied — the canvas still reacts…
+    expect(store.selection).toBe('top.u_fifo')
+    // …but no picker nobody asked for.
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('a replayed multi-match graph_focus applies its default silently', () => {
+    vi.useFakeTimers()
+    welcome()
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:fifo' }, 'graph'))
+    expect(store.selection).toBe('top.u_fifo')
+    expect(store.selectionCandidates).toBeNull()
+  })
+
+  it('the same event AFTER the window opens the picker', () => {
+    vi.useFakeTimers()
+    welcome()
+    vi.advanceTimersByTime(_testing.HUB_REPLAY_SETTLE_MS + 1)
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:fifo' }, 'graph'))
+    expect(store.selectionCandidates).toEqual(['top.u_fifo', 'top.u_core.u_fifo'])
+  })
+
+  it('is anchored on welcome, not on module load', () => {
+    // Never welcomed → nothing to replay → the picker is live from
+    // the first event (a standalone SPA driven by a peer that
+    // connected before us).
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:fifo' }, 'graph'))
+    expect(store.selectionCandidates).toEqual(['top.u_fifo', 'top.u_core.u_fifo'])
+  })
+
+  it('re-arms on every welcome, so a reconnect replay is quiet too', () => {
+    vi.useFakeTimers()
+    welcome()
+    vi.advanceTimersByTime(_testing.HUB_REPLAY_SETTLE_MS + 1)
+    welcome()
+    _testing.applyEnvelope(env('graph_focus', 'event', { node: 'module:fifo' }, 'graph'))
+    expect(store.selectionCandidates).toBeNull()
+    expect(store.selection).toBe('top.u_fifo')
   })
 })

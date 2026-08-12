@@ -100,6 +100,33 @@ describe('viewer store', () => {
     expect(store.selectedNode.id).toBe('top.u_a')
   })
 
+  it('nodeIdsByModule groups instances shallowest-first', () => {
+    const store = useViewerStore()
+    store.loadFromText(
+      JSON.stringify(
+        minimalPayload({
+          nodes: [
+            { id: 'top', module: 'top', is_blackbox: false, parameters: {}, ports: [], overlays: {} },
+            { id: 'top.u_b', module: 'fifo', is_blackbox: false, parameters: {}, ports: [], overlays: {} },
+            { id: 'top.u_a.u_deep', module: 'fifo', is_blackbox: false, parameters: {}, ports: [], overlays: {} },
+            { id: 'top.u_a', module: 'wrap', is_blackbox: false, parameters: {}, ports: [], overlays: {} },
+          ],
+          edges: [],
+        }),
+      ),
+    )
+    // Hub ``graph_focus`` names a module type; this is the 1→N
+    // resolution onto instance paths. Fewest dots first, then
+    // lexicographic, so [0] is the least-nested instance.
+    expect(store.nodeIdsByModule.get('fifo')).toEqual(['top.u_b', 'top.u_a.u_deep'])
+    expect(store.nodeIdsByModule.get('wrap')).toEqual(['top.u_a'])
+    expect(store.nodeIdsByModule.get('nope')).toBeUndefined()
+  })
+
+  it('nodeIdsByModule is empty with no graph loaded', () => {
+    expect(useViewerStore().nodeIdsByModule.size).toBe(0)
+  })
+
   it('_installGraph resets both node and edge selection', () => {
     const store = useViewerStore()
     store.loadFromText(JSON.stringify(minimalPayload()))

@@ -31,7 +31,46 @@
         </ul>
       </li>
     </ul>
-    <p v-else class="empty">No overlays in this view.</p>
+    <!-- Actionable empty state: the second line is the command that
+         fixes it, spelled as README.md / docs/overlays.md spell it.
+         Suppressed when live coverage is present — the panel isn't
+         empty then, it just has nothing from the payload. -->
+    <template v-else-if="!hasLiveCoverage">
+      <p class="empty">No overlays in this view.</p>
+      <p class="empty empty-hint">
+        Produce them with
+        <code>{{ RENDER_WITH_OVERLAYS_HINT }}</code>
+        and reload.
+      </p>
+    </template>
+    <!-- Live overlays: sourced from the hub at runtime rather than
+         from ``overlays_present``, so they list separately and carry
+         a provenance line saying where the numbers came from. -->
+    <ul v-if="hasLiveCoverage" class="live-overlays">
+      <li>
+        <label class="overlay-row">
+          <input
+            type="checkbox"
+            data-testid="cov-live-toggle"
+            :checked="store.covEnabled"
+            @change="store.toggleCoverageTint()"
+          />
+          <span class="overlay-name">coverage</span>
+          <span class="tag-live">live</span>
+        </label>
+        <p class="overlay-sub">{{ covProvenance }}</p>
+        <ul class="legend">
+          <li v-for="item in covLegend" :key="item.label">
+            <span
+              class="swatch"
+              :class="`swatch-${item.kind || 'fill'}`"
+              :style="swatchStyle(item)"
+            ></span>
+            {{ item.label }}
+          </li>
+        </ul>
+      </li>
+    </ul>
   </section>
   <section v-if="layoutLegend.length" class="overlay-panel">
     <h3>Layout</h3>
@@ -59,12 +98,33 @@
 import { computed } from 'vue'
 import { useViewerStore } from '../store.js'
 import { getOverlay, overlaySummary } from '../overlays/index.js'
+import { coverageLiveOverlay } from '../overlays/coverage_live.js'
+import { covGeneratedDate } from '../covData.js'
 import { token, themeVersion } from '../theme.js'
+import { RENDER_WITH_OVERLAYS_HINT } from '../cliHints.js'
 
 const store = useViewerStore()
 const summary = computed(() =>
   store.graph ? overlaySummary(store.graph) : [],
 )
+
+// --- live coverage ---------------------------------------------------
+//
+// Not part of ``summary``: ``overlays_present`` describes what the
+// PRODUCER baked into view.json, and this comes from the hub after the
+// fact. It gets its own entry, tagged ``live``, with a line saying
+// which run the numbers are from — the same payload can be minutes or
+// days old and the panel is the only place that says so.
+const hasLiveCoverage = computed(() => store.covData !== null)
+const covProvenance = computed(() => {
+  const day = covGeneratedDate(store.covData)
+  const base = "from the hub's latest run"
+  return day ? `${base} · ${day}` : base
+})
+const covLegend = computed(() => {
+  themeVersion.value // the ramp swatches are resolved tokens, not var()
+  return coverageLiveOverlay.legend()
+})
 function legendFor(name) {
   // Legend swatches are concrete colours an overlay resolved from a
   // token, so a theme flip has to re-run this. Reading themeVersion
@@ -184,6 +244,33 @@ function swatchStyle(item) {
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
 }
+/* ``live`` marks an overlay whose data came from the hub at runtime
+   rather than from the loaded view.json. Same chip geometry as the
+   ``unknown`` tag, accent-coloured because it is a statement about
+   freshness, not a warning. */
+.tag-live {
+  font-size: 0.7rem;
+  background: var(--panel-2);
+  color: var(--accent);
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+}
+/* Provenance line under a live overlay's checkbox. */
+.overlay-sub {
+  margin: 0.1rem 0 0.15rem 1.5rem;
+  font-size: 0.7rem;
+  color: var(--fg-faint);
+}
+/* The live group follows the payload list with a hairline between
+   them, so "produced" and "fetched" don't read as one list. The
+   sibling selector is what keeps the rule honest: with no payload
+   overlays there is no preceding list, and a divider hanging under
+   the heading would be separating nothing from something. */
+ul + .live-overlays {
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--line);
+}
 .legend {
   margin-left: 1.5rem;
   font-size: 0.75rem;
@@ -243,5 +330,20 @@ function swatchStyle(item) {
   font-size: 0.85rem;
   color: var(--fg-muted);
   margin: 0;
+}
+/* The "here's the command" line: quieter than the statement above it,
+   and the command itself wraps rather than widening the sidebar. */
+.empty-hint {
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--fg-faint);
+  line-height: 1.4;
+}
+.empty-hint code {
+  font-family: var(--font-mono);
+  background: var(--panel-2);
+  padding: 0.05rem 0.3rem;
+  border-radius: var(--radius-1);
+  word-break: break-word;
 }
 </style>
