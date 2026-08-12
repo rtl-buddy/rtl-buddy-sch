@@ -22,9 +22,9 @@ They are different artifacts and both are needed.
 
 | | [`view.json`](view-json-v1.md) | `graph.json` |
 | --- | --- | --- |
-| Shape | one node per elaborated **instance** | one node per design **entity** (module, instance, port, parameter, interface, modport) |
+| Shape | one node per elaborated **instance** | one node per design **entity** (module, instance, port, parameter, interface, modport, DPI function) |
 | Purpose | render snapshot for the SPA + hub resolver | query index / token-efficient context layer for agents |
-| Edges | parent→child only | six typed relations |
+| Edges | parent→child only | typed relations (§ 3) |
 | Overlays | carries them (clock, reset, coverage, wave, …) | **never** — see § 7 |
 | Merging | not mergeable | node-id union across tiers |
 
@@ -126,7 +126,7 @@ Every node carries exactly these keys, whatever its `type`:
 | Field | Type | Notes |
 | ----- | ---- | ----- |
 | `id` | string | Stable identity, prefixed by kind (§ 2.1). |
-| `type` | string | `module` \| `instance` \| `port` \| `parameter` \| `interface` \| `modport`. |
+| `type` | string | `module` \| `instance` \| `port` \| `parameter` \| `interface` \| `modport` \| `dpi_function`. |
 | `label` | string | Bare entity name — the id without its scope. |
 | `tier` | string | `"design"` here. Survives merging, so a merged graph can be filtered back down to one tier. |
 | `file` | string \| null | Project-relative source path (absolute when the file lies outside the project root). `null` when there is no anchor — blackboxes, and entities recovered from use sites. |
@@ -147,6 +147,7 @@ guessing at it.
 | parameter | `param:<owner>.<name>` | `param:fifo.WIDTH` |
 | interface | `iface:<name>` | `iface:test_mem_if` |
 | modport | `modport:<iface>.<name>` | `modport:test_mem_if.sub` |
+| dpi_function | `dpi:<c_symbol>` | `dpi:golden_alu_ref` |
 
 `<instance path>` is the **hub resolver's instance-path identity**:
 dot-separated *including* the top segment, byte-identical to
@@ -154,6 +155,13 @@ dot-separated *including* the top segment, byte-identical to
 so a DUT-rooted graph and a TB-rooted graph of the same design merge
 without their instance nodes colliding. Consumers that would rather
 not parse ids can read `instance_path` off the node.
+
+`dpi:` is keyed by the **C symbol**, not the SV name, because the
+C symbol is the cross-language identity: it is what the implementing
+`.c`/`.cc` file defines, so it is where the binding tier's
+`implemented_by` edge (rtl-buddy/rtl_buddy#378, this repo's #127)
+lands. Two modules importing the same C function share one node —
+that convergence is deliberate.
 
 `<owner>` for ports and parameters is the declaring **module or
 interface** name, not an instance path — port and parameter nodes
@@ -207,6 +215,26 @@ interface body).
 
 **`modport`** — `interface`, `is_blackbox`, `inputs`, `outputs`,
 `inouts`.
+
+**`dpi_function`** — `sv_name`, `c_symbol`, `direction`
+(`import`/`export`), `signature`.
+
+One node per `import "DPI-C"` / `export "DPI-C"` item in a module
+body. `c_symbol` accounts for the aliased form — for
+`import "DPI-C" golden_mul = function longint mul_ref(...)` the
+`c_symbol` is `golden_mul` and the `sv_name` is `mul_ref`; without
+an alias the two are equal. `signature` is the verbatim source
+slice of the function/task prototype (trailing `;` stripped), same
+"never parsed, never evaluated" rule as `type_text`. `direction`
+reads from the C side's perspective of who implements: `import`
+means C implements and SV calls, `export` the reverse.
+
+DPI items are extracted from module bodies by the Verible frontend
+(flat scope, same rule as instances — generate blocks and
+compilation-unit scope are out). Checker DPI usually lives in
+testbench code, which is why the TB-rooted export matters here: a
+DUT-rooted export of a design whose DPI is all in the TB has no
+`dpi_function` nodes at all.
 
 ### 2.3 Blackboxes
 
@@ -277,6 +305,9 @@ tells a recovered port from a declared one.
 | `connects` | `inst:` → `port:` | `formal`, `actual`, `positional`, `index`, `file`, `line` |
 | `implements` | `module:` → `modport:` | `port` (the interface port pinning the modport) |
 | `overrides` | `inst:` → `param:` | `parameter`, `value`, `positional`, `index`, `file`, `line` |
+| `imports_dpi` | `module:` → `dpi_function` | — |
+| `exports_dpi` | `module:` → `dpi_function` | — |
+| `calls` | `module:` → `dpi_function` | `file`, `line` |
 
 Notes on the two "why is it this direction" cases:
 
@@ -288,6 +319,13 @@ Notes on the two "why is it this direction" cases:
   on module `m3` means `m3` implements the `sub` view of
   `test_mem_if`. A bare interface port with no `.modport` suffix
   pins nothing, so it produces no edge.
+
+`imports_dpi` / `exports_dpi` record the declaration; the
+declaration's own `file`/`line` live on the `dpi_function` node.
+`calls` is **best-effort**: one edge per call site the CST makes
+cheap to recover (a simple, non-hierarchical function-call
+reference inside the declaring module). Absence of a `calls` edge
+never means "not called".
 
 `actual` is the verbatim net expression. It is the empty string for
 the implicit `.port` shorthand (`.clk` with no parens) — the
@@ -303,7 +341,10 @@ are the stitch points, deliberately:
   `model:…` onto `module:<name>` — the same `module:` id this file
   defines.
 - binding tier (rtl_buddy#378) emits `drives` edges onto
-  `port:<module>.<port>` ids from this file.
+  `port:<module>.<port>` ids from this file, and `implemented_by`
+  edges from `dpi:<c_symbol>` nodes onto the C/C++/Python source
+  files that define the symbol (#127) — the DPI leg of the
+  golden-model loop.
 
 So the design tier must be merged for the other tiers' edges to
 resolve, and every node here carries `tier` so a merged graph can be
@@ -398,7 +439,9 @@ bump:
    `links`, in NetworkX node-link form.
 2. **Node id grammar** (§ 2.1), including `<instance path>` being
    the full dot-separated path with the top segment.
-3. **The six edge types** and their source→target directions.
+3. **The edge types of § 3** and their source→target directions
+   (the original six from v1.0, plus `imports_dpi` / `exports_dpi` /
+   `calls` since they shipped).
 4. **`id` / `type` / `label` / `tier` / `file` / `line` on every
    node**, `source` / `target` / `type` / `confidence` on every
    link.

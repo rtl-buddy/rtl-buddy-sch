@@ -399,10 +399,10 @@ objects reuse the view.json v1 per-node vocabulary (`instance_path`,
 
 `rtl-buddy-view graph` exports the elaborated design as a node-link
 knowledge graph: one node per design *entity* (module, instance,
-port, parameter, interface, modport), joined by typed edges
-(`instantiates`, `child_of`, `instance_of`, `connects`,
-`implements`, `overrides`). It is the design tier of the cross-repo
-graph in [rtl_buddy#375](https://github.com/rtl-buddy/rtl_buddy/issues/375)
+port, parameter, interface, modport, DPI function), joined by typed
+edges (`instantiates`, `child_of`, `instance_of`, `connects`,
+`implements`, `overrides`, `imports_dpi`, `exports_dpi`, `calls`).
+It is the design tier of the cross-repo graph in [rtl_buddy#375](https://github.com/rtl-buddy/rtl_buddy/issues/375)
 ([view#126](https://github.com/rtl-buddy/rtl-buddy-view/issues/126)),
 and it merges with rtl-buddy's config and binding tiers by node-id
 union.
