@@ -1,9 +1,21 @@
 <template>
   <section class="node-detail" v-if="node">
     <h3 :title="node.id">
-      <span v-for="(segment, i) in pathSegments" :key="i">
-        <span v-if="i > 0" class="sep">.</span>{{ segment }}<wbr />
+      <!-- The path text is wrapped so consumers (and the e2e suite)
+           can read the instance path without picking the copy glyph
+           out of the heading's text content. -->
+      <span class="inst-path">
+        <span v-for="(segment, i) in pathSegments" :key="i">
+          <span v-if="i > 0" class="sep">.</span>{{ segment }}<wbr />
+        </span>
       </span>
+      <button
+        type="button"
+        class="copy-btn"
+        :title="`Copy the instance path — ${node.id}`"
+        aria-label="Copy instance path"
+        @click="copy('path', node.id)"
+      >{{ copied === 'path' ? '✓' : '📋' }}</button>
     </h3>
     <div class="nav-actions">
       <button
@@ -16,7 +28,7 @@
         type="button"
         @click="store.ascend()"
         :disabled="!store.rootInstancePath"
-        title="Show parent scope"
+        title="Show parent scope (keyboard: u)"
       >Up</button>
       <button
         type="button"
@@ -24,17 +36,53 @@
         :disabled="!store.rootInstancePath"
         title="Back to design top"
       >Top</button>
+    </div>
+    <!-- Source location. Shown project-relative (store.sourceRoot, see
+         sourcePaths.js) because the absolute path was four wrapped
+         lines of which the leading two thirds were identical for every
+         node; the absolute path is the title and the copy button's
+         payload. -->
+    <div v-if="hasOpenable" class="open-target-row">
+      <code class="open-target" :title="absoluteTargetText || openTitle">{{ openTargetText }}</code>
+      <button
+        v-if="absoluteTargetText"
+        type="button"
+        class="copy-btn"
+        :title="`Copy the absolute path — ${absoluteTargetText}`"
+        aria-label="Copy absolute source path"
+        @click="copy('file', absoluteTargetText)"
+      >{{ copied === 'file' ? '✓' : '📋' }}</button>
+      <span class="open-via" :data-mode="openVia" :title="openTitle">{{ openViaLabel }}</span>
+    </div>
+    <!-- The selected node, elsewhere: push a focus to an app (or the
+         editor) that is ALREADY open — no navigation, no tab opened.
+         Opening an app fresh is the top bar's job (the switcher links),
+         so there are no open-↗ variants here. -->
+    <div v-if="showElsewhere" class="elsewhere-actions" data-testid="node-elsewhere">
+      <span class="elsewhere-label">elsewhere</span>
+      <button
+        v-if="elsewhereTarget"
+        type="button"
+        class="send-graph"
+        :disabled="!graphConnected"
+        :title="sendGraphTitle"
+        @click="sendToGraph"
+      >send → {{ GRAPH_LABEL }}</button>
+      <button
+        v-if="elsewhereTarget"
+        type="button"
+        class="send-cov"
+        :disabled="!covConnected"
+        :title="sendCovTitle"
+        @click="sendToCov"
+      >send → {{ COV_LABEL }}</button>
       <button
         v-if="hasOpenable"
         type="button"
-        class="open-source"
-        @click="openInEditor"
+        class="send-editor"
         :title="openTitle"
-      >Open in editor</button>
-    </div>
-    <div v-if="hasOpenable" class="open-target-row" :title="openTitle">
-      <code class="open-target">{{ openTargetText }}</code>
-      <span class="open-via" :data-mode="openVia">{{ openViaLabel }}</span>
+        @click="openInEditor"
+      >send → editor</button>
     </div>
     <dl>
       <dt>Module</dt><dd>{{ node.module }}</dd>
@@ -95,6 +143,20 @@
           >Open in Coverview ↗</a>
         </dd>
       </template>
+      <template v-if="liveCoverageText">
+        <dt>Coverage</dt>
+        <dd class="live-cov" data-testid="node-live-coverage">
+          <div class="live-cov-metrics">{{ liveCoverageText }}</div>
+          <a
+            v-if="covPaneHref"
+            class="live-cov-link"
+            :href="covPaneHref"
+            target="_blank"
+            rel="noopener"
+            title="Open the hub's coverage pane in a new tab"
+          >open in {{ COV_LABEL }} ↗</a>
+        </dd>
+      </template>
       <template v-if="axiPins.length || axiInterconnect">
         <dt>AXI performance</dt>
         <dd>
@@ -142,10 +204,15 @@
 // require this component to know about every overlay's payload
 // shape, and stays useful for unknown / future overlays the
 // viewer doesn't have a dedicated renderer for.
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useViewerStore } from '../store.js'
 import { useHub } from '../composables/useHub.js'
+import { copyText } from '../clipboard.js'
+import { relativeSourcePath } from '../sourcePaths.js'
 import { heatColor } from '../overlays/coverage.js'
+import { covSummaryText, COV_PANE_ROUTE } from '../covData.js'
+import { isHubServed } from '../hubApps.js'
+import { displayOrigin } from '../displayNames.js'
 import { bpLevel } from '../palette.js'
 import { themeVersion } from '../theme.js'
 import { formatBandwidth as fmtBps } from '../format.js'
@@ -188,6 +255,28 @@ const coverageRows = computed(() => {
   }
   return rows
 })
+
+// --- live coverage (the hub's /cov.json, joined by module name) -------
+//
+// Separate from the ``coverage`` block above, which is whatever the
+// producer baked into view.json. This one is the hub's latest run,
+// so it can be present on a payload that carries no coverage overlay
+// at all — and both can show at once, which is the honest rendering:
+// they are two different measurements.
+//
+// Rendered as one compact line rather than five progress bars. The
+// bars above earn their space by being the node's own numbers; this
+// is a per-MODULE roll-up whose detail lives one click away in the
+// coverage pane.
+const liveCoverage = computed(() => {
+  const module = node.value && node.value.module
+  if (typeof module !== 'string' || module.length === 0) return null
+  return store.covByModule.get(module) || null
+})
+const liveCoverageText = computed(() => covSummaryText(liveCoverage.value))
+// The pane link only exists when a hub is serving us — from embed.py
+// or the dev server ``/cov`` is a 404 (or someone else's page).
+const covPaneHref = computed(() => (isHubServed() ? COV_PANE_ROUTE : null))
 
 // --- axi-perf: render the overlay human-readably instead of raw JSON.
 // (throughput formatting shared via ../format.js — bytes/s, decimal MB/GB)
@@ -300,13 +389,47 @@ function ifaceTagTitle(port) {
 const hasOpenable = computed(
   () => node.value && (node.value.source || node.value.link),
 )
-const openTargetText = computed(() => {
+// Absolute ``file:line`` — what ``open_source`` sends, what the copy
+// button copies, and what the tooltip shows. Falls back to the raw
+// ``link`` URI for nodes with no structured source block.
+const absoluteTargetText = computed(() => {
   const src = node.value && node.value.source
   if (src && typeof src.file === 'string') {
     const line = typeof src.start_line === 'number' ? src.start_line : 1
     return `${src.file}:${line}`
   }
+  return ''
+})
+// What the row actually renders: project-relative when we could work
+// out a root, ``basename:line`` when we could not.
+const openTargetText = computed(() => {
+  const src = node.value && node.value.source
+  if (src && typeof src.file === 'string') {
+    const line = typeof src.start_line === 'number' ? src.start_line : 1
+    return `${relativeSourcePath(src.file, store.sourceRoot)}:${line}`
+  }
   return (node.value && node.value.link) || ''
+})
+
+// --- copy affordances -----------------------------------------------
+// Two payloads, one flash: the heading copies the INSTANCE PATH (what
+// you paste into ``rb hub send`` or a testbench probe), the source row
+// copies the ABSOLUTE ``file:line`` (what you paste into an editor).
+const COPY_FLASH_MS = 1200
+const copied = ref('')
+let copyFlashTimer = null
+async function copy(which, text) {
+  const ok = await copyText(text)
+  if (!ok) return
+  copied.value = which
+  if (copyFlashTimer) clearTimeout(copyFlashTimer)
+  copyFlashTimer = setTimeout(() => {
+    copied.value = ''
+    copyFlashTimer = null
+  }, COPY_FLASH_MS)
+}
+onBeforeUnmount(() => {
+  if (copyFlashTimer) clearTimeout(copyFlashTimer)
 })
 const openVia = computed(() => (hub.state.value === 'ready' ? 'hub' : 'os'))
 const openViaLabel = computed(() =>
@@ -319,6 +442,73 @@ const openTitle = computed(() =>
 )
 function openInEditor() {
   if (node.value) hub.requestOpenSource(node.value)
+}
+
+// --- the selected node, elsewhere ------------------------------------
+//
+// The graph pane and the coverage pane are both keyed by MODULE (one
+// graph node per module type, one coverage roll-up per module), so the
+// only coordinate this instance tree can hand them is the selected
+// node's module. That is the same 1→N relation in reverse that
+// ``focusGraphNode`` resolves on the way in.
+const ELSEWHERE_TARGET_PREFIX = 'module:'
+// Button/link LABELS carry the family's short display names; the wire
+// types (``graph_focus`` / ``cov_focus``), the peer origins these gate
+// on and the CSS classes are unchanged. One knob: displayNames.js.
+const GRAPH_LABEL = displayOrigin('graph')
+const COV_LABEL = displayOrigin('cov')
+const elsewhereTarget = computed(() =>
+  node.value && node.value.module ? ELSEWHERE_TARGET_PREFIX + node.value.module : '',
+)
+// Nothing to send to outside a hub: from embed.py or the dev server
+// there are no peers at all. The row shows when the node has EITHER a
+// module (the graph/coverage coordinate) or a source anchor (the
+// editor coordinate); each button gates on its own one.
+const showElsewhere = computed(
+  () => isHubServed() && (elsewhereTarget.value.length > 0 || hasOpenable.value),
+)
+// ``send`` needs a live peer on the other end — a focus broadcast at
+// nobody is a click that does nothing and says nothing.
+const graphConnected = computed(() => (hub.peers.value || []).includes('graph'))
+const covConnected = computed(() => (hub.peers.value || []).includes('cov'))
+
+// Focus events are BROADCASTS, not point-to-point messages: the hub
+// fans them out to every peer. Saying so in the tooltip is the
+// difference between a control the user can predict and one that
+// surprises them by moving a third window.
+const BROADCAST_NOTE =
+  'Focus is broadcast — other open apps that understand it may follow too.'
+
+const sendGraphTitle = computed(() =>
+  graphConnected.value
+    ? `Focus the open graph pane on ${elsewhereTarget.value}. ${BROADCAST_NOTE}`
+    : 'The graph pane is not connected — open it from the top bar',
+)
+const sendCovTitle = computed(() =>
+  covConnected.value
+    ? `Focus the open coverage pane on ${elsewhereTarget.value}. ${BROADCAST_NOTE}`
+    : 'The coverage pane is not connected — open it from the top bar',
+)
+
+// Hub-offline feedback. ``requestOpenSource`` never needs this — it
+// falls back to the ``rtlbuddy://`` URI through the OS — but a
+// hub-served pane has no offline equivalent, so the alternative here
+// is a click that silently does nothing. Rendered by the same toast
+// the hub's own ``error`` envelopes get, on the same closed-catalog
+// code the hub would have used.
+function reportHubOffline(what) {
+  store.applyHubError({
+    code: 'not_connected',
+    message: `hub not connected — could not focus ${what}`,
+    at: Date.now(),
+  })
+}
+
+function sendToGraph() {
+  if (!hub.focusGraph(elsewhereTarget.value)) reportHubOffline('the graph pane')
+}
+function sendToCov() {
+  if (!hub.focusCov({ target: elsewhereTarget.value })) reportHubOffline('the coverage pane')
 }
 </script>
 
@@ -354,13 +544,28 @@ function openInEditor() {
   font-size: 0.75rem;
 }
 .empty { color: var(--fg-muted); font-size: 0.85rem; }
-.nav-actions {
+.nav-actions,
+.elsewhere-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem;
   margin-bottom: 0.25rem;
 }
-.nav-actions button {
+.elsewhere-actions {
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+/* Same word treatment as a <dt>: this row is a labelled group, not a
+   fourth kind of control. */
+.elsewhere-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  margin-right: 0.15rem;
+}
+.nav-actions button,
+.elsewhere-actions button {
   border: 1px solid var(--line-strong);
   background: var(--panel);
   color: var(--fg);
@@ -390,6 +595,27 @@ function openInEditor() {
   font-size: 0.7rem;
   color: var(--fg-muted);
   word-break: break-all;
+}
+/* Copy affordance — a quiet glyph that only gains a box on hover, so
+   two of them on one panel don't read as primary actions. Token
+   colours throughout; the ✓ flash is the shared --ok. */
+.copy-btn {
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-faint);
+  border-radius: var(--radius-1);
+  padding: 0 0.25rem;
+  margin-left: 0.3rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+.copy-btn:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+  background: var(--panel-2);
 }
 /* "(via hub)" / "(via OS)" tag tells the user how the next click
    will be routed — green when the hub is connected and will
@@ -443,6 +669,18 @@ function openInEditor() {
 .coverview-link {
   display: inline-block;
   margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--accent);
+}
+/* Live coverage: one mono line of metrics (they are data) over a
+   quiet link into the hub's coverage pane for the per-line view. */
+.live-cov-metrics {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.live-cov-link {
+  display: inline-block;
+  margin-top: 0.2rem;
   font-size: 0.75rem;
   color: var(--accent);
 }

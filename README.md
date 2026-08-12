@@ -1,5 +1,16 @@
 # rtl-buddy-view
 
+> **Display name: rtl-buddy-schematic** (short: `sch`). In the hub's
+> chrome — the SPA's wordmark and tab title, the peers strip, the app
+> switcher — this app calls itself `rtl-buddy-sch`, alongside its
+> siblings `rtl-buddy-graph` (`gph`) and `rtl-buddy-coverage` (`cov`).
+> The rebrand is **display-only**: the repo, the Python package, the
+> `rtl-buddy-view` console script, the `view.json` artefact, the
+> `/view` route and the `view` hub-protocol origin all keep their
+> names. The wire origin becomes `sch` no earlier than protocol v2.
+> The one place the display labels are defined is
+> [`viewer/src/displayNames.js`](viewer/src/displayNames.js).
+
 RTL hierarchy and connectivity visualization. Pluggable parser
 frontend ([Verible](https://github.com/chipsalliance/verible) for
 source-faithful CST, [slang](https://github.com/MikePopoloski/slang)

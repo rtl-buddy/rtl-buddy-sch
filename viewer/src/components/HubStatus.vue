@@ -17,16 +17,34 @@
     </button>
 
     <!-- middle slot: who else is attached right now, in the panes'
-         one-line form (``peers: view, graph`` / ``peers: none``). The
-         full roster — every origin a user CAN have open, connected or
-         not — is one click away in the popover; putting it inline here
-         instead was the SPA disagreeing with the panes about what the
-         middle slot of the strip says. -->
+         one-line form (``peers: sch, gph`` / ``peers: none``). Names
+         come from displayNames.js — the wire origins are still
+         ``view``/``graph``, the strip just prints what a user calls
+         them. The full roster — every origin a user CAN have open,
+         connected or not — is one click away in the popover; putting
+         it inline here instead was the SPA disagreeing with the panes
+         about what the middle slot of the strip says. -->
     <span
       class="peers-inline"
       aria-label="Hub peers"
       :title="peerRosterHint"
       >peers: {{ peerSummary }}</span
+    >
+
+    <!-- Which rtl-buddy is on the other end, in the SAME words the
+         /graph and /cov panes use — one label a user can read off any
+         hub surface and compare with ``rb --version``. Nothing at all
+         before the first welcome: an empty version is a fact about the
+         connection, and the dot already states it. The full raw string
+         is the title here and a row in the popover. -->
+    <span v-if="versionText" class="version-inline" :title="hub.serverVersion.value"
+      >rtl-buddy {{ versionText
+      }}<span
+        v-if="bundleHash"
+        class="ui-hash"
+        title="SPA bundle — changes when the viewer is rebuilt"
+        >{{ ` · ui ${bundleHash}` }}</span
+      ></span
     >
 
     <!-- right slot: message area, on the shared severity tokens
@@ -53,10 +71,14 @@
           <span class="msg-text">reconnecting — wave badges frozen</span>
         </span>
       </template>
-      <template v-else-if="hub.lastError.value">
-        <code class="msg-code">{{ hub.lastError.value.code }}</code>
-        <span class="msg-text" :title="hub.lastError.value.message">
-          {{ hub.lastError.value.message }}
+      <!-- One event, one full rendering. The toast says the sentence;
+           this slot says a few words and expires (the composable's
+           ``errorNotice`` clears itself, and a welcome clears it
+           early). It used to be a red mono duplicate of the toast
+           that never went away. -->
+      <template v-else-if="noticeCopy">
+        <span class="msg-text" :title="noticeCopy.detail">
+          {{ noticeCopy.short }}
         </span>
       </template>
     </div>
@@ -79,7 +101,7 @@
               :title="peer.connected ? 'connected' : 'not connected'"
             >
               <span class="peer-dot" aria-hidden="true"></span>
-              <code>{{ peer.origin }}</code>
+              <code>{{ peer.display }}</code>
               <span class="peer-label">{{ peer.label }}</span>
             </li>
           </ul>
@@ -90,6 +112,24 @@
         </dd>
         <dd v-else>—</dd>
       </dl>
+      <!-- Versions. These two were chips in the top bar, where they
+           competed for space with the controls a user actually
+           touches while answering a question that comes up about once
+           a session ("am I on the build I just staged?"). They belong
+           with the rest of the connection facts. -->
+      <section class="versions">
+        <h4>versions</h4>
+        <dl>
+          <dt>rtl-buddy</dt>
+          <dd :title="hub.serverVersion.value || 'no hub connected'">
+            <code>{{ shortVersion || '—' }}</code>
+          </dd>
+          <dt>spa bundle</dt>
+          <dd :title="bundleHash ? `index-${bundleHash}.js` : 'dev server or embedded build — no hashed bundle'">
+            <code>{{ bundleHash || '—' }}</code>
+          </dd>
+        </dl>
+      </section>
       <footer v-if="hub.state.value === 'disconnected'">
         <button type="button" @click="reconnect">Reconnect</button>
       </footer>
@@ -106,16 +146,41 @@
 // would otherwise live in devtools.
 import { computed, ref } from 'vue'
 import { useHub } from '../composables/useHub.js'
+import { humanizeHubError } from '../hubErrors.js'
+import { readBundleHash, shortServerVersion, versionLabel } from '../buildInfo.js'
+import { displayOrigin, displayOrigins } from '../displayNames.js'
 
 const hub = useHub()
 const open = ref(false)
 
-// The panes' inline form, verbatim: ``peers: view, graph`` when some
-// are attached, ``peers: none`` when none are (see ``setPeers`` in
+// Build identity. The popover keeps the full detail (R8b); the strip
+// carries the one short label every hub app shows, recomputed off the
+// ``serverVersion`` ref so a fresh welcome (reconnect, hub restart on a
+// new build) rewrites it without a reload.
+const shortVersion = computed(() => shortServerVersion(hub.serverVersion.value))
+const versionText = computed(() => versionLabel(hub.serverVersion.value))
+// The SPA's own build. Unlike the panes — which are HTML the hub
+// server itself serves, so the server version covers them — this
+// bundle ships from a different artefact and can be older than the hub
+// it is talking to, so the strip names it separately. Empty under the
+// dev server and the offline embed (no hashed asset): then there is no
+// second build to disambiguate, and the suffix stays off.
+const bundleHash = readBundleHash()
+
+// Human copy for the expiring strip message. Reads ``errorNotice``,
+// NOT ``lastError`` — the latter is the popover's permanent log row.
+const noticeCopy = computed(() => humanizeHubError(hub.errorNotice.value))
+
+// The panes' inline form, verbatim: ``peers: sch, gph`` when some are
+// attached, ``peers: none`` when none are (see ``setPeers`` in
 // rtl_buddy hub/graph_page.html). Only CONNECTED peers — the roster of
 // everything that could connect is the popover's job.
+//
+// ``hub.peers`` holds WIRE origins; every rendering of them goes
+// through ``displayOrigins`` so the strip, the popover and the panes
+// all say the same words.
 const peerSummary = computed(() => {
-  const list = hub.peers.value || []
+  const list = displayOrigins(hub.peers.value || [])
   return list.length > 0 ? list.join(', ') : 'none'
 })
 
@@ -132,8 +197,11 @@ const peerSummary = computed(() => {
 // protocol schema first (rtl-buddy/rtl-buddy-view#133). Until a hub
 // speaks it the row simply reads "not connected", which is the honest
 // answer either way.
+//
+// The keys are WIRE origins (they are matched against ``hub.peers``);
+// ``display`` is what the row prints, from displayNames.js.
 const PEER_ROLES = [
-  { origin: 'view', label: '(this SPA)' },
+  { origin: 'view', label: '(this schematic)' },
   { origin: 'src', label: '(editor)' },
   { origin: 'wave', label: '(surfer)' },
   { origin: 'graph', label: '(graph pane)' },
@@ -143,6 +211,7 @@ const peerRows = computed(() => {
   const list = hub.peers.value || []
   return PEER_ROLES.map((role) => ({
     ...role,
+    display: displayOrigin(role.origin),
     connected: list.includes(role.origin),
   }))
 })
@@ -150,7 +219,7 @@ const peerRows = computed(() => {
 // state, so "who is missing" is answerable without opening anything.
 const peerRosterHint = computed(() =>
   peerRows.value
-    .map((r) => `${r.origin} ${r.label} — ${r.connected ? 'connected' : 'not connected'}`)
+    .map((r) => `${r.display} ${r.label} — ${r.connected ? 'connected' : 'not connected'}`)
     .join('\n'),
 )
 
@@ -186,7 +255,7 @@ const isReconnecting = computed(
 const messageSeverity = computed(() => {
   if (hub.superseded.value) return 'error'
   if (isReconnecting.value) return 'warning'
-  if (hub.lastError.value) return 'error'
+  if (hub.errorNotice.value) return 'error'
   return 'note'
 })
 
@@ -263,9 +332,13 @@ function takeBack() {
 .hub-status .dot[data-state='connecting'] { background: var(--warn); }
 .hub-status .dot[data-state='error'] { background: var(--err); }
 
-/* -- middle slot: inline peer list ----------------------------------- */
+/* -- middle slot: inline peer list + version label -------------------- */
+/* The peer list shrinks (and ellipsises) before the version label does:
+   a truncated version string is worse than useless — it looks like a
+   different build. The flexible gap moved to the message area's
+   ``margin-left`` so both sit together on the left of it. */
 .peers-inline {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -273,9 +346,21 @@ function takeBack() {
   font-size: var(--fs-small);
   color: var(--fg-muted);
 }
+.version-inline {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: var(--fs-small);
+  color: var(--fg-muted);
+}
+/* One step fainter: the hub's version is the answer to "what am I
+   talking to"; the bundle hash is a footnote to it. */
+.version-inline .ui-hash {
+  color: var(--fg-faint);
+}
 
 /* -- right slot: message area ---------------------------------------- */
 .hub-message {
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -290,9 +375,6 @@ function takeBack() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.hub-message .msg-code {
-  font-family: var(--font-mono);
 }
 .hub-message .msg-action {
   font-size: var(--fs-small);
@@ -342,6 +424,27 @@ function takeBack() {
 }
 .hub-popover dt { color: var(--fg-muted); }
 .hub-popover dd { margin: 0; word-break: break-word; }
+/* Versions block: a hairline-separated sub-section so it reads as
+   build identity rather than another connection fact. */
+.hub-popover .versions {
+  margin-top: 0.5rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--line);
+}
+.hub-popover .versions h4 {
+  margin: 0 0 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+.hub-popover .versions code {
+  font-family: var(--font-mono);
+  background: var(--panel-2);
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-1);
+}
 .hub-popover footer {
   margin-top: 0.5rem;
   display: flex;

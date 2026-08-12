@@ -12,6 +12,8 @@
 //   - diagnosticsBySource: { [source]: items[] } keyed by producer.
 //     Latest-writer-wins per source; empty items clears the source.
 //   - hubError / hubErrorDismissedAt: surfaces hub `error` envelopes.
+//   - covData / covEnabled: the hub's live coverage payload
+//     (`/cov.json`, null without a hub) and the canvas tint toggle.
 //
 // Actions:
 //   - bootstrap(): kick off the initial load (URL query, inlined
@@ -20,7 +22,8 @@
 //   - loadFromUrl(url) / loadFromFile(file) / loadFromText(text):
 //     three explicit entry points for the same parse+validate path.
 //   - select(id) / clearSelection()
-//   - toggleOverlay(name)
+//   - toggleOverlay(name) / toggleCoverageTint()
+//   - loadCoverage(): one-shot fetch of the hub's /cov.json.
 //   - applyHubCursorTime / applyHubSelection / applyHubScope /
 //     applyDiagnostics / applyHubError — invoked by useHub on inbound
 //     events; centralising them keeps the composable thin and the
@@ -28,6 +31,8 @@
 //
 import { defineStore } from 'pinia'
 import { parseViewJson } from './parse.js'
+import { commonSourceRoot } from './sourcePaths.js'
+import { loadCovData, moduleCoverage } from './covData.js'
 
 
 // -------------------------------------------------------------------
@@ -241,6 +246,25 @@ export const useViewerStore = defineStore('viewer', {
     // view.json's ``tb_top`` field at install time; mode switches go
     // through ``switchModel`` / ``switchTest``.
     viewModeTb: false,
+
+    // --- live coverage (the hub's /cov.json) ---------------------------
+    //
+    // Distinct from the baked ``overlays.coverage`` block a producer
+    // may have written into view.json: this is whatever the hub has
+    // NOW, fetched once per graph load and joined to nodes by module
+    // name. ``null`` means "no hub, or the hub has no coverage" —
+    // the overlay entry and the NodeDetail section both hide, and
+    // nothing about the standalone / embed.py experience changes.
+    covData: null,
+    // Loading latch: ``loadCoverage`` is idempotent per session, so a
+    // model switch doesn't re-fetch and two callers can't race.
+    covLoadStarted: false,
+    // Tint enabled. Default ON so coverage is visible the moment the
+    // data is there (matching the graph pane's auto-tick); once the
+    // user has touched the checkbox their choice sticks for the rest
+    // of the session, including across model switches.
+    covEnabled: true,
+    covEnabledTouched: false,
   }),
   getters: {
     nodesById: (state) => {
@@ -284,6 +308,18 @@ export const useViewerStore = defineStore('viewer', {
       }
       return m
     },
+    // Live coverage keyed by module name:
+    // ``Map<module, {line, branch, toggle, expression, cover}>``,
+    // each bucket ``{found, hit, ratio}``. Empty when there is no
+    // coverage payload.
+    //
+    // The join is per-FILE totals attributed to every module the file
+    // declares, with Verilator's ``__W4`` parameterization suffixes
+    // stripped to source names — see ``covData.moduleCoverage`` for
+    // the rule and its approximation. Memoized by being a getter:
+    // Pinia caches it until ``covData`` is replaced, so the canvas
+    // can re-read it per repaint without rebuilding the map.
+    covByModule: (state) => moduleCoverage(state.covData),
     // The graph the canvas actually renders. When rootInstancePath
     // is null, this is the full graph; otherwise it's the subtree
     // rooted at that node.
@@ -343,6 +379,24 @@ export const useViewerStore = defineStore('viewer', {
     },
     overlaysPresent: (state) =>
       state.graph ? state.graph.overlays_present : [],
+    // Directory every source path in this graph is shown relative to.
+    // See sourcePaths.js for the heuristic (common directory prefix,
+    // falling back to the top node's directory). Empty string means
+    // "no useful root" and consumers show a basename. Recomputed when
+    // ``graph`` is replaced, so a model switch re-anchors.
+    sourceRoot(state) {
+      const g = state.graph
+      if (!g || !Array.isArray(g.nodes)) return ''
+      const files = []
+      let topFile = null
+      for (const n of g.nodes) {
+        const f = n?.source?.file
+        if (typeof f !== 'string' || !f) continue
+        files.push(f)
+        if (n.id === g.top) topFile = f
+      }
+      return commonSourceRoot(files, topFile)
+    },
     // Instance paths of every DUT anchor in the current graph,
     // derived from ``graph.dut_top`` per view-json v1.1 — the SPA's
     // DUT-boundary renderer (GraphCanvas) walks this list to stamp
@@ -413,6 +467,115 @@ export const useViewerStore = defineStore('viewer', {
         for (const item of items) out.push({ source, ...item })
       }
       return out
+    },
+
+    // --- instance-hierarchy tree ----------------------------------------
+    //
+    // The hierarchy panel (HierarchyTree.vue) is derived purely from
+    // node ids: ``a.b.c``'s parent is the longest strict dot-prefix
+    // that is ITSELF a node of the graph.
+    //
+    // Sparse hierarchies are the interesting case. A producer may emit
+    // ``top`` and ``top.u_a.u_b`` without ``top.u_a`` (elided blackbox
+    // interior, a filtered view.json, a hand-written fixture). Such an
+    // orphan is re-attached to its NEAREST EXISTING ANCESTOR — here
+    // ``top`` — rather than being dropped or promoted to a root; when
+    // no ancestor exists at all it becomes an additional root. The
+    // panel is the design's index, so nothing may go missing: a
+    // slightly-flattened branch is a far smaller lie than an invisible
+    // instance. The full dotted path stays on the row's ``data-node-id``
+    // and title, so the flattening is visible to anyone who looks.
+    //
+    // Order within a level follows ``graph.nodes`` order — the
+    // producer's declaration order, which is what other tools show.
+    treeParentOf(state) {
+      const parents = new Map()
+      if (!state.graph || !Array.isArray(state.graph.nodes)) return parents
+      const ids = new Set()
+      for (const n of state.graph.nodes) {
+        if (n && typeof n.id === 'string' && n.id) ids.add(n.id)
+      }
+      for (const id of ids) {
+        let cur = id
+        let parent = null
+        for (;;) {
+          const cut = cur.lastIndexOf('.')
+          if (cut < 0) break
+          cur = cur.slice(0, cut)
+          if (ids.has(cur)) {
+            parent = cur
+            break
+          }
+        }
+        parents.set(id, parent)
+      }
+      return parents
+    },
+    // ``Map<parentId, childIds[]>``. Only parents that have children
+    // appear as keys.
+    treeChildren(state) {
+      const children = new Map()
+      if (!state.graph || !Array.isArray(state.graph.nodes)) return children
+      const parents = this.treeParentOf
+      for (const n of state.graph.nodes) {
+        if (!n || typeof n.id !== 'string' || !n.id) continue
+        const p = parents.get(n.id)
+        if (!p) continue
+        const arr = children.get(p)
+        if (arr) arr.push(n.id)
+        else children.set(p, [n.id])
+      }
+      return children
+    },
+    // Ids with no parent in the node set, in graph order. Normally a
+    // single entry (the design top); more when the graph is sparse.
+    treeRoots(state) {
+      if (!state.graph || !Array.isArray(state.graph.nodes)) return []
+      const parents = this.treeParentOf
+      const out = []
+      for (const n of state.graph.nodes) {
+        if (!n || typeof n.id !== 'string' || !n.id) continue
+        if (!parents.get(n.id)) out.push(n.id)
+      }
+      return out
+    },
+    // Filter semantics for the tree's search box, as a pure function of
+    // the query so it is testable without mounting anything.
+    //
+    // ``matches`` = nodes whose INSTANCE NAME (last path segment) or
+    // MODULE name contains the query, case-insensitively. ``visible``
+    // = the matches plus every ancestor of a match, because a match
+    // shown without its ancestors would be a list, not a tree; the
+    // panel dims the ancestors that are not themselves matches.
+    treeMatch(state) {
+      const nodes =
+        state.graph && Array.isArray(state.graph.nodes) ? state.graph.nodes : []
+      const parents = this.treeParentOf
+      return (query) => {
+        const q = typeof query === 'string' ? query.trim().toLowerCase() : ''
+        const matches = new Set()
+        if (!q) return { matches, visible: new Set() }
+        for (const n of nodes) {
+          if (!n || typeof n.id !== 'string' || !n.id) continue
+          const name = n.id.slice(n.id.lastIndexOf('.') + 1)
+          const module = typeof n.module === 'string' ? n.module : ''
+          if (
+            name.toLowerCase().includes(q) ||
+            module.toLowerCase().includes(q)
+          ) {
+            matches.add(n.id)
+          }
+        }
+        const visible = new Set(matches)
+        for (const id of matches) {
+          let p = parents.get(id) || null
+          while (p && !visible.has(p)) {
+            visible.add(p)
+            p = parents.get(p) || null
+          }
+        }
+        return { matches, visible }
+      }
     },
   },
   actions: {
@@ -797,6 +960,11 @@ export const useViewerStore = defineStore('viewer', {
       // Default: every overlay the producer emitted is enabled, so
       // the user sees the full overlay decoration on first open.
       this.enabledOverlays = new Set(graph.overlays_present)
+      // Live coverage is per-HUB, not per-graph: fetch it once, the
+      // first time a graph lands, and keep it across model switches
+      // (the join is by module name, so a different model simply
+      // matches a different subset). No-ops without a hub.
+      this.loadCoverage().catch(() => {})
     },
     _fail(message, meta = {}) {
       this.status = 'error'
@@ -904,6 +1072,34 @@ export const useViewerStore = defineStore('viewer', {
       // trigger reactivity reliably across all consumers; reassign
       // to force an update.
       this.enabledOverlays = new Set(this.enabledOverlays)
+    },
+
+    // --- live coverage -------------------------------------------------
+
+    /**
+     * Fetch the hub's ``/cov.json`` once per session.
+     *
+     * Never throws and never surfaces an error: no hub, no coverage
+     * route, a 404 or a malformed body all land on ``covData = null``,
+     * which reads downstream as "this feature isn't available here".
+     * That silence is deliberate — the SPA also runs from embed.py and
+     * the Vite dev server, where the absence is normal, not a fault.
+     */
+    async loadCoverage() {
+      if (this.covLoadStarted) return this.covData
+      this.covLoadStarted = true
+      const data = await loadCovData()
+      this.covData = data
+      // Auto-tick on arrival, unless the user has already expressed a
+      // preference this session.
+      if (data && !this.covEnabledTouched) this.covEnabled = true
+      return this.covData
+    },
+
+    /** Toggle the live coverage tint, and remember that they did. */
+    toggleCoverageTint() {
+      this.covEnabled = !this.covEnabled
+      this.covEnabledTouched = true
     },
 
     // --- hub-event reducers --------------------------------------------------
