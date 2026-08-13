@@ -107,13 +107,15 @@ def _version_callback(value: bool) -> None:
     ``main()``. Downstream consumers (rtl_buddy's tool_manifest)
     probe this to enforce a version floor, so the format is a
     contract: the literal ``rtl-buddy-view`` followed by the
-    importlib.metadata version string.
+    importlib.metadata version string. The literal survives the
+    distribution rename to ``rtl-buddy-sch`` — released rtl_buddy
+    matches ``rtl-buddy-view\\s+<ver>`` and must keep parsing.
     """
     if not value:
         return
-    from importlib.metadata import version as _v
+    import rtl_buddy_view
 
-    typer.echo(f"rtl-buddy-view {_v('rtl-buddy-view')}")
+    typer.echo(f"rtl-buddy-view {rtl_buddy_view.__version__}")
     raise typer.Exit(code=0)
 
 

@@ -1,15 +1,17 @@
-# rtl-buddy-view
+# rtl-buddy-sch
 
-> **Display name: rtl-buddy-schematic** (short: `sch`). In the hub's
-> chrome — the SPA's wordmark and tab title, the peers strip, the app
-> switcher — this app calls itself `rtl-buddy-sch`, alongside its
-> siblings `rtl-buddy-graph` (`gph`) and `rtl-buddy-coverage` (`cov`).
-> The rebrand is **display-only**: the repo, the Python package, the
-> `rtl-buddy-view` console script, the `view.json` artefact, the
-> `/view` route and the `view` hub-protocol origin all keep their
-> names. The wire origin becomes `sch` no earlier than protocol v2.
-> The one place the display labels are defined is
-> [`viewer/src/displayNames.js`](viewer/src/displayNames.js).
+> **Names, precisely.** The repo and the PyPI distribution are
+> **`rtl-buddy-sch`** (releases ≤ 0.5.0 published as
+> `rtl-buddy-view`; the repo rename invalidated that PyPI project's
+> trusted publisher, so the distribution follows the repo). The hub
+> display name is `rtl-buddy-sch` (short: `sch`), alongside siblings
+> `rtl-buddy-graph` (`gph`) and `rtl-buddy-coverage` (`cov`) —
+> defined in [`viewer/src/displayNames.js`](viewer/src/displayNames.js).
+> Everything consumers touch keeps its name: the `rtl-buddy-view`
+> console script (a `rtl-buddy-sch` alias also installs), the import
+> package `rtl_buddy_view`, the `view.json` artefact, the `/view`
+> route, the `tool.name` stamp, and the `view` hub-protocol origin.
+> The wire origin becomes `sch` no earlier than protocol v2.
 
 RTL hierarchy and connectivity visualization. Pluggable parser
 frontend ([Verible](https://github.com/chipsalliance/verible) for

@@ -1,4 +1,4 @@
-# AGENTS.md — rtl-buddy-view
+# AGENTS.md — rtl-buddy-sch
 
 ## Role
 
@@ -360,8 +360,9 @@ a byte-compare guard in its `tests/test_hub_protocol.py`. Consequences:
   builds + publishes the wheel to PyPI via Trusted Publishing. An
   unlabeled merged PR cuts no release; `workflow_dispatch` is the manual
   fallback. The JSON renderer reads the resulting version at runtime via
-  `importlib.metadata.version("rtl-buddy-view")`, so it flows through to
-  the `tool.version` JSON field with no manual edit.
+  `importlib.metadata.version("rtl-buddy-sch")` (falling back to the
+  pre-rename `rtl-buddy-view` dist for old installs), so it flows through
+  to the `tool.version` JSON field with no manual edit.
 - **No CHANGELOG.** Release notes live on the GitHub Releases page
   (and in PR descriptions). A `CHANGELOG.md` was deliberately not
   introduced — it serializes every merge through one file and

@@ -613,7 +613,7 @@ wheels = [
 ]
 
 [[package]]
-name = "rtl-buddy-view"
+name = "rtl-buddy-sch"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
