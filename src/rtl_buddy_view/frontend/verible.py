@@ -27,6 +27,7 @@ from rtl_buddy_view._verible_install import find_binary
 from rtl_buddy_view.cst_cache import get_or_compute
 from rtl_buddy_view.offsets import OffsetIndex
 from rtl_buddy_view.extractor import (
+    DpiFunction,
     Instance,
     Interface,
     InterfaceSignal,
@@ -167,6 +168,9 @@ def _walk_modules(
             header, file=file, offsets=offsets, source=source
         )
         instances = _extract_instances(node, file=file, offsets=offsets, source=source)
+        dpi_functions = _extract_dpi_functions(
+            node, file=file, offsets=offsets, source=source
+        )
         out.append(
             Module(
                 name=name,
@@ -174,6 +178,7 @@ def _walk_modules(
                 parameters=parameters,
                 instances=instances,
                 location=loc,
+                dpi_functions=dpi_functions,
             )
         )
     return out
@@ -877,6 +882,178 @@ def _positional_param_overrides(
             ParameterOverride(param_name=None, value_text=value_text, location=loc)
         )
     return tuple(out)
+
+
+def _extract_dpi_functions(
+    module_node: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[DpiFunction, ...]:
+    """Extract DPI import/export items from a ``kModuleDeclaration``. (#127.)
+
+    Layouts (confirmed against Verible's CST)::
+
+        kModuleItemList
+          kDPIImportItem
+            import
+            TK_StringLiteral            <-- "DPI-C"
+            SymbolIdentifier            <-- C alias (only in the
+            =                               ``c_name = function ...`` form)
+            context | pure              <-- optional qualifier
+            kFunctionPrototype | kTaskPrototype
+              kFunctionHeader | kTaskHeader
+                kUnqualifiedId
+                  SymbolIdentifier      <-- the SV name
+          kDPIExportItem
+            export
+            TK_StringLiteral
+            SymbolIdentifier            <-- C alias (optional, as above)
+            =
+            kFunctionPrototype ...
+
+    ``c_symbol`` is the alias when present, else the SV name — that is
+    the name the C side links against either way. Only direct children
+    of the module's ``kModuleItemList`` are walked (same flat-scope
+    rule as :func:`_extract_instances`); DPI items in generate blocks
+    or at compilation-unit scope are out of scope.
+    """
+    item_list = _first_child_with_tag(module_node, "kModuleItemList")
+    if item_list is None:
+        return ()
+    out: list[DpiFunction] = []
+    for child in item_list.get("children", ()) or ():
+        if not isinstance(child, dict):
+            continue
+        tag = child.get("tag")
+        if tag not in ("kDPIImportItem", "kDPIExportItem"):
+            continue
+        direction = "import" if tag == "kDPIImportItem" else "export"
+        dpi = _dpi_from_item(
+            child, direction=direction, file=file, offsets=offsets, source=source
+        )
+        if dpi is not None:
+            out.append(dpi)
+    if not out:
+        return ()
+    imported = {d.sv_name for d in out if d.direction == "import"}
+    sites = _dpi_call_sites(module_node, imported, file=file, offsets=offsets)
+    return tuple(
+        DpiFunction(
+            sv_name=d.sv_name,
+            c_symbol=d.c_symbol,
+            direction=d.direction,
+            signature=d.signature,
+            location=d.location,
+            call_sites=tuple(sites.get(d.sv_name, ()))
+            if d.direction == "import"
+            else (),
+        )
+        for d in out
+    )
+
+
+def _dpi_from_item(
+    item: dict,
+    *,
+    direction: str,
+    file: str,
+    offsets: OffsetIndex,
+    source: bytes,
+) -> DpiFunction | None:
+    """Build one :class:`DpiFunction` from a kDPIImportItem/kDPIExportItem."""
+    alias: str | None = None
+    for child in item.get("children", ()) or ():
+        # The C alias is the only *direct-child* SymbolIdentifier; the
+        # SV name always sits inside the prototype's kUnqualifiedId.
+        if (
+            isinstance(child, dict)
+            and child.get("tag") == "SymbolIdentifier"
+            and "text" in child
+        ):
+            alias = child["text"]
+            break
+    proto = _first_child_with_tag(item, "kFunctionPrototype") or _first_child_with_tag(
+        item, "kTaskPrototype"
+    )
+    if proto is None:
+        return None
+    header = _first_child_with_tag(proto, "kFunctionHeader") or _first_child_with_tag(
+        proto, "kTaskHeader"
+    )
+    if header is None:
+        return None
+    unqualified = _first_child_with_tag(header, "kUnqualifiedId")
+    sym = (
+        _first_child_with_tag(unqualified, "SymbolIdentifier")
+        if unqualified is not None
+        else None
+    )
+    if sym is None or "text" not in sym:
+        return None
+    sv_name = sym["text"]
+    signature = _source_slice(proto, source)
+    if signature is not None:
+        # The aliased form parses the trailing `;` *inside* the
+        # prototype's header; the plain form leaves it a sibling.
+        # Normalize so the signature reads the same either way.
+        signature = signature.rstrip().rstrip(";").rstrip()
+    span = _node_span(sym)
+    loc = (
+        SourceLocation(file=file)
+        if span is None
+        else _location(file, offsets, span[0], span[1])
+    )
+    return DpiFunction(
+        sv_name=sv_name,
+        c_symbol=alias if alias is not None else sv_name,
+        direction=direction,  # type: ignore[arg-type]
+        signature=signature,
+        location=loc,
+    )
+
+
+def _dpi_call_sites(
+    module_node: dict,
+    imported: set[str],
+    *,
+    file: str,
+    offsets: OffsetIndex,
+) -> dict[str, list[SourceLocation]]:
+    """Call sites of imported DPI functions inside ``module_node``.
+
+    Best-effort by charter (#127): a ``kFunctionCall`` whose callee is
+    a *simple* reference (a lone ``kLocalRoot``, no hierarchy suffix)
+    naming an imported DPI function counts; anything the CST doesn't
+    make cheap — hierarchical calls, calls through a package scope —
+    is skipped silently.
+    """
+    sites: dict[str, list[SourceLocation]] = {}
+    if not imported:
+        return sites
+    for call in _iter_nodes_with_tag(module_node, "kFunctionCall"):
+        base = _first_child_with_tag(call, "kReferenceCallBase")
+        if base is None:
+            continue
+        ref = _first_child_with_tag(base, "kReference")
+        if ref is None:
+            continue
+        ref_children = [c for c in ref.get("children", ()) or () if isinstance(c, dict)]
+        if len(ref_children) != 1 or ref_children[0].get("tag") != "kLocalRoot":
+            continue
+        unqualified = _first_child_with_tag(ref_children[0], "kUnqualifiedId")
+        sym = (
+            _first_child_with_tag(unqualified, "SymbolIdentifier")
+            if unqualified is not None
+            else None
+        )
+        if sym is None or sym.get("text") not in imported:
+            continue
+        span = _node_span(sym)
+        loc = (
+            SourceLocation(file=file)
+            if span is None
+            else _location(file, offsets, span[0], span[1])
+        )
+        sites.setdefault(sym["text"], []).append(loc)
+    return sites
 
 
 def _find_first_sym(node: dict) -> dict | None:

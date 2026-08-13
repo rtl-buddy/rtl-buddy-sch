@@ -76,11 +76,11 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "Stable identity: module:<name> | inst:<top>/<instance path> | port:<owner>.<port> | param:<owner>.<name> | iface:<name> | modport:<iface>.<name>."
+          "description": "Stable identity: module:<name> | inst:<top>/<instance path> | port:<owner>.<port> | param:<owner>.<name> | iface:<name> | modport:<iface>.<name> | dpi:<c_symbol>."
         },
         "type": {
           "type": "string",
-          "enum": ["module", "instance", "port", "parameter", "interface", "modport"],
+          "enum": ["module", "instance", "port", "parameter", "interface", "modport", "dpi_function"],
           "description": "Design-tier node kinds. Other tiers add their own values."
         },
         "label": {"type": "string", "description": "Short human-readable name — the bare entity name, not the id."},
@@ -107,7 +107,11 @@
         "interface": {"type": "string", "description": "Modport nodes: the owning interface name."},
         "inputs": {"type": "array", "items": {"type": "string"}, "description": "Modport nodes: signals the modport declares as inputs."},
         "outputs": {"type": "array", "items": {"type": "string"}, "description": "Modport nodes: signals the modport declares as outputs."},
-        "inouts": {"type": "array", "items": {"type": "string"}, "description": "Modport nodes: signals the modport declares as inouts."}
+        "inouts": {"type": "array", "items": {"type": "string"}, "description": "Modport nodes: signals the modport declares as inouts."},
+        "sv_name": {"type": "string", "description": "dpi_function nodes: the SystemVerilog-side function/task name."},
+        "c_symbol": {"type": "string", "description": "dpi_function nodes: the C linkage symbol — the alias in the `import \"DPI-C\" c_name = function ...` form, else the SV name. Also the node id's suffix."},
+        "direction": {"type": "string", "enum": ["import", "export"], "description": "dpi_function nodes: import (C implements, SV calls) or export (SV implements, C calls)."},
+        "signature": {"type": ["string", "null"], "description": "dpi_function nodes: verbatim source slice of the function/task prototype, trailing ';' stripped."}
       }
     },
     "link": {
@@ -119,8 +123,8 @@
         "target": {"type": "string", "description": "Node id the relation ends at."},
         "type": {
           "type": "string",
-          "enum": ["instantiates", "child_of", "instance_of", "connects", "implements", "overrides"],
-          "description": "Design-tier relations: instantiates (module→module|interface), child_of (instance→parent instance), instance_of (instance→module|interface), connects (instance→port), implements (module→modport), overrides (instance→parameter)."
+          "enum": ["instantiates", "child_of", "instance_of", "connects", "implements", "overrides", "imports_dpi", "exports_dpi", "calls"],
+          "description": "Design-tier relations: instantiates (module→module|interface), child_of (instance→parent instance), instance_of (instance→module|interface), connects (instance→port), implements (module→modport), overrides (instance→parameter), imports_dpi / exports_dpi (module→dpi_function), calls (module→dpi_function, one edge per recovered call site — best-effort)."
         },
         "confidence": {
           "type": "string",

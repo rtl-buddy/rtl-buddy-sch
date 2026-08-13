@@ -113,6 +113,36 @@ class Instance:
 
 
 @dataclass(frozen=True)
+class DpiFunction:
+    """One ``import "DPI-C"`` / ``export "DPI-C"`` item in a module body.
+
+    DPI is one of the ways a golden model attaches to a design, so
+    these declarations are first-class extractor output rather than
+    trivia (rtl-buddy-view#127). ``c_symbol`` is the name the C side
+    links against: the alias in the
+    ``import "DPI-C" c_name = function sv_name(...)`` form, or the SV
+    name itself when no alias is given. The same rule applies to
+    exports (``export "DPI-C" c_name = function sv_name;``).
+    """
+
+    sv_name: str
+    c_symbol: str
+    direction: Literal["import", "export"]
+    # Verbatim source slice of the function/task prototype (e.g.
+    # ``"function int c_add(input int a, input int b)"``), trailing
+    # ``;`` stripped. Same "don't parse type expressions" rationale
+    # as :attr:`Port.type_text`.
+    signature: str | None
+    location: SourceLocation | None
+    # Call sites of the imported function observed inside the
+    # declaring module's body — best-effort: only simple
+    # (non-hierarchical) function-call references are recorded, and
+    # only where the CST makes the match cheap. Always empty for
+    # exports (those are called from C).
+    call_sites: tuple[SourceLocation, ...] = ()
+
+
+@dataclass(frozen=True)
 class Module:
     name: str
     ports: tuple[Port, ...]
@@ -124,6 +154,11 @@ class Module:
     # we capture it here for downstream consumers (LLM context, doc
     # generators). May be empty.
     leading_doc: str = ""
+    # DPI import/export items declared in the module body (#127).
+    # Verible frontend only: the slang frontend is a stub
+    # (NotImplementedError, see frontend/slang.py), so there is no
+    # slang path to leave this absent from yet.
+    dpi_functions: tuple[DpiFunction, ...] = ()
 
 
 @dataclass(frozen=True)

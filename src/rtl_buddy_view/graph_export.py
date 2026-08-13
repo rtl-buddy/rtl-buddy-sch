@@ -30,7 +30,8 @@ and ``schemas/graph-v1.json``):
   ``"design"`` for everything this module emits.
 - node ids: ``module:<name>``, ``inst:<top>/<instance path>``,
   ``port:<module>.<port>``, ``param:<module>.<name>``,
-  ``iface:<name>``, ``modport:<iface>.<name>``.
+  ``iface:<name>``, ``modport:<iface>.<name>``,
+  ``dpi:<c_symbol>``.
 - every node carries ``id`` / ``type`` / ``label`` / ``tier`` and
   (nullable) ``file`` / ``line``.
 - every link carries ``source`` / ``target`` / ``type`` /
@@ -57,6 +58,7 @@ from typing import IO, Any
 
 from rtl_buddy_view import query
 from rtl_buddy_view.extractor import (
+    DpiFunction,
     Instance,
     Interface,
     Module,
@@ -84,6 +86,7 @@ NODE_TYPES: tuple[str, ...] = (
     "parameter",
     "interface",
     "modport",
+    "dpi_function",
 )
 EDGE_TYPES: tuple[str, ...] = (
     "instantiates",
@@ -92,6 +95,9 @@ EDGE_TYPES: tuple[str, ...] = (
     "connects",
     "implements",
     "overrides",
+    "imports_dpi",
+    "exports_dpi",
+    "calls",
 )
 
 #: The pinned public contract, checked by
@@ -176,6 +182,19 @@ def interface_id(name: str) -> str:
 
 def modport_id(interface_name: str, modport_name: str) -> str:
     return f"modport:{interface_name}.{modport_name}"
+
+
+def dpi_function_id(c_symbol: str) -> str:
+    """``dpi:<c_symbol>`` — keyed by the *C* symbol, deliberately.
+
+    The C symbol is the cross-language identity: it is what the
+    implementing ``.c``/``.cc`` file defines, so it is where the
+    binding tier's ``implemented_by`` edge lands
+    (rtl-buddy-sch#127). Two modules importing the same C function
+    therefore share one node — that convergence is the point, not a
+    collision.
+    """
+    return f"dpi:{c_symbol}"
 
 
 # --- public API -------------------------------------------------------------
@@ -450,6 +469,8 @@ class _Builder:
                 owner=module.name,
                 default=param.default_text,
             )
+        for dpi in module.dpi_functions:
+            self._emit_dpi(module.name, dpi)
         for inst in module.instances:
             target = self._definition_id(inst.module_name)
             self._add_link(
@@ -496,6 +517,40 @@ class _Builder:
             link_type="implements",
             port=port.name,
         )
+
+    def _emit_dpi(self, owner: str, dpi: DpiFunction) -> None:
+        """``dpi_function`` node + ``imports_dpi``/``exports_dpi`` edge (#127).
+
+        The node is keyed by C symbol (see :func:`dpi_function_id`),
+        so a checker function imported by both the TB and a monitor
+        module is one node with two in-edges. ``calls`` edges are
+        emitted per call site the frontend recovered — best-effort,
+        so their absence never means "not called".
+        """
+        node_id = dpi_function_id(dpi.c_symbol)
+        self._add_node(
+            node_id,
+            node_type="dpi_function",
+            label=dpi.c_symbol,
+            location=dpi.location,
+            sv_name=dpi.sv_name,
+            c_symbol=dpi.c_symbol,
+            direction=dpi.direction,
+            signature=dpi.signature,
+        )
+        self._add_link(
+            module_id(owner),
+            node_id,
+            link_type="imports_dpi" if dpi.direction == "import" else "exports_dpi",
+        )
+        for site in dpi.call_sites:
+            self._add_link(
+                module_id(owner),
+                node_id,
+                link_type="calls",
+                file=_rel_path(site.file, self.project_root),
+                line=site.start_line,
+            )
 
     def _emit_interface(self, iface: Interface) -> None:
         self._add_node(

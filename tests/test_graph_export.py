@@ -804,6 +804,7 @@ _FIXTURE_CASES = [
     ("interface_port_module", "tb_top"),
     ("tb_over_dut", "tb_top"),
     ("graph_closure", "closure_top"),
+    ("dpi_checker", "tb_dpi"),
 ]
 
 
@@ -929,6 +930,158 @@ def test_tb_rooted_export_carries_the_testbench_hierarchy() -> None:
     # Same instance, different root ⇒ different id: the <top>/ prefix
     # plus the path keeps the two exports mergeable side by side.
     assert "inst:dut/dut.u_a" in _nodes_by_id(dut_rooted)
+
+
+# --- DPI (#127) -------------------------------------------------------------
+
+
+def _dpi_table() -> ModuleTable:
+    """A module importing (plain + aliased) and exporting DPI functions."""
+    from rtl_buddy_view.extractor import DpiFunction
+
+    checker = Module(
+        name="checker",
+        ports=(),
+        parameters=(),
+        instances=(),
+        location=_loc("checker.sv", 1),
+        dpi_functions=(
+            DpiFunction(
+                sv_name="c_add",
+                c_symbol="c_add",
+                direction="import",
+                signature="function int c_add(input int a, input int b)",
+                location=_loc("checker.sv", 2),
+                call_sites=(_loc("checker.sv", 9),),
+            ),
+            DpiFunction(
+                sv_name="mul_ref",
+                c_symbol="golden_mul",
+                direction="import",
+                signature="function longint mul_ref(input longint a)",
+                location=_loc("checker.sv", 3),
+            ),
+            DpiFunction(
+                sv_name="sv_notify",
+                c_symbol="c_notify",
+                direction="export",
+                signature="function sv_notify",
+                location=_loc("checker.sv", 4),
+            ),
+        ),
+    )
+    table = ModuleTable()
+    table.modules_by_name["checker"] = checker
+    return table
+
+
+@pytest.fixture()
+def dpi_payload() -> dict:
+    table = _dpi_table()
+    root = build_hierarchy(table, "checker")
+    return graph_export.build_graph(
+        root,
+        table,
+        project_root=PROJECT_ROOT,
+        dut_top="checker",
+        frontend="verible",
+        tool_version="9.9.9",
+    )
+
+
+def test_dpi_imports_become_nodes_keyed_by_c_symbol(dpi_payload: dict) -> None:
+    """#127 acceptance: plain and aliased imports both land, and the
+    node id carries the *C* symbol — the cross-language identity the
+    binding tier's ``implemented_by`` edge will stitch onto."""
+    nodes = _nodes_by_id(dpi_payload)
+    plain = nodes["dpi:c_add"]
+    assert plain["type"] == "dpi_function"
+    assert plain["label"] == "c_add"
+    assert plain["sv_name"] == "c_add"
+    assert plain["c_symbol"] == "c_add"
+    assert plain["direction"] == "import"
+    assert plain["signature"] == "function int c_add(input int a, input int b)"
+    assert plain["file"] == "checker.sv"
+    assert plain["line"] == 2
+    aliased = nodes["dpi:golden_mul"]
+    assert aliased["sv_name"] == "mul_ref"
+    assert aliased["c_symbol"] == "golden_mul"
+    assert "dpi:mul_ref" not in nodes
+
+
+def test_dpi_direction_selects_the_edge_type(dpi_payload: dict) -> None:
+    links = {
+        (x["source"], x["target"]): x["type"]
+        for x in dpi_payload["links"]
+        if x["type"] in ("imports_dpi", "exports_dpi")
+    }
+    assert links == {
+        ("module:checker", "dpi:c_add"): "imports_dpi",
+        ("module:checker", "dpi:golden_mul"): "imports_dpi",
+        ("module:checker", "dpi:c_notify"): "exports_dpi",
+    }
+    assert all(
+        x["confidence"] == "EXTRACTED"
+        for x in dpi_payload["links"]
+        if x["type"] in ("imports_dpi", "exports_dpi", "calls")
+    )
+
+
+def test_dpi_call_sites_become_calls_edges(dpi_payload: dict) -> None:
+    calls = [x for x in dpi_payload["links"] if x["type"] == "calls"]
+    assert len(calls) == 1
+    assert calls[0]["source"] == "module:checker"
+    assert calls[0]["target"] == "dpi:c_add"
+    assert calls[0]["file"] == "checker.sv"
+    assert calls[0]["line"] == 9
+
+
+def test_dpi_synthetic_graph_validates(graph_schema: dict, dpi_payload: dict) -> None:
+    jsonschema.validate(instance=dpi_payload, schema=graph_schema)
+
+
+def test_dpi_fixture_extracts_plain_aliased_and_exported() -> None:
+    """#127 acceptance over a real Verible parse: the fixture TB
+    imports a plain and an aliased DPI function and exports one."""
+    payload = _export_fixture("dpi_checker", "dpi_dut", tb_top="tb_dpi")
+    nodes = _nodes_by_id(payload)
+    assert nodes["dpi:add_ref"]["sv_name"] == "add_ref"
+    assert nodes["dpi:add_ref"]["direction"] == "import"
+    assert (
+        nodes["dpi:add_ref"]["signature"]
+        == "function int add_ref(input int a, input int b)"
+    )
+    # Aliased: `import "DPI-C" golden_scale = function int scale_ref(...)`.
+    assert nodes["dpi:golden_scale"]["sv_name"] == "scale_ref"
+    assert nodes["dpi:golden_scale"]["c_symbol"] == "golden_scale"
+    assert "dpi:scale_ref" not in nodes
+    # Export direction survives.
+    assert nodes["dpi:sv_report_mismatch"]["direction"] == "export"
+
+    by_type: dict[str, set[tuple[str, str]]] = {}
+    for link in payload["links"]:
+        by_type.setdefault(link["type"], set()).add((link["source"], link["target"]))
+    assert ("module:tb_dpi", "dpi:add_ref") in by_type["imports_dpi"]
+    assert ("module:tb_dpi", "dpi:golden_scale") in by_type["imports_dpi"]
+    assert ("module:tb_dpi", "dpi:sv_report_mismatch") in by_type["exports_dpi"]
+    # The initial block's `add_ref(...)` call is cheap to see in the
+    # CST, so it gets a `calls` edge with a citable anchor.
+    calls = [x for x in payload["links"] if x["type"] == "calls"]
+    assert [(x["source"], x["target"]) for x in calls] == [
+        ("module:tb_dpi", "dpi:add_ref")
+    ]
+    assert calls[0]["file"] == "dpi_checker/tb_dpi.sv"
+    assert isinstance(calls[0]["line"], int)
+
+
+def test_dpi_in_the_tb_needs_the_tb_rooted_export() -> None:
+    """#127 acceptance: checker DPI lives in testbench code, so the
+    TB-rooted export shows it — and the DUT-rooted export of the
+    same design proves the DUT declares none."""
+    tb_rooted = _export_fixture("dpi_checker", "dpi_dut", tb_top="tb_dpi")
+    assert any(n["type"] == "dpi_function" for n in tb_rooted["nodes"])
+    dut_rooted = _export_fixture("dpi_checker", "dpi_dut")
+    assert not any(n["type"] == "dpi_function" for n in dut_rooted["nodes"])
 
 
 # --- optional consumers -----------------------------------------------------
