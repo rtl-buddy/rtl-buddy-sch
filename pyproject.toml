@@ -1,5 +1,11 @@
 [project]
-name = "rtl-buddy-view"
+# Distribution name. Releases ≤ 0.5.0 were published as `rtl-buddy-view`;
+# the repo rename to rtl-buddy-sch broke that project's PyPI trusted
+# publisher (OIDC claims carry the repo name), so the distribution now
+# follows the repo. The `rtl-buddy-view` console script, `tool.name`
+# stamp, view.json artefact, and import package `rtl_buddy_view` are
+# frozen consumer contracts and keep their names.
+name = "rtl-buddy-sch"
 dynamic = ["version"]
 description = "RTL hierarchy and connectivity visualization tool. Pluggable Verible (source CST) or slang (elaborated) frontend; renders Graphviz / ASCII / Mermaid / JSON; integrates with rtl-buddy."
 readme = "README.md"
@@ -28,7 +34,11 @@ slang = [
 ]
 
 [project.scripts]
+# `rtl-buddy-view` is the PATH contract rtl_buddy resolves (tool_manifest
+# + tools/hier_rtl_buddy_view.py); it must survive the distribution
+# rename. `rtl-buddy-sch` is the forward-looking alias.
 rtl-buddy-view = "rtl_buddy_view:main"
+rtl-buddy-sch = "rtl_buddy_view:main"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
@@ -38,7 +48,8 @@ build-backend = "hatchling.build"
 # this file), matching rtl_buddy. A release is cut by the label-driven
 # Release workflow, which computes + pushes the vX.Y.Z tag and builds
 # from it. The JSON renderer reads the result via
-# importlib.metadata.version("rtl-buddy-view") at runtime.
+# importlib.metadata.version("rtl-buddy-sch") at runtime (with a
+# fallback probe of the pre-rename "rtl-buddy-view" dist).
 [tool.hatch.version]
 source = "vcs"
 

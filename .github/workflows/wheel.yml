@@ -58,7 +58,7 @@ jobs:
 
       - name: Verify bundle is in the wheel
         run: |
-          wheel=$(ls dist/rtl_buddy_view-*.whl)
+          wheel=$(ls dist/rtl_buddy_sch-*.whl)
           echo "Built: $wheel"
           if ! unzip -l "$wheel" | grep -q 'rtl_buddy_view/_viewer_bundle/index.html'; then
             echo "::error::wheel is missing _viewer_bundle/index.html"
