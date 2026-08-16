@@ -10,7 +10,7 @@
 //
 //   1. Nothing is listed unless the hub is serving us. Opened from an
 //      ``embed.py`` single file or the Vite dev server, ``/`` and
-//      ``/graph`` are 404s (or worse, someone else's site), so the
+//      ``/gph`` are 404s (or worse, someone else's site), so the
 //      switcher is empty and App.vue hides the group.
 //   2. A sibling app is listed on DATA PRESENCE, the rule the hub's
 //      landing cards already follow: the hub sets
@@ -22,7 +22,7 @@
 // labels carry a trailing ``↗`` — the same treatment the graph and cov
 // panes give their own switchers. The reason is the hub protocol, not
 // taste: the SPA is the ``view`` WS peer, and one client per origin
-// means navigating this tab to /graph drops the view registration
+// means navigating this tab to /gph drops the view registration
 // (the graph pane's "sync design view" then has nothing to talk to,
 // and coming back re-registers as a fresh tab). ``⌂ hub`` is the one
 // same-tab link: the landing page is never a peer, so leaving for it
@@ -49,7 +49,7 @@ const SIBLINGS = [
   {
     key: 'graph',
     label: `${displayOrigin('graph')} ↗`,
-    href: '/graph',
+    href: '/gph',
     gate: '__RTL_BUDDY_GRAPH_URL__',
     title: 'Open the design knowledge graph pane in a new tab',
   },

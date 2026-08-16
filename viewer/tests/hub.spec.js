@@ -714,7 +714,7 @@ describe('useHub disambiguation picker (rtl-buddy-view#55)', () => {
 })
 
 describe('useHub graph_focus → module selection', () => {
-  // A node clicked in the /graph pane, or a module pill clicked in
+  // A node clicked in the /gph pane, or a module pill clicked in
   // /cov, arrives as ``graph_focus {node: "module:<name>"}``. The
   // panes think in MODULE TYPES; this view is a tree of INSTANCES, so
   // the SPA resolves 1→N against the currently loaded view.json.

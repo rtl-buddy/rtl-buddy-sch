@@ -19,7 +19,7 @@ import {
 describe('app switcher', () => {
   it('lists nothing when the hub is not serving the bundle', () => {
     // embed.py single file, or the Vite dev server: ``/`` and
-    // ``/graph`` belong to someone else (or nobody).
+    // ``/gph`` belong to someone else (or nobody).
     expect(isHubServed({})).toBe(false)
     expect(hubApps({})).toEqual([])
   })
@@ -62,7 +62,7 @@ describe('app switcher', () => {
   })
 
   it('opens siblings in a new tab so the view peer slot survives', () => {
-    // One WS client per origin: navigating THIS tab to /graph drops
+    // One WS client per origin: navigating THIS tab to /gph drops
     // the SPA's ``view`` registration, which is the peer the graph
     // pane's "sync design view" talks to. The panes open siblings in
     // a new tab for the same reason — the ↗ in the label is the
@@ -73,7 +73,7 @@ describe('app switcher', () => {
       __RTL_BUDDY_COV_URL__: '/cov.json',
     })
     const byKey = Object.fromEntries(apps.map((a) => [a.key, switcherLinkAttrs(a)]))
-    expect(byKey.graph).toEqual({ href: '/graph', target: '_blank', rel: 'noopener' })
+    expect(byKey.graph).toEqual({ href: '/gph', target: '_blank', rel: 'noopener' })
     expect(byKey.cov).toEqual({ href: '/cov', target: '_blank', rel: 'noopener' })
     // ⌂ hub is the exception: the landing page is never a peer, so
     // same-tab costs nothing that Back does not undo.
@@ -88,7 +88,7 @@ describe('app switcher', () => {
       __RTL_BUDDY_HUB__: '127.0.0.1:8123',
       __RTL_BUDDY_GRAPH_URL__: '/graph.json',
     }
-    expect(siblingAppHref('graph', win)).toBe('/graph')
+    expect(siblingAppHref('graph', win)).toBe('/gph')
     expect(siblingAppHref('cov', win)).toBe(null)
     expect(siblingAppHref('graph', { ...win, __RTL_BUDDY_GRAPH_URL__: '' })).toBe(null)
     // Not hub-served, and an app nobody has heard of.

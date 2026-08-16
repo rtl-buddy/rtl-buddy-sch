@@ -65,10 +65,11 @@ describe('display names', () => {
       __RTL_BUDDY_GRAPH_URL__: '/graph.json',
       __RTL_BUDDY_COV_URL__: '/cov.json',
     })
-    // Labels are short names; the routes they open are unchanged.
+    // Labels are short names; the routes are the hub's canonical TLA
+    // paths (the hub 307s the legacy /graph spelling to /gph).
     expect(apps.map((a) => [a.label, a.href])).toEqual([
       ['⌂ hub', '/'],
-      ['gph ↗', '/graph'],
+      ['gph ↗', '/gph'],
       ['cov ↗', '/cov'],
     ])
   })

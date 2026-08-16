@@ -19,7 +19,7 @@ export function shortServerVersion(raw) {
 }
 
 // The version label the STRIP shows. Same helper, same output, in all
-// three hub apps (SPA, /graph, /cov): one string a user can read off
+// three hub apps (SPA, /gph, /cov): one string a user can read off
 // any pane and compare with `rb --version` without translating between
 // three abbreviations. The popover keeps the full raw strings.
 const SHA_RE = /(?:^|[.\-_])g([0-9a-f]{4,})(?=$|[.\-_])/i
