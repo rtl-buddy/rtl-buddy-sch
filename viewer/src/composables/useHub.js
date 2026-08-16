@@ -439,7 +439,7 @@ function applyEnvelope(env) {
     }
 
     case 'graph_focus': {
-      // A node clicked in the /graph pane, or a module pill clicked in
+      // A node clicked in the /gph pane, or a module pill clicked in
       // /cov. Nothing is broadcast back — applyHubSelection is a local
       // write by design, and echoing a selection we were handed is how
       // two panes end up bouncing one click between them forever.

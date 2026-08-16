@@ -32,7 +32,7 @@
     >
 
     <!-- Which rtl-buddy is on the other end, in the SAME words the
-         /graph and /cov panes use — one label a user can read off any
+         /gph and /cov panes use — one label a user can read off any
          hub surface and compare with ``rb --version``. Nothing at all
          before the first welcome: an empty version is a fact about the
          connection, and the dot already states it. The full raw string

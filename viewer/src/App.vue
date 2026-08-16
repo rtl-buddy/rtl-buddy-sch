@@ -244,7 +244,7 @@ const diagnosticsCount = computed(() => {
 })
 
 // App switcher (top-bar right). Empty unless the hub is serving us —
-// off the hub, ``/`` and ``/graph`` are not ours to link to.
+// off the hub, ``/`` and ``/gph`` are not ours to link to.
 const switcherApps = hubApps()
 
 // Theme control. Three states so a user can go back to following the
