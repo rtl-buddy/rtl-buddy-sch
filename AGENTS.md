@@ -48,6 +48,7 @@ src/rtl_buddy_view/
 │   └── slang.py           # slang frontend stub (NotImplementedError; #2 follow-up)
 ├── graph.py               # build_hierarchy(table, top) → HierNode tree
 ├── graph_export.py        # graph.json v1 (design tier); GRAPH_CONTRACT pinned
+├── elk_export.py          # elk.json v1 (--format elk); ELK_CONTRACT pinned
 ├── query.py               # walk, subtree, instances_of, port_connections, source_snippet
 ├── connectivity.py        # scope_connectivity(): sibling dataflow for --block-diagram
 ├── annotations.py         # DomainMap loader (rtl-buddy-cdc#106 schema v1.0)

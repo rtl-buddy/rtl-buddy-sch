@@ -171,6 +171,13 @@ uv run rtl-buddy-view \
     --top counter_with_subs \
     --filelist tests/fixtures/counter_with_subs/files.f \
     --format json --output hier.json
+
+# ELK schematic payload — blocks, full pinouts and net bundles,
+# ready for an elkjs canvas (docs/elk-json-v1.md)
+uv run rtl-buddy-view \
+    --top blk_top \
+    --filelist tests/fixtures/block_diagram_demo/files.f \
+    --format elk --output elk.json
 ```
 
 ### Overlays — `--overlay name=path`
@@ -351,8 +358,11 @@ rtl-buddy-view [OPTIONS]
 --top, -t TEXT          Top module name. [required]
 --filelist, -f PATH     One source file per line; +incdir+/-y/-f rejected.
                         [required]
---format [tree|dot|mermaid|json]
+--format [tree|dot|mermaid|json|elk]
                         Output format. [default: tree]
+                        elk = engine-neutral ELK-shaped schematic
+                        payload (ports, formal pins, bus widths) for
+                        an elkjs canvas; see docs/elk-json-v1.md.
 --output, -o PATH       Write to file instead of stdout.
 --frontend [verible|slang]
                         Parser frontend. [default: verible]
@@ -455,6 +465,19 @@ envelope is NetworkX node-link JSON, so `graphify merge-graphs` /
 edges="links")` read it as-is. Schema:
 [`schemas/graph-v1.json`](schemas/graph-v1.json); full reference:
 [`docs/graph-json-v1.md`](docs/graph-json-v1.md).
+
+### `elk.json` v1 (`--format elk`)
+
+The ELK schematic payload: a **nested** node tree (one node per
+instance, ELK's compound-node shape) carrying every declared port as
+an ELK port with its direction, bit width and clock/reset flag, plus
+per-scope net-bundle edges that attach to formal pins rather than box
+borders. It is engine-neutral by construction — no `layoutOptions`,
+no sizes, no sides — so the consumer (the SPA's elkjs canvas,
+rtl-buddy-sch#163 P2) owns every presentation decision. Everything
+rtl-buddy-specific lives under a single `rb` key per object, which
+keeps the file a valid ELK graph. Full reference:
+[`docs/elk-json-v1.md`](docs/elk-json-v1.md).
 
 ### `view.json` v1 (`--format json`)
 
