@@ -210,6 +210,25 @@ because bundling collapses each ordered endpoint pair to one edge.
    in the schematic maps directly onto `view.json` nodes, the hub's
    resolver, and `graph.json`'s `inst:<top>/<path>` (strip the
    prefix).
+6. **Wrap before laying out with elkjs.** The payload's root is the
+   design's top module, and its `ports` are referenced by edges
+   (`u_csr → <top>:apb`). That is legal ELK — a hierarchical edge to
+   an ancestor's port — but elkjs's JSON importer cannot resolve
+   ports owned by the node it is given as the layout root
+   (`UnsupportedGraphException: the source or target … could not be
+   found`, or a bare GWT null dereference with ports present).
+   Consumers must wrap the payload in a synthetic container before
+   calling `elk.layout()`:
+
+   ```js
+   const graph = { id: "$root", layoutOptions, children: [payload] };
+   ```
+
+   One wrapper object, verified against elkjs 0.11: the identical
+   payload fails as the layout root and lays out cleanly one level
+   down. The exporter deliberately does not ship the wrapper — it is
+   an elkjs importer quirk, not a property of the graph, and other
+   ELK consumers (ELK Java, ELK Text) accept the payload as-is.
 
 ## 6. Known limits
 
