@@ -282,6 +282,7 @@ def _emit_top_frame(
                 reset_map=reset_map,
                 top_level=True,
                 parent_group="cluster_top",
+                compact_params=block_diagram,
             )
     else:
         # Original box-and-arrow tree: each child is a flat node and
@@ -569,13 +570,31 @@ def _write_block_edge(
     dst: tuple[str, str | None],
     edge: NetEdge,
 ) -> None:
-    """Write one dataflow edge line."""
+    """Write one dataflow edge line.
+
+    Edges attach IC-schematic style: data leaves a block at its east
+    (right) side and enters the next block at its west (left) side,
+    so every block reads inputs-on-the-left / outputs-on-the-right
+    like a classic schematic symbol. Port anchors are the exception
+    that proves the rule — they sit at the frame edge, so the edge
+    always attaches on their frame-facing side (east for the
+    ``_in_`` rank, west for the ``_out_`` rank) regardless of the
+    edge's direction.
+    """
     src_id, src_cluster = src
     dst_id, dst_cluster = dst
+    # An edge flowing back to the left frame edge (an ``_in_`` anchor,
+    # e.g. a bidirectional bus's return direction) exits its source's
+    # west side — exiting east would route the wire back across the
+    # source's own box.
+    tailport = "w" if src_id.startswith("_out_") or dst_id.startswith("_in_") else "e"
+    headport = "e" if dst_id.startswith("_in_") else "w"
     attrs = [
         f'color="{_BLOCK_EDGE_COLOR}"',
         "penwidth=1.0",
         "arrowsize=0.7",
+        f"tailport={tailport}",
+        f"headport={headport}",
     ]
     label = _format_net_label(edge.nets)
     if label:
@@ -826,6 +845,7 @@ def _emit_cluster_subtree(
     reset_map: ResetDomainMap | None = None,
     top_level: bool = False,
     parent_group: str | None = None,
+    compact_params: bool = False,
 ) -> None:
     """Recursively emit ``node`` and its descendants.
 
@@ -853,6 +873,7 @@ def _emit_cluster_subtree(
             cdc_on_node=top_level,
             reset_map=reset_map,
             group=parent_group,
+            compact_params=compact_params,
         )
         return
 
@@ -910,7 +931,16 @@ def _emit_cluster_subtree(
         title = title + "\\l".join(_escape(p) for p in label_suffix_parts) + "\\l"
 
     out.write(f"  subgraph {cluster_id} {{\n")
-    out.write(f'    label="{title}";\n')
+    if compact_params:
+        # Block-diagram cluster titles use the compact HTML-table
+        # label (parameters as two-column rows) — the CDC / RDC
+        # summary lines ride along as full-width tag rows.
+        html_title = _html_compact_label(
+            node, domain_map, reset_map, extra_lines=tuple(label_suffix_parts)
+        )
+        out.write(f"    label=<{html_title}>;\n")
+    else:
+        out.write(f'    label="{title}";\n')
     out.write('    labelloc="t";\n')
     # ``labeljust="l"`` pins the label block to the left edge of the
     # cluster so the title text aligns flush-left under the top
@@ -942,7 +972,12 @@ def _emit_cluster_subtree(
     )
     for child in _children_sorted_by_complexity(node):
         _emit_cluster_subtree(
-            child, out, domain_map, reset_map=reset_map, parent_group=cluster_id
+            child,
+            out,
+            domain_map,
+            reset_map=reset_map,
+            parent_group=cluster_id,
+            compact_params=compact_params,
         )
     out.write("  }\n")
 
@@ -955,6 +990,7 @@ def _emit_node(
     cdc_on_node: bool = False,
     reset_map: ResetDomainMap | None = None,
     group: str | None = None,
+    compact_params: bool = False,
 ) -> None:
     """Emit a node line.
 
@@ -963,6 +999,11 @@ def _emit_node(
     incoming edge from the top, but in cluster mode that edge doesn't
     exist — so the markers collapse onto the node itself (label
     suffix + accent border).
+
+    ``compact_params`` (block-diagram mode) swaps the text label for
+    the compact HTML-table form — parameters as two-column rows
+    instead of a multi-line ``#(…)`` block. Fill, stripe, dash and
+    border styling are untouched: the table is layout-only.
     """
     # Multi-direction CDC: distinct (src, dst) crossing pairs > 1.
     # These need a 2-column grid (one row per direction), which dot's
@@ -978,7 +1019,13 @@ def _emit_node(
             node, out, domain_map, pairs, cdc_on_node=cdc_on_node, reset_map=reset_map
         )
         for child in node.children:
-            _emit_node(child, out, domain_map, reset_map=reset_map)
+            _emit_node(
+                child,
+                out,
+                domain_map,
+                reset_map=reset_map,
+                compact_params=compact_params,
+            )
         return
 
     label = _label_for(node, domain_map, reset_map)
@@ -1025,6 +1072,23 @@ def _emit_node(
                 has_border = True
     if label_suffix:
         attrs[0] = f'label="{label}{label_suffix}"'
+    if compact_params:
+        # The suffix summaries become full-width tag rows in the
+        # table; border / fontcolor cues set above stay on the node
+        # attrs and color the HTML text the same way.
+        summary_lines: list[str] = []
+        if cdc_on_node:
+            cdc_line = _format_cdc_summary(node, domain_map)
+            if cdc_line:
+                summary_lines.append(cdc_line)
+            if reset_map is not None:
+                rdc_line = _format_rdc_summary(node, reset_map)
+                if rdc_line:
+                    summary_lines.append(rdc_line)
+        html = _html_compact_label(
+            node, domain_map, reset_map, extra_lines=tuple(summary_lines)
+        )
+        attrs[0] = f"label=<{html}>"
     # Synchronizer marker: teal outline + slightly thicker pen. Only
     # applied when no warning border is already in place — clock /
     # reset issues take precedence visually since they're hazards.
@@ -1035,7 +1099,82 @@ def _emit_node(
         attrs.append(f'group="{group}"')
     out.write(f'  "{node.instance_path}" [{", ".join(attrs)}];\n')
     for child in node.children:
-        _emit_node(child, out, domain_map, reset_map=reset_map)
+        _emit_node(
+            child, out, domain_map, reset_map=reset_map, compact_params=compact_params
+        )
+
+
+def _html_compact_label(
+    node: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None = None,
+    extra_lines: tuple[str, ...] = (),
+) -> str:
+    """Compact HTML-table label for block-diagram nodes and clusters.
+
+    The text form renders parameter overrides as a ``#(…)`` block —
+    one line per parameter plus two bracket lines, the tallest thing
+    in a typical diagram. Here each parameter becomes a slim
+    two-column row (name | value) at a reduced point size, so a
+    two-parameter instance costs two rows instead of four monospace
+    lines. Clock / reset tags, the rstsync marker, the blackbox
+    marker and any ``extra_lines`` (CDC / RDC summaries) follow as
+    full-width tag rows.
+
+    The table is layout-only (``BORDER="0"``): fill, stripe, dash,
+    border and fontcolor stay node/cluster attributes, so all the
+    styling precedence rules are shared with the text-label path.
+    Content cleaning matches ``_escape`` (whitespace runs collapse)
+    before HTML entities are applied.
+    """
+
+    def cell_text(s: str) -> str:
+        return _html_escape(" ".join(s.split()))
+
+    inst_name = node.instance.name if node.instance is not None else node.module_name
+    rows: list[str] = [
+        f'<TR><TD COLSPAN="2" ALIGN="LEFT">{cell_text(inst_name)}</TD></TR>',
+        f'<TR><TD COLSPAN="2" ALIGN="LEFT">{cell_text(node.module_name)}</TD></TR>',
+    ]
+    if node.instance is not None and node.instance.param_overrides:
+        for ov in node.instance.param_overrides:
+            value = f'<FONT POINT-SIZE="10">{cell_text(ov.value_text)}</FONT>'
+            if ov.param_name is None:
+                # Positional override — no name column to fill.
+                rows.append(f'<TR><TD COLSPAN="2" ALIGN="LEFT">{value}</TD></TR>')
+            else:
+                name = (
+                    f'<FONT POINT-SIZE="10">{cell_text(ov.param_name)}&nbsp;&nbsp;'
+                    "</FONT>"
+                )
+                rows.append(
+                    f'<TR><TD ALIGN="LEFT">{name}</TD>'
+                    f'<TD ALIGN="LEFT">{value}</TD></TR>'
+                )
+    tags: list[str] = []
+    if domain_map is not None:
+        clocks = _clocks_under(node.instance_path, domain_map)
+        if clocks:
+            tags.append(f"[{', '.join(clocks)}]")
+    if reset_map is not None:
+        resets = _resets_under(node.instance_path, reset_map)
+        if resets:
+            tags.append(f"[{', '.join(resets)}]")
+        if node.instance_path in reset_map.synchronizer_paths():
+            tags.append("✓rstsync")
+    if node.is_blackbox:
+        tags.append("(blackbox)")
+    tags.extend(extra_lines)
+    for tag in tags:
+        rows.append(
+            f'<TR><TD COLSPAN="2" ALIGN="LEFT">'
+            f'<FONT POINT-SIZE="10">{cell_text(tag)}</FONT></TD></TR>'
+        )
+    return (
+        '<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="1">'
+        + "".join(rows)
+        + "</TABLE>"
+    )
 
 
 def _emit_html_grid_node(

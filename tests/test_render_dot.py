@@ -643,14 +643,20 @@ def _blk_fixture() -> tuple[HierNode, ModuleTable]:
             Instance(
                 name="u_prod",
                 module_name="prod",
-                param_overrides=(),
+                param_overrides=(
+                    ParameterOverride(
+                        param_name="DEPTH", value_text="4", location=None
+                    ),
+                ),
                 port_connections=(conn("cmd", "din"), conn("payload", "w")),
                 location=None,
             ),
             Instance(
                 name="u_cons",
                 module_name="cons",
-                param_overrides=(),
+                param_overrides=(
+                    ParameterOverride(param_name="W", value_text="8", location=None),
+                ),
                 port_connections=(conn("payload", "w"), conn("result", "dout")),
                 location=None,
             ),
@@ -760,6 +766,142 @@ def test_block_mode_without_module_table_degrades_to_cluster_tree() -> None:
     text = out.getvalue()
     assert "subgraph cluster_top_u_prod {" in text
     assert 'color="#475569"' not in text
+
+
+def test_block_mode_renders_params_as_compact_table() -> None:
+    """Block mode swaps the multi-line ``#(…)`` block for two-column
+    table rows — parameters are the tallest thing in a text label."""
+    top, table = _blk_fixture()
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True, module_table=table)
+    text = out.getvalue()
+    # No text-form parameter block anywhere in block mode.
+    assert "#(" not in text
+    # Leaf node label is an HTML table with a name | value param row.
+    assert '<FONT POINT-SIZE="10">W&nbsp;&nbsp;</FONT>' in text
+    assert '<TD ALIGN="LEFT"><FONT POINT-SIZE="10">8</FONT></TD>' in text
+
+
+def test_block_mode_cluster_title_is_compact_table() -> None:
+    top, table = _blk_fixture()
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True, module_table=table)
+    text = out.getvalue()
+    cluster_start = text.index("subgraph cluster_top_u_prod {")
+    cluster_label = text[cluster_start:].split(";", 1)[0]
+    assert "label=<<TABLE" in cluster_label
+    assert "DEPTH" in cluster_label
+
+
+def test_default_mode_keeps_the_text_param_block() -> None:
+    """The compact table is a block-mode treatment only — default
+    output stays byte-stable for goldens."""
+    top, table = _blk_fixture()
+    out = io.StringIO()
+    dot_render.render(top, out, module_table=table)
+    text = out.getvalue()
+    assert r"#(\l" in text
+    assert "<TABLE" not in text
+
+
+def test_block_mode_edges_attach_ic_style() -> None:
+    """Data leaves a block east and enters the next block west, so
+    every block reads inputs-left / outputs-right like a schematic
+    symbol; port anchors attach on their frame-facing side."""
+    top, table = _blk_fixture()
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True, module_table=table)
+    text = out.getvalue()
+    inst_edge = [
+        ln for ln in text.splitlines() if '"top.u_prod" -> "top.u_cons"' in ln
+    ][0]
+    assert "tailport=e" in inst_edge
+    assert "headport=w" in inst_edge
+    in_edge = [ln for ln in text.splitlines() if '"_in_din" -> "top.u_prod"' in ln][0]
+    assert "tailport=e" in in_edge
+    out_edge = [ln for ln in text.splitlines() if '-> "_out_dout"' in ln][0]
+    assert "headport=w" in out_edge
+
+
+def test_block_mode_return_edge_to_input_anchor_exits_west() -> None:
+    """A bidirectional bus's return direction flows back to the left
+    frame edge — exiting east would route the wire across the source's
+    own box."""
+    from rtl_buddy_view.extractor import Interface, Modport, Module, Port
+
+    iface = Interface(
+        name="bus_intf",
+        parameters=(),
+        signals=(),
+        modports=(Modport(name="sub", inputs=("sel",), outputs=("rdata",)),),
+        location=None,
+    )
+    sub_mod = Module(
+        name="sub",
+        ports=(
+            Port(name="sel", direction="input", type_text=None, location=None),
+            Port(name="rdata", direction="output", type_text=None, location=None),
+        ),
+        parameters=(),
+        instances=(),
+        location=None,
+    )
+    top_mod = Module(
+        name="top",
+        ports=(
+            Port(
+                name="bus",
+                direction=None,
+                type_text=None,
+                location=None,
+                port_kind="interface",
+                interface_type="bus_intf",
+            ),
+        ),
+        parameters=(),
+        instances=(
+            Instance(
+                name="u_sub",
+                module_name="sub",
+                param_overrides=(),
+                port_connections=(
+                    PortConnection(
+                        port_name="sel", net_expr_text="bus.sel", location=None
+                    ),
+                    PortConnection(
+                        port_name="rdata", net_expr_text="bus.rdata", location=None
+                    ),
+                ),
+                location=None,
+            ),
+        ),
+        location=None,
+    )
+    table = ModuleTable(
+        modules_by_name={"top": top_mod, "sub": sub_mod},
+        interfaces_by_name={"bus_intf": iface},
+    )
+    sub = HierNode(
+        instance_path="top.u_sub",
+        module_name="sub",
+        instance=top_mod.instances[0],
+        module=sub_mod,
+        is_blackbox=False,
+    )
+    top = HierNode(
+        instance_path="top",
+        module_name="top",
+        instance=None,
+        module=top_mod,
+        is_blackbox=False,
+        children=(sub,),
+    )
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True, module_table=table)
+    text = out.getvalue()
+    ret = [ln for ln in text.splitlines() if '"top.u_sub" -> "_in_bus"' in ln][0]
+    assert "tailport=w" in ret
+    assert "headport=e" in ret
 
 
 def test_block_mode_is_deterministic() -> None:
