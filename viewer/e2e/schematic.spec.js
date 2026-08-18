@@ -108,3 +108,245 @@ test.describe('schematic canvas', () => {
     await expect(page.locator('.sidebar')).toContainText(id)
   })
 })
+
+// --- P3: expand / collapse ----------------------------------------------------
+//
+// The compound in this fixture is ``blk_top.u_prod`` (child:
+// ``u_stage``), the same shape ``u_afifo`` has in the template's demo
+// design — a block whose insides are synchronisers nobody wants on the
+// sheet while reading the dataflow.
+
+const COMPOUND = 'blk_top.u_prod'
+const INNER = 'blk_top.u_prod.u_stage'
+
+test.describe('collapse / expand', () => {
+  test('double-clicking a compound folds its children away and back', async ({
+    page,
+  }) => {
+    await openSchematic(page, payload)
+    // Expanded: a containment frame with the child drawn inside it.
+    await expect(page.locator(`.sch-frame[data-node-id="${COMPOUND}"]`)).toHaveCount(1)
+    await expect(page.locator(`[data-node-id="${INNER}"]`).first()).toBeVisible()
+
+    await page
+      .locator(`.sch-frame[data-node-id="${COMPOUND}"] rect`)
+      .dblclick({ position: { x: 5, y: 5 } })
+
+    // Folded: one leaf-shaped block, no frame, and nothing left of the
+    // subtree it swallowed — pins included.
+    await expect(
+      page.locator(`.sch-block[data-node-id="${COMPOUND}"][data-collapsed="true"]`),
+    ).toHaveCount(1)
+    await expect(page.locator(`.sch-frame[data-node-id="${COMPOUND}"]`)).toHaveCount(0)
+    await expect(page.locator(`[data-node-id="${INNER}"]`)).toHaveCount(0)
+
+    // The boundary is intact: the edges that crossed the border still
+    // terminate on the folded box's own pins.
+    await expect(
+      page.locator(`.sch-wire[data-edge-target="${COMPOUND}:cmd"]`).first(),
+    ).toBeVisible()
+    await expect(page.locator(`.sch-pin[data-port-id="${COMPOUND}:cmd"]`)).toHaveCount(1)
+
+    // And it opens again.
+    await page
+      .locator(`.sch-block[data-node-id="${COMPOUND}"] rect`)
+      .dblclick({ force: true })
+    await expect(page.locator(`.sch-frame[data-node-id="${COMPOUND}"]`)).toHaveCount(1)
+    await expect(page.locator(`[data-node-id="${INNER}"]`).first()).toBeVisible()
+  })
+
+  test('the refdes affordance toggles the same state', async ({ page }) => {
+    await openSchematic(page, payload)
+    const toggle = page.locator(`[data-collapse-toggle="${COMPOUND}"]`)
+    await expect(toggle).toHaveText('▾')
+    await toggle.click({ force: true })
+    await expect(
+      page.locator(`.sch-block[data-node-id="${COMPOUND}"][data-collapsed="true"]`),
+    ).toHaveCount(1)
+    // The affordance survives the fold — it is what unfolds it.
+    await expect(page.locator(`[data-collapse-toggle="${COMPOUND}"]`)).toHaveText('▸')
+    // A leaf never offers one.
+    await expect(
+      page.locator('[data-collapse-toggle="blk_top.u_cons"]'),
+    ).toHaveCount(0)
+  })
+
+  test('the whole layout re-runs per toggle, fast enough for the main thread', async ({
+    page,
+  }) => {
+    await openSchematic(page, payload)
+    const svg = page.locator('svg.sch-svg')
+    const before = Number(await svg.getAttribute('data-layout-ms'))
+    await page.locator(`[data-collapse-toggle="${COMPOUND}"]`).click({ force: true })
+    await expect(
+      page.locator(`.sch-block[data-node-id="${COMPOUND}"][data-collapsed="true"]`),
+    ).toHaveCount(1)
+    const after = Number(await svg.getAttribute('data-layout-ms'))
+    // Not a performance gate (CI machines vary wildly) — a sanity
+    // bound on the decision recorded in the component: elkjs on the
+    // main thread, no worker, because a re-layout of this design is
+    // well inside a frame budget's worth of jank.
+    expect(Number.isFinite(before)).toBe(true)
+    expect(after).toBeGreaterThan(0)
+    expect(after).toBeLessThan(2000)
+  })
+})
+
+// --- P3: net hover highlighting ----------------------------------------------
+
+test.describe('hover highlighting', () => {
+  test('hovering a wire lights the net and its endpoint pins', async ({ page }) => {
+    await openSchematic(page, payload)
+    expect(await page.locator('.sch-wire.hot').count()).toBe(0)
+    await page.locator('.sch-wire .sch-hit').first().hover({ force: true })
+    expect(await page.locator('.sch-wire.hot').count()).toBeGreaterThan(0)
+    // The pins at both ends light with it — a net you can trace to its
+    // terminals, not a highlighted squiggle.
+    expect(await page.locator('.sch-pin.hot, .sch-flag.hot').count()).toBeGreaterThan(0)
+    // Leaving clears it.
+    await page.mouse.move(2, 2)
+    await expect(page.locator('.sch-wire.hot')).toHaveCount(0)
+  })
+
+  test('hovering a pin lights every wire touching it', async ({ page }) => {
+    await openSchematic(page, payload)
+    // A pin that is a wire endpoint: u_prod's cmd input.
+    const pin = page.locator(`.sch-pin[data-port-id="${COMPOUND}:cmd"]`)
+    await pin.hover({ force: true })
+    await expect(pin).toHaveClass(/hot/)
+    expect(await page.locator('.sch-wire.hot').count()).toBeGreaterThan(0)
+  })
+})
+
+// --- P4: clock-domain shading + sheet frame ----------------------------------
+
+/** The fixture with a two-domain clock overlay grafted on. */
+function withClockOverlay(base) {
+  const data = JSON.parse(JSON.stringify(base))
+  const clockOf = (id) => (id.includes('u_cons') ? 'clk_b' : 'clk_a')
+  data.overlays_present = ['clock']
+  for (const node of data.nodes) {
+    node.overlays = { ...(node.overlays || {}), clock: { clock: clockOf(node.id) } }
+  }
+  // The schematic reads the clock off the ELK payload's ``rb.clock``
+  // (the exporter's own copy of the same overlay), and the palette off
+  // ``nodes[].overlays`` — both have to say the same thing.
+  const paint = (n) => {
+    n.rb = { ...(n.rb || {}), clock: clockOf(n.id) }
+    for (const c of n.children || []) paint(c)
+  }
+  paint(data.layout.elk)
+  for (const edge of data.edges) {
+    if (edge.to !== 'blk_top.u_cons') continue
+    edge.overlays = {
+      ...(edge.overlays || {}),
+      clock: {
+        crossing: true,
+        pairs: [{ src_clock: 'clk_a', dst_clock: 'clk_b', flops: 2 }],
+      },
+    }
+  }
+  return data
+}
+
+test.describe('clock-domain shading', () => {
+  test('tints block plates per domain and dashes the crossings', async ({ page }) => {
+    await openSchematic(page, withClockOverlay(payload))
+    const tinted = page.locator('.sch-block[data-clock]')
+    expect(await tinted.count()).toBeGreaterThan(0)
+    // Two domains, two different pastels — from the shared palette
+    // module, so the colour agrees with the hier tab's legend.
+    const fills = await tinted.evaluateAll((els) =>
+      els.map((e) => e.querySelector('rect').style.fill),
+    )
+    expect(new Set(fills.filter(Boolean)).size).toBeGreaterThan(1)
+    // ⚠CDC edges are dashed.
+    expect(await page.locator('.sch-wire.cdc').count()).toBeGreaterThan(0)
+    const dash = await page
+      .locator('.sch-wire.cdc path:not(.sch-hit)')
+      .first()
+      .evaluate((el) => getComputedStyle(el).strokeDasharray)
+    expect(dash).not.toBe('none')
+  })
+
+  test('degrades to the plain look with no overlay', async ({ page }) => {
+    await openSchematic(page, payload)
+    await expect(page.locator('.sch-block[data-clock]')).toHaveCount(0)
+    await expect(page.locator('.sch-wire.cdc')).toHaveCount(0)
+  })
+})
+
+test.describe('sheet frame + title block', () => {
+  test('frames the sheet and names the design and tool, with no date', async ({
+    page,
+  }) => {
+    await openSchematic(page, payload)
+    await expect(page.locator('.sch-sheet-frame rect.sch-title-block')).toHaveCount(1)
+    const rows = page.locator('.sch-title-row')
+    await expect(rows.first()).toContainText('blk_top')
+    await expect(page.locator('.sch-sheet-frame')).toContainText('rtl-buddy-sch')
+    // No timestamp anywhere in the block: an export has to be
+    // reproducible, and a date is the one thing that would make two
+    // runs over the same design differ.
+    const text = await page
+      .locator('.sch-sheet-frame')
+      .evaluate((el) => el.textContent)
+    expect(text).not.toMatch(/\d{4}-\d{2}-\d{2}/)
+  })
+})
+
+// --- P5: static export --------------------------------------------------------
+
+test.describe('export', () => {
+  test('downloads a self-contained SVG of the sheet', async ({ page }) => {
+    await openSchematic(page, payload)
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('button', { name: 'SVG', exact: true }).click(),
+    ])
+    expect(download.suggestedFilename()).toBe('blk_top-schematic.svg')
+    const file = await download.path()
+    const text = fs.readFileSync(file, 'utf-8')
+    expect(text.length).toBeGreaterThan(1000)
+    expect(text).toContain('<svg')
+    expect(text).toContain('xmlns="http://www.w3.org/2000/svg"')
+    // Self-contained: document CSS does not travel with the file, so a
+    // surviving var() is a stroke that renders as nothing.
+    expect(text).not.toContain('var(--')
+    // The sheet frame + title block are in the file, not painted by
+    // the app around it.
+    expect(text).toContain('sch-title-block')
+    expect(text).toContain('rtl-buddy-sch')
+    // And the identity the canvas was built around survives the trip.
+    expect(text).toContain('data-node-id="blk_top.u_prod"')
+  })
+
+  test('downloads a 2x PNG', async ({ page }) => {
+    await openSchematic(page, payload)
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('button', { name: 'PNG', exact: true }).click(),
+    ])
+    expect(download.suggestedFilename()).toBe('blk_top-schematic.png')
+    const bytes = fs.readFileSync(await download.path())
+    expect(bytes.length).toBeGreaterThan(1000)
+    // PNG magic — proof the canvas rasterised rather than handing back
+    // an error page.
+    expect(bytes.subarray(0, 4)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  })
+
+  test('exports what is on the sheet, collapse included', async ({ page }) => {
+    await openSchematic(page, payload)
+    await page.locator(`[data-collapse-toggle="${COMPOUND}"]`).click({ force: true })
+    await expect(
+      page.locator(`.sch-block[data-node-id="${COMPOUND}"][data-collapsed="true"]`),
+    ).toHaveCount(1)
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('button', { name: 'SVG', exact: true }).click(),
+    ])
+    const text = fs.readFileSync(await download.path(), 'utf-8')
+    expect(text).toContain(`data-node-id="${COMPOUND}"`)
+    expect(text).not.toContain(`data-node-id="${INNER}"`)
+  })
+})

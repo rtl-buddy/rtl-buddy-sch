@@ -10,23 +10,33 @@
 import { describe, expect, it } from 'vitest'
 import {
   MIN_NODE_WIDTH,
+  NO_HIGHLIGHT,
   PORT_CONSTRAINTS,
   ROOT_LAYOUT_OPTIONS,
   SCHEMATIC_ROOT_ID,
+  SHEET_MARGIN,
+  TITLE_BLOCK_PAD,
+  TITLE_ROW_HEIGHT,
   approxMeasure,
   assignPortIndices,
   buildElkGraph,
   busSlash,
+  collapsePayload,
+  collapsibleIds,
   edgeLabelText,
   flagPath,
+  highlightFor,
   isActiveLow,
   makeCanvasMeasurer,
+  nodeIdOfEndpoint,
   orderPorts,
   paramLines,
   polylinePath,
   portSideFor,
   resolveMeasure,
+  sheetFrame,
   subtreeOf,
+  titleBlockRows,
   toSchematic,
 } from '../src/layout/elkSchematic.js'
 
@@ -469,5 +479,347 @@ describe('geometry helpers', () => {
 
   it('emits square-cornered polylines', () => {
     expect(polylinePath([{ x: 1, y: 2 }, { x: 3, y: 4 }])).toBe('M1,2 L3,4')
+  })
+})
+
+// --- collapse (P3) ------------------------------------------------------------
+
+// Three levels, and the shape the exporter actually emits: edges are
+// scope-local, and the ones crossing a compound's border terminate on
+// that compound's OWN port ids (elk.json §4) — which is why folding is
+// a prune, not a re-derivation.
+const nested = {
+  id: 'top',
+  rb: { module_name: 'top', instance_name: null, param_overrides: [] },
+  ports: [{ id: 'top:din', rb: { name: 'din', direction: 'input' } }],
+  children: [
+    {
+      id: 'top.u_c',
+      rb: { module_name: 'sink', instance_name: 'u_c', param_overrides: [] },
+      ports: [{ id: 'top.u_c:d', rb: { name: 'd', direction: 'input' } }],
+      children: [],
+      edges: [],
+    },
+    {
+      id: 'top.u_p',
+      rb: { module_name: 'prod', instance_name: 'u_p', param_overrides: [] },
+      ports: [
+        { id: 'top.u_p:cmd', rb: { name: 'cmd', direction: 'input' } },
+        { id: 'top.u_p:q', rb: { name: 'q', direction: 'output' } },
+      ],
+      children: [
+        {
+          id: 'top.u_p.u_s',
+          rb: { module_name: 'stage', instance_name: 'u_s', param_overrides: [] },
+          ports: [
+            { id: 'top.u_p.u_s:din', rb: { name: 'din', direction: 'input' } },
+            { id: 'top.u_p.u_s:dout', rb: { name: 'dout', direction: 'output' } },
+          ],
+          children: [],
+          edges: [],
+        },
+      ],
+      edges: [
+        {
+          id: 'in',
+          sources: ['top.u_p:cmd'],
+          targets: ['top.u_p.u_s:din'],
+          rb: { nets: ['cmd'] },
+        },
+        {
+          id: 'out',
+          sources: ['top.u_p.u_s:dout'],
+          targets: ['top.u_p:q'],
+          rb: { nets: ['q'] },
+        },
+      ],
+    },
+  ],
+  edges: [
+    {
+      id: 'feed',
+      sources: ['top:din'],
+      targets: ['top.u_p:cmd'],
+      rb: { nets: ['din'] },
+    },
+    {
+      id: 'drain',
+      sources: ['top.u_p:q'],
+      targets: ['top.u_c:d'],
+      rb: { nets: ['q'] },
+    },
+  ],
+}
+
+describe('collapsePayload', () => {
+  it('returns the payload untouched when nothing is collapsed', () => {
+    expect(collapsePayload(nested, new Set())).toBe(nested)
+    expect(collapsePayload(nested, null)).toBe(nested)
+    // A path that names a leaf collapses nothing — there is no inside.
+    expect(collapsePayload(nested, new Set(['top.u_c']))).toBe(nested)
+  })
+
+  it('folds a compound into a leaf that keeps its own pinout', () => {
+    const folded = collapsePayload(nested, new Set(['top.u_p']))
+    const block = folded.children.find((c) => c.id === 'top.u_p')
+    expect(block.children).toHaveLength(0)
+    // The scope-internal wiring goes with the children it wired.
+    expect(block.edges).toHaveLength(0)
+    // The pinout is the boundary: every port the block declares.
+    expect(block.ports.map((p) => p.id)).toEqual(['top.u_p:cmd', 'top.u_p:q'])
+  })
+
+  it('leaves the boundary edges terminating on the folded box', () => {
+    const folded = collapsePayload(nested, new Set(['top.u_p']))
+    // Untouched, because they never reached through to a grandchild.
+    expect(folded.edges.map((e) => [e.sources[0], e.targets[0]])).toEqual([
+      ['top:din', 'top.u_p:cmd'],
+      ['top.u_p:q', 'top.u_c:d'],
+    ])
+  })
+
+  it('does not mutate the payload it folds', () => {
+    const before = JSON.stringify(nested)
+    collapsePayload(nested, new Set(['top.u_p']))
+    expect(JSON.stringify(nested)).toBe(before)
+  })
+
+  it('re-points an edge that reached into the folded subtree', () => {
+    // The contract says edges are scope-local, but elkjs throws on an
+    // endpoint it cannot resolve — so a payload that reaches through
+    // has to degrade to a border attachment, not to an exception.
+    const reaching = {
+      ...nested,
+      edges: [
+        ...nested.edges,
+        {
+          id: 'deep',
+          sources: ['top.u_p.u_s:dout'],
+          targets: ['top.u_c:d'],
+          rb: { nets: ['deep'] },
+        },
+      ],
+    }
+    const folded = collapsePayload(reaching, new Set(['top.u_p']))
+    const deep = folded.edges.find((e) => e.id === 'deep')
+    expect(deep.sources).toEqual(['top.u_p'])
+    expect(deep.targets).toEqual(['top.u_c:d'])
+  })
+
+  it('drops an edge whose two ends fold into the same box', () => {
+    const reaching = {
+      ...nested,
+      edges: [
+        ...nested.edges,
+        {
+          id: 'internal',
+          sources: ['top.u_p.u_s:dout'],
+          targets: ['top.u_p.u_s:din'],
+          rb: { nets: ['loop'] },
+        },
+      ],
+    }
+    const folded = collapsePayload(reaching, new Set(['top.u_p']))
+    expect(folded.edges.find((e) => e.id === 'internal')).toBeUndefined()
+  })
+
+  it('ignores a collapse nested under another collapse', () => {
+    const folded = collapsePayload(nested, new Set(['top.u_p', 'top.u_p.u_s']))
+    expect(folded.children.find((c) => c.id === 'top.u_p').children).toHaveLength(0)
+  })
+})
+
+describe('collapsibleIds', () => {
+  it('names every compound block but not the sheet', () => {
+    const ids = collapsibleIds(nested)
+    expect(ids.has('top.u_p')).toBe(true)
+    expect(ids.has('top.u_c')).toBe(false)
+    // The payload root is the sheet; folding it would leave nothing.
+    expect(ids.has('top')).toBe(false)
+  })
+})
+
+describe('buildElkGraph with a collapse set', () => {
+  it('sizes and pins a folded block exactly like the leaf it now is', () => {
+    const g = buildElkGraph(nested, {
+      collapsed: new Set(['top.u_p']),
+      measure: approxMeasure,
+    })
+    const block = g.children[0].children.find((c) => c.id === 'top.u_p')
+    expect(block.children).toHaveLength(0)
+    expect(block.layoutOptions['elk.portConstraints']).toBe(PORT_CONSTRAINTS)
+    // No containment padding: there is nothing contained.
+    expect(block.layoutOptions['elk.padding']).toBeUndefined()
+    expect(block.rbCollapsed).toBe(true)
+  })
+
+  it('marks the folded block so the draw model can tell it from a leaf', () => {
+    const g = buildElkGraph(nested, { measure: approxMeasure })
+    const block = g.children[0].children.find((c) => c.id === 'top.u_p')
+    expect(block.rbCollapsed).toBe(false)
+  })
+})
+
+describe('toSchematic collapse markers', () => {
+  it('draws a folded compound as a block, flagged collapsed', () => {
+    const model = toSchematic({
+      id: '$root',
+      width: 100,
+      height: 100,
+      children: [
+        {
+          id: 'top',
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 100,
+          rb: {},
+          children: [
+            {
+              id: 'top.u_p',
+              x: 5,
+              y: 5,
+              width: 50,
+              height: 40,
+              rb: { instance_name: 'u_p', module_name: 'prod' },
+              rbCollapsed: true,
+              ports: [],
+              children: [],
+              edges: [],
+            },
+          ],
+        },
+      ],
+    })
+    const box = model.boxes.find((b) => b.id === 'top.u_p')
+    expect(box.compound).toBe(false)
+    expect(box.collapsed).toBe(true)
+    // Still offers the toggle — that is the whole point of the flag.
+    expect(box.collapsible).toBe(true)
+  })
+})
+
+// --- hover highlighting (P3) --------------------------------------------------
+
+const hoverModel = {
+  wires: [
+    // One net, two sections — a route ELK split at a bend.
+    { id: 'e1', sourceId: 'top.u_a:q', targetId: 'top.u_b:d' },
+    { id: 'e1', sourceId: 'top.u_a:q', targetId: 'top.u_b:d' },
+    // Junction-merged sibling: same driver, different sink.
+    { id: 'e2', sourceId: 'top.u_a:q', targetId: 'top.u_c:d' },
+    // Unrelated net.
+    { id: 'e3', sourceId: 'top.u_z:q', targetId: 'top.u_b:e' },
+  ],
+}
+
+describe('highlightFor', () => {
+  it('lights nothing without a target', () => {
+    expect(highlightFor(hoverModel, {})).toBe(NO_HIGHLIGHT)
+    expect(highlightFor(null, { edgeId: 'e1' })).toBe(NO_HIGHLIGHT)
+  })
+
+  it('lights every segment of a hovered net and its merged siblings', () => {
+    const hot = highlightFor(hoverModel, { edgeId: 'e1' })
+    // mergeEdges draws one trunk from the driver with junction dots on
+    // it, so the sibling leaving the same pin is the same copper.
+    expect([...hot.edges].sort()).toEqual(['e1', 'e2'])
+    expect(hot.edges.has('e3')).toBe(false)
+  })
+
+  it('lights the endpoint pins of everything it lit', () => {
+    const hot = highlightFor(hoverModel, { edgeId: 'e1' })
+    expect([...hot.pins].sort()).toEqual([
+      'top.u_a:q',
+      'top.u_b:d',
+      'top.u_c:d',
+    ])
+  })
+
+  it('lights every edge touching a hovered pin', () => {
+    const hot = highlightFor(hoverModel, { pinId: 'top.u_b:d' })
+    expect([...hot.edges].sort()).toEqual(['e1'])
+    expect(hot.pins.has('top.u_b:d')).toBe(true)
+    expect(hot.pins.has('top.u_a:q')).toBe(true)
+  })
+
+  it('tolerates an endpoint that degraded to a node id', () => {
+    const model = { wires: [{ id: 'e', sourceId: 'top.u_a', targetId: 'top.u_b' }] }
+    const hot = highlightFor(model, { edgeId: 'e' })
+    expect(hot.edges.has('e')).toBe(true)
+    // Node ids are not pin ids; they simply match no pin.
+    expect([...hot.pins].sort()).toEqual(['top.u_a', 'top.u_b'])
+  })
+})
+
+describe('nodeIdOfEndpoint', () => {
+  it('splits a port id at the colon and passes a node id through', () => {
+    expect(nodeIdOfEndpoint('top.u_a:q')).toBe('top.u_a')
+    expect(nodeIdOfEndpoint('top.u_a')).toBe('top.u_a')
+    expect(nodeIdOfEndpoint(null)).toBeNull()
+  })
+})
+
+// --- sheet frame + title block (P4) -------------------------------------------
+
+describe('titleBlockRows', () => {
+  it('prints the design, the tool and its version', () => {
+    const rows = titleBlockRows({ top: 'blk_top', toolVersion: '1.2.3' })
+    expect(rows.map((r) => r.label)).toEqual(['DESIGN', 'TOOL'])
+    expect(rows[0].value).toBe('blk_top')
+    expect(rows[1].value).toBe('rtl-buddy-sch 1.2.3')
+  })
+
+  it('adds the sheet scope and model only when they say something', () => {
+    const rows = titleBlockRows({
+      top: 'blk_top',
+      toolVersion: '1.2.3',
+      scope: 'blk_top.u_p',
+      model: 'demo',
+    })
+    expect(rows.map((r) => r.label)).toEqual(['DESIGN', 'SHEET', 'MODEL', 'TOOL'])
+    // A scope equal to the top is not a scope.
+    const same = titleBlockRows({ top: 'blk_top', scope: 'blk_top' })
+    expect(same.map((r) => r.label)).toEqual(['DESIGN', 'TOOL'])
+  })
+
+  it('carries nothing volatile', () => {
+    // The no-volatile rule the payload lives under extends to the
+    // drawing: a date would make two exports of one design differ.
+    const text = JSON.stringify(titleBlockRows({ top: 't', toolVersion: '0' }))
+    expect(text).not.toMatch(/\d{4}-\d{2}-\d{2}/)
+    expect(titleBlockRows({ top: 't', toolVersion: '0' })).toEqual(
+      titleBlockRows({ top: 't', toolVersion: '0' }),
+    )
+  })
+})
+
+describe('sheetFrame', () => {
+  const rows = titleBlockRows({ top: 'blk_top', toolVersion: '1.0' })
+  const { frame, title } = sheetFrame({ width: 400, height: 300 }, rows)
+
+  it('surrounds the laid-out extent with a margin', () => {
+    expect(frame.x).toBe(-SHEET_MARGIN)
+    expect(frame.y).toBe(-SHEET_MARGIN)
+    expect(frame.width).toBe(400 + SHEET_MARGIN * 2)
+  })
+
+  it('reserves a band below the drawing for the title block', () => {
+    // Not an overlay in the corner: a block ELK happened to place
+    // bottom-right would be printed over.
+    expect(frame.height).toBeGreaterThan(300 + SHEET_MARGIN * 2)
+    expect(title.y).toBeGreaterThanOrEqual(300)
+    expect(title.height).toBe(rows.length * TITLE_ROW_HEIGHT + TITLE_BLOCK_PAD * 2)
+  })
+
+  it('anchors the title block to the bottom-right corner', () => {
+    expect(title.x + title.width).toBeCloseTo(frame.x + frame.width - TITLE_BLOCK_PAD)
+    expect(title.y + title.height).toBeCloseTo(frame.y + frame.height - TITLE_BLOCK_PAD)
+  })
+
+  it('survives an empty model', () => {
+    const empty = sheetFrame({ width: 0, height: 0 }, [])
+    expect(empty.frame.width).toBe(SHEET_MARGIN * 2)
+    expect(empty.title.rows).toEqual([])
   })
 })

@@ -226,6 +226,17 @@ export const useViewerStore = defineStore('viewer', {
     // without changing scope — matching hier-view's click =
     // focus, button = navigate contract.
     flowScope: null,
+    // Instance paths whose compound block is folded shut on the
+    // schematic canvas (#163 P3). A Set, replaced rather than mutated
+    // so Pinia sees the change; keyed by instance path so the state
+    // survives every re-layout — elkjs is re-run from scratch on each
+    // toggle and nothing about the laid-out graph is carried over.
+    //
+    // Only the schematic canvas reads it: hier's cluster tree and
+    // flow's one-level expansion have their own scope vocabulary
+    // (``rootInstancePath`` / ``flowScope``), and folding a block is a
+    // different question from descending into it.
+    schCollapsed: new Set(),
     // Top-level tab. ``hierarchy`` = the hier/flow canvas with
     // overlays. ``axi-perf`` = the dedicated AxiPerfView tab. Default
     // ``hierarchy`` so the app renders on first load even when no
@@ -1105,6 +1116,10 @@ export const useViewerStore = defineStore('viewer', {
       // boots at its own top.
       this.rootInstancePath = null
       this.flowScope = null
+      // Collapse state is per-graph for the same reason: an instance
+      // path from the previous design either doesn't exist here or —
+      // worse — exists and names something else.
+      this.schCollapsed = new Set()
       // Wave values are sampled at a t_fs of the previous design's
       // simulation — keeping them would paint stale literals next to
       // ports on the new design that happen to share a name. Reset
@@ -1216,6 +1231,32 @@ export const useViewerStore = defineStore('viewer', {
       if (mode === 'hier' || mode === 'flow' || mode === 'sch') {
         this.viewMode = mode
       }
+    },
+    /**
+     * Fold a compound block shut, or unfold it (#163 P3).
+     *
+     * Reassigns the Set instead of mutating it: Pinia's reactivity
+     * tracks the property, not the collection's internals, and a
+     * silent ``add`` would leave the canvas showing the old picture —
+     * the same reason ``toggleOverlay`` reassigns ``enabledOverlays``.
+     */
+    toggleSchCollapsed(id) {
+      if (typeof id !== 'string' || id.length === 0) return
+      const next = new Set(this.schCollapsed)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      this.schCollapsed = next
+    },
+    setSchCollapsed(id, collapsed) {
+      if (typeof id !== 'string' || id.length === 0) return
+      const next = new Set(this.schCollapsed)
+      if (collapsed) next.add(id)
+      else next.delete(id)
+      this.schCollapsed = next
+    },
+    expandAllSch() {
+      if (this.schCollapsed.size === 0) return
+      this.schCollapsed = new Set()
     },
     setActiveTab(name) {
       // 'hierarchy' or 'axi-perf'. Unknown names are ignored.
