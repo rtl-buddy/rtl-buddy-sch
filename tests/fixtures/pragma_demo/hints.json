@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0",
+  "modules": {
+    "prg_stage": { "label": "pipe stage" }
+  },
+  "instances": {
+    "prg_top.u_engine": { "collapse": false, "label": "engine (sidecar)" }
+  }
+}

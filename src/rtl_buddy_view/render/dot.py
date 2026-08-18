@@ -1132,10 +1132,20 @@ def _html_compact_label(
         return _html_escape(" ".join(s.split()))
 
     inst_name = node.instance.name if node.instance is not None else node.module_name
-    rows: list[str] = [
-        f'<TR><TD COLSPAN="2" ALIGN="LEFT">{cell_text(inst_name)}</TD></TR>',
-        f'<TR><TD COLSPAN="2" ALIGN="LEFT">{cell_text(node.module_name)}</TD></TR>',
-    ]
+    rows: list[str] = []
+    if node.display_label:
+        # The author's role name is the block title; bold separates it
+        # from the instance / module rows that follow it.
+        rows.append(
+            f'<TR><TD COLSPAN="2" ALIGN="LEFT"><B>'
+            f"{cell_text(node.display_label)}</B></TD></TR>"
+        )
+    rows.extend(
+        (
+            f'<TR><TD COLSPAN="2" ALIGN="LEFT">{cell_text(inst_name)}</TD></TR>',
+            f'<TR><TD COLSPAN="2" ALIGN="LEFT">{cell_text(node.module_name)}</TD></TR>',
+        )
+    )
     if node.instance is not None and node.instance.param_overrides:
         for ov in node.instance.param_overrides:
             value = f'<FONT POINT-SIZE="10">{cell_text(ov.value_text)}</FONT>'
@@ -1241,6 +1251,11 @@ def _label_text_lines(
     """
     inst_name = node.instance.name if node.instance is not None else node.module_name
     lines = [inst_name, node.module_name]
+    if node.display_label:
+        # Same precedence as ``_label_for``: the author's role name
+        # leads, so the multi-crossing grid form doesn't silently
+        # drop a label the plain box would show.
+        lines.insert(0, node.display_label)
     if node.instance is not None and node.instance.param_overrides:
         # Param block already carries ``\l`` separators; flatten to a
         # list of bare lines for HTML conversion.
@@ -1643,9 +1658,16 @@ def _label_for(
     crossings that the diagram is meant to surface. The reset tag
     follows the same shape with polarity arrows
     (``[rst_n↓, por_n↓]``).
+
+    An author-supplied ``display_label`` (``// rbsch: label="…"``,
+    epic #159) leads: in a documentation figure the role name is the
+    title and the instance / module names demote to subtitles. Nodes
+    without one render exactly as before.
     """
     inst_name = node.instance.name if node.instance is not None else node.module_name
     lines = [_escape(inst_name), _escape(node.module_name)]
+    if node.display_label:
+        lines.insert(0, _escape(node.display_label))
     if node.instance is not None and node.instance.param_overrides:
         lines.append(_format_param_overrides(node.instance.param_overrides))
     if domain_map is not None:

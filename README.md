@@ -368,7 +368,7 @@ rtl-buddy-view [OPTIONS]
                         Parser frontend. [default: verible]
                         (slang activation is a Phase 2 follow-up.)
 --overlay name=path     Apply the named overlay. Repeatable.
-                        Built-ins: clock, reset.
+                        Built-ins: clock, reset, hints.
                         Examples: --overlay clock=clock-map.json
                                   --overlay reset=reset-map.json
 --list-overlays         List registered overlays + their schema
@@ -383,8 +383,46 @@ rtl-buddy-view [OPTIONS]
                         sibling dataflow — instead of the
                         instantiation tree. Warns and is ignored for
                         other formats.
+--no-pragmas            Ignore in-source `// rbsch:` diagram pragmas
+                        (leaf / collapse / hide / label=…), which are
+                        otherwise scanned from the filelist's sources
+                        for every format. Does not affect
+                        --overlay hints=PATH.
 --version               Print `rtl-buddy-view <X.Y.Z>` and exit.
 ```
+
+### `rbsch` pragmas — author-guided diagrams
+
+Inference can't know intent: which blocks are the story, which are
+noise, or what a block should be *called* in a design document. A
+`// rbsch:` magic comment next to the RTL says so, and gets reviewed
+and refactored with the code it describes:
+
+```systemverilog
+// rbsch: leaf
+module ip_cdc_sync #(parameter int STAGES = 2) (…);
+
+  // rbsch: label="CSR block (PeakRDL)"
+  demo_tiny_alu_subsys_csr u_csr (…);
+
+  ip_async_fifo #(.DEPTH(8)) u_afifo (  // rbsch: collapse
+```
+
+`leaf` / `collapse` / `hide` rewrite the hierarchy graph, so `tree`,
+`dot`, `mermaid` and `json` all agree on what exists; `label` retitles
+the box in the dot renderer. The same vocabulary loads from a JSON
+sidecar for IP whose source can't carry comments, and wins on
+conflict:
+
+```bash
+uv run rtl-buddy-view --top demo_tiny_alu_subsys_top \
+    --filelist demo.f --format dot --block-diagram \
+    --overlay hints=docs/demo.hints.json
+```
+
+Unknown keys warn on stderr with the known set instead of failing the
+run. Full vocabulary, association rules and sidecar schema:
+[`docs/rbsch-pragmas.md`](docs/rbsch-pragmas.md).
 
 ### `query` subcommands
 

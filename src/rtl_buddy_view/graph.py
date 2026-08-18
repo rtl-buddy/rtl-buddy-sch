@@ -44,6 +44,15 @@ class HierNode:
     module: Module | None  # None when is_blackbox
     is_blackbox: bool
     children: tuple["HierNode", ...] = field(default_factory=tuple)
+    # Author-supplied role name from an ``// rbsch: label="…"`` pragma
+    # or a hint sidecar, attached by
+    # :func:`rtl_buddy_view.hints.apply_hints` (epic #159). ``None``
+    # for every node the author didn't name — the graph builder never
+    # sets it, so a hint-free run is byte-identical everywhere. It is
+    # deliberately NOT emitted into view.json: JSON_CONTRACT keys are
+    # a downstream contract and phase 1 doesn't need the SPA to read
+    # labels.
+    display_label: str | None = None
 
 
 def build_hierarchy(table: ModuleTable, top: str) -> HierNode:

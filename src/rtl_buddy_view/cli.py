@@ -66,6 +66,14 @@ from rtl_buddy_view.graph import (
     build_hierarchy,
     find_tb_top,
 )
+from rtl_buddy_view.hints import (
+    HintMap,
+    HintsError,
+    apply_hints,
+    merge_hint_maps,
+    resolve_hints,
+    scan_pragmas,
+)
 from rtl_buddy_view.overlays import OverlayError, OverlayRegistry, default_registry
 from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.render import json_render
@@ -248,6 +256,15 @@ def main(
         "which net — rather than parent-to-child port maps. Ignored "
         "with a warning for other formats.",
     ),
+    no_pragmas: bool = typer.Option(
+        False,
+        "--no-pragmas",
+        help="Ignore in-source '// rbsch:' diagram pragmas (leaf, "
+        "collapse, hide, label=…). They are scanned automatically "
+        "from the filelist's sources and rewrite the hierarchy for "
+        "every format; this is the escape hatch for seeing the "
+        "design as written. Does not affect --overlay hints=PATH.",
+    ),
 ) -> None:
     """Render the hierarchy of ``--top`` to ``--format``."""
     # A subcommand (``query``) is being dispatched — the render
@@ -304,6 +321,7 @@ def main(
             AxiPerfAnnotationsError,
             WaveAnnotationsError,
             CoverageAnnotationsError,
+            HintsError,
         ) as e:
             # Loader exceptions carry the overlay's own prefix in
             # their message; we just qualify with the overlay name
@@ -327,6 +345,19 @@ def main(
     rendered_top = tb_top if tb_top is not None else top
 
     root = _build_hierarchy_or_exit(table, rendered_top)
+
+    # Diagram hints (epic #159) rewrite the *graph*, not the render,
+    # so they apply once here and every format sees the same design.
+    # In-source pragmas are the default input (the sources are
+    # already named by the filelist); the sidecar overlay is the
+    # override for IP whose source can't carry comments.
+    root = _apply_hints_or_warn(
+        root,
+        table,
+        filelist,
+        no_pragmas=no_pragmas,
+        sidecar=annotations.get("hints"),
+    )
 
     domain_map: DomainMap | None = annotations.get("clock")  # type: ignore[assignment]
     reset_map: ResetDomainMap | None = annotations.get("reset")  # type: ignore[assignment]
@@ -564,6 +595,54 @@ def _render(
         )
     else:  # pragma: no cover
         raise ValueError(f"Unknown format: {fmt}")
+
+
+def _apply_hints_or_warn(
+    root: HierNode,
+    table: ModuleTable,
+    filelist: Path,
+    *,
+    no_pragmas: bool,
+    sidecar: object,
+) -> HierNode:
+    """Scan pragmas, merge the sidecar, and rewrite the hierarchy.
+
+    The I/O half of the hint layer: :mod:`rtl_buddy_view.hints` never
+    opens a file for the in-source path, so the sources are read here
+    and keyed by the same resolved path string the frontend recorded
+    in every ``SourceLocation`` — that string equality *is* the
+    association, so it must not be re-derived or normalised.
+
+    Unreadable sources are skipped rather than fatal: a file the
+    frontend already parsed but that we can't re-read is a hint-layer
+    problem, and losing a hint should never lose the diagram.
+    """
+    pragma_hints = HintMap()
+    if not no_pragmas:
+        sources: dict[str, str] = {}
+        try:
+            files = parse_filelist(filelist)
+        except FilelistError:  # pragma: no cover - main() already validated
+            files = []
+        for path in files:
+            try:
+                sources[str(path)] = path.read_text()
+            except OSError:  # pragma: no cover - raced/permission-denied source
+                continue
+        pragma_hints = resolve_hints(scan_pragmas(sources), table)
+
+    hints = pragma_hints
+    if isinstance(sidecar, HintMap):
+        # Sidecar over pragma: pointing at a file on the command line
+        # is the more deliberate act, and it's the only lever available
+        # for source the author can't edit.
+        hints = merge_hint_maps(pragma_hints, sidecar)
+
+    warnings: list[str] = []
+    hinted = apply_hints(root, hints, warnings=warnings)
+    for message in list(hints.warnings) + warnings:
+        typer.echo(f"hints: {message}", err=True)
+    return hinted
 
 
 def _parse_design_or_exit(filelist: Path, frontend: Frontend) -> ModuleTable:
