@@ -54,6 +54,23 @@ from rtl_buddy_view.extractor import Module, ModuleTable
 _CLOCK_NAME_RE = re.compile(r"(?i)(?:^|_)(clk|clock)(?:$|_)")
 _RESET_NAME_RE = re.compile(r"(?i)(?:^|_)(rst|reset)(?:$|_)")
 
+#: Block-diagram-only widening of the clock/reset patterns above.
+#: Prefixed-but-tokenless clock names (``cclk``, ``wclk``, ``sysclk``)
+#: and polarity-tailed reset names (``crst_n``, ``aresetn``, ``rstn``)
+#: don't carry the underscore token the shared regexes require, and a
+#: partially-filtered clock tree (``apb_clk`` dropped, ``cclk`` kept)
+#: reads worse than either extreme. Both forms anchor on an
+#: underscore-free stem: a multi-token net whose *last* token merely
+#: ends in "clk" is domain-suffixed data, not a clock
+#: (``src_sel_cclk``, ``result_payload_cclk``), and the reset form
+#: additionally insists on the ``n``/``nb``/``ni`` polarity tail so
+#: data names ending in "rst" (``burst``, ``first``) survive. Only
+#: :func:`_is_clock_or_reset_group` consults these — the default
+#: (non-block) renderer paths keep the conservative token-form
+#: patterns, so their output is unchanged.
+_BLOCK_EXTRA_CLOCK_RE = re.compile(r"(?i)^[^_]*(clk|clock)$")
+_BLOCK_EXTRA_RESET_RE = re.compile(r"(?i)^[^_]*(rst|reset)_?n[ib]?$")
+
 #: An identifier token that is *not* a field select (not preceded by
 #: ``.``), not the base part of a sized literal (not preceded by
 #: ``'``), and not a system task/function name (not preceded by ``$``).
@@ -346,5 +363,9 @@ def _is_clock_or_reset_group(names: set[str]) -> bool:
     if not names:
         return True
     return all(
-        _CLOCK_NAME_RE.search(name) or _RESET_NAME_RE.search(name) for name in names
+        _CLOCK_NAME_RE.search(name)
+        or _RESET_NAME_RE.search(name)
+        or _BLOCK_EXTRA_CLOCK_RE.search(name)
+        or _BLOCK_EXTRA_RESET_RE.search(name)
+        for name in names
     )

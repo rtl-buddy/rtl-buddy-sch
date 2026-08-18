@@ -318,6 +318,89 @@ def test_clock_and_reset_groups_are_dropped() -> None:
     assert edges == ()
 
 
+def test_tokenless_clock_and_reset_names_are_dropped() -> None:
+    """``cclk`` / ``wclk`` / ``crst_n`` / ``aresetn`` carry no underscore
+    token yet are clocks/resets; the block-only widened patterns must
+    drop them so one clock tree isn't shown while another is hidden."""
+    sink = _module(
+        "sink",
+        ports=(
+            _port("clk", "input"),
+            _port("rclk", "input"),
+            _port("rst_n", "input"),
+            _port("arst", "input"),
+        ),
+    )
+    driver = _module(
+        "driver",
+        ports=(
+            _port("c_out", "output"),
+            _port("w_out", "output"),
+            _port("r_out", "output"),
+            _port("a_out", "output"),
+        ),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst(
+                "u_gen",
+                "driver",
+                _conn("c_out", "cclk"),
+                _conn("w_out", "wclk"),
+                _conn("r_out", "crst_n"),
+                _conn("a_out", "aresetn"),
+            ),
+            _inst(
+                "u_ff",
+                "sink",
+                _conn("clk", "cclk"),
+                _conn("rclk", "wclk"),
+                _conn("rst_n", "crst_n"),
+                _conn("arst", "aresetn"),
+            ),
+        ),
+    )
+    edges = scope_connectivity(top, _table(top, sink, driver))
+    assert edges == ()
+
+
+def test_data_names_merely_ending_in_rst_survive() -> None:
+    """``burst`` / ``first`` end in "rst" but lack the polarity tail the
+    widened reset pattern requires — they are data, keep their edges."""
+    sink = _module("sink", ports=(_port("len", "input"), _port("sel", "input")))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "burst")),
+            _inst("u_sink", "sink", _conn("len", "burst"), _conn("sel", "first")),
+        ),
+    )
+    edges = scope_connectivity(top, _table(top, _SRC, sink))
+    assert [(e.src, e.dst) for e in edges] == [(("inst", "u_src"), ("inst", "u_sink"))]
+
+
+def test_domain_suffixed_data_names_survive() -> None:
+    """A multi-token net whose last token ends in "clk" is
+    domain-suffixed *data* (``src_sel_cclk``, ``result_payload_cclk``),
+    not a clock — the widened pattern must not delete its edge."""
+    sink = _module("sink", ports=(_port("sel", "input"), _port("d", "input")))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "src_sel_cclk")),
+            _inst(
+                "u_sink",
+                "sink",
+                _conn("sel", "src_sel_cclk"),
+                _conn("d", "result_payload_cclk"),
+            ),
+        ),
+    )
+    edges = scope_connectivity(top, _table(top, _SRC, sink))
+    assert [(e.src, e.dst) for e in edges] == [(("inst", "u_src"), ("inst", "u_sink"))]
+
+
 def test_group_survives_when_only_some_names_are_clock_shaped() -> None:
     """``assign en = go & clk_locked;`` must not delete the ``go`` group."""
     gate = _module("gate", ports=(_port("d", "input"),))
