@@ -143,6 +143,28 @@ class DpiFunction:
 
 
 @dataclass(frozen=True)
+class Assign:
+    """One ``assign lhs = rhs;`` target inside a module body.
+
+    A single ``assign`` statement may carry several comma-separated
+    targets (``assign a = b, c = d;``); each becomes its own
+    :class:`Assign`. Both sides are verbatim source slices — same
+    "don't parse expressions in the frontend" rationale as
+    :attr:`Port.type_text`. The connectivity analyzer
+    (:mod:`rtl_buddy_view.connectivity`) is what turns them into
+    net-alias groups.
+
+    Procedural assignments (``always_comb`` / ``always_ff``) are out
+    of scope: they are not net aliases, and tracing them would need
+    real dataflow analysis rather than a source slice.
+    """
+
+    lhs_text: str
+    rhs_text: str
+    location: SourceLocation | None
+
+
+@dataclass(frozen=True)
 class Module:
     name: str
     ports: tuple[Port, ...]
@@ -159,6 +181,15 @@ class Module:
     # (NotImplementedError, see frontend/slang.py), so there is no
     # slang path to leave this absent from yet.
     dpi_functions: tuple[DpiFunction, ...] = ()
+    # Continuous assignments (``assign lhs = rhs;``) in the module
+    # body. Additive with a default so every existing construction
+    # site (tests, the slang stub, downstream fixtures) keeps
+    # working unchanged. Consumed by
+    # :func:`rtl_buddy_view.connectivity.scope_connectivity` to hop
+    # net aliases when computing sibling-to-sibling dataflow; the
+    # JSON renderer deliberately does NOT emit these (JSON_CONTRACT
+    # stays untouched).
+    assigns: tuple[Assign, ...] = ()
 
 
 @dataclass(frozen=True)

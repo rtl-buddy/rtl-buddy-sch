@@ -66,6 +66,9 @@ design from.
   └────────┬────────┘
            │              ┌─ optional: rtl-buddy-cdc domain map
            │              │  (annotations.load_domain_map)
+           │              │
+           ├─ connectivity │  scope_connectivity(module, table)
+           │  (per scope)  │  → sibling dataflow for --block-diagram
            ▼              ▼
   ┌─────────────────────────────────┐
   │ renderers       │ query API     │
@@ -149,6 +152,13 @@ uv run rtl-buddy-view \
     --filelist tests/fixtures/counter_with_subs/files.f \
     --format dot --output hier.dot
 dot -Tsvg hier.dot -o hier.svg
+
+# Block diagram — dataflow between siblings, nesting as containment
+uv run rtl-buddy-view \
+    --top blk_top \
+    --filelist tests/fixtures/block_diagram_demo/files.f \
+    --format dot --block-diagram --output block.dot
+dot -Tsvg block.dot -o block.svg
 
 # Mermaid — paste straight into a GitHub PR or README
 uv run rtl-buddy-view \
@@ -358,6 +368,11 @@ rtl-buddy-view [OPTIONS]
 --clock-legend          Dot-format only: emit a side legend mapping
                         clocks → palette colors. Requires a clock
                         overlay.
+--block-diagram         Dot-format only: render a documentation block
+                        diagram — nesting as containment, arrows as
+                        sibling dataflow — instead of the
+                        instantiation tree. Warns and is ignored for
+                        other formats.
 --version               Print `rtl-buddy-view <X.Y.Z>` and exit.
 ```
 

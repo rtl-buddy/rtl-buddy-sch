@@ -32,10 +32,18 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping
 from typing import IO
 
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.axi_perf_annotations import AxiPerfMap
+from rtl_buddy_view.connectivity import (
+    _CLOCK_NAME_RE,
+    _RESET_NAME_RE,
+    Endpoint,
+    NetEdge,
+    scope_connectivity,
+)
 from rtl_buddy_view.extractor import (
     ModuleTable,
     ParameterOverride,
@@ -95,6 +103,7 @@ def render(
     axi_perf_map: AxiPerfMap | None = None,
     with_legend: bool = False,
     as_cluster_tree: bool = False,
+    block_diagram: bool = False,
     module_table: ModuleTable | None = None,
 ) -> None:
     """Render ``node`` and its subtree as a Graphviz ``.dot`` digraph.
@@ -117,6 +126,20 @@ def render(
 
     With ``as_cluster_tree=False``, deeper nesting (children's
     children, etc.) renders as the usual box-and-arrow tree.
+
+    ``block_diagram`` switches the graph from *hierarchy* to
+    *dataflow* — the documentation-diagram shape. It implies
+    ``as_cluster_tree`` (nesting reads as containment), drops the
+    parent→child port-map edges entirely, and instead draws
+    sibling-to-sibling net edges computed by
+    :func:`rtl_buddy_view.connectivity.scope_connectivity` at *every*
+    scope that resolved to a module. Interface ports render as one
+    bundle anchor rather than one anchor per flattened signal — an
+    APB port is a single block-diagram terminal, not eleven wires.
+    Requires ``module_table`` (pin directions come from the child
+    modules); without one the dataflow edges are skipped and the
+    output degrades to a plain cluster tree. CDC / RDC overlay arrows
+    keep working.
 
     When ``reset_map`` is supplied (Phase 3), the renderer also emits:
 
@@ -183,7 +206,8 @@ def render(
         out,
         active_map,
         active_reset_map,
-        as_cluster_tree=as_cluster_tree,
+        as_cluster_tree=as_cluster_tree or block_diagram,
+        block_diagram=block_diagram,
         module_table=module_table,
     )
     if with_legend and active_map is not None:
@@ -198,6 +222,7 @@ def _emit_top_frame(
     reset_map: ResetDomainMap | None = None,
     *,
     as_cluster_tree: bool = False,
+    block_diagram: bool = False,
     module_table: ModuleTable | None = None,
 ) -> None:
     """Emit the top module as a titled cluster with port-rank anchors."""
@@ -234,7 +259,9 @@ def _emit_top_frame(
     # would inflate every cluster.
     out.write('    margin="20,20";\n')
 
-    _emit_port_anchors(top, out, module_table=module_table)
+    _emit_port_anchors(
+        top, out, module_table=module_table, bundle_interfaces=block_diagram
+    )
 
     if as_cluster_tree:
         # Cluster-tree emission: every instance with children becomes
@@ -265,43 +292,64 @@ def _emit_top_frame(
         for child in top.children:
             _emit_edges(child, out, domain_map, reset_map=reset_map)
 
-    # Port → child signal-flow edges: when a child's port connection
-    # has a bare-identifier net that matches a top input/output port
-    # name, draw a thin clock-keyed edge between the port anchor and
-    # the child. Clock and reset ports are skipped (they fan out to
-    # nearly every flop and bury the data flow).
-    _emit_port_signal_edges(top, out, domain_map)
+    if block_diagram:
+        # Block mode subsumes the port → child heuristic: the
+        # connectivity analyzer already reaches top ports as
+        # first-class endpoints, and it traces slices, field selects
+        # and assign aliases that the bare-identifier match cannot.
+        # Running both would double every port edge.
+        _emit_connectivity_edges(top, out, module_table)
+    else:
+        # Port → child signal-flow edges: when a child's port connection
+        # has a bare-identifier net that matches a top input/output port
+        # name, draw a thin clock-keyed edge between the port anchor and
+        # the child. Clock and reset ports are skipped (they fan out to
+        # nearly every flop and bury the data flow).
+        _emit_port_signal_edges(top, out, domain_map, as_cluster_tree=as_cluster_tree)
 
     # CDC arrow: dashed-red overlay edge from input port anchor to
     # the child carrying an async crossing. Drawn AFTER the
     # signal-flow edges so the red arrow paints on top of the gray
     # one when both terminate at the same port + child pair.
-    _emit_top_cdc_arrows(top, out, domain_map)
+    _emit_top_cdc_arrows(top, out, domain_map, as_cluster_tree=as_cluster_tree)
 
     # RDC arrow: dashed-orange overlay edge from the reset port anchor
     # to the child carrying an RDC crossing. Distinct color from the
     # CDC arrow so reviewers can tell clock-domain from reset-domain
     # crossings even when both terminate at the same destination.
     if reset_map is not None:
-        _emit_top_rdc_arrows(top, out, reset_map)
+        _emit_top_rdc_arrows(top, out, reset_map, as_cluster_tree=as_cluster_tree)
 
     out.write("  }\n")
 
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# Clock/reset-like port names appearing as an underscore-delimited
-# token. Used as a fallback when the domain map is absent
-# (``clocks[].ports`` is the authoritative source when present).
-# Patterns catch: clk, clk_a, a_clk, aclk style is too risky to
-# strip (would false-positive on legit names containing "clk"); we
-# require the token form. Same shape for rst/reset.
-_CLOCK_NAME_RE = re.compile(r"(?i)(?:^|_)(clk|clock)(?:$|_)")
-_RESET_NAME_RE = re.compile(r"(?i)(?:^|_)(rst|reset)(?:$|_)")
+# ``_CLOCK_NAME_RE`` / ``_RESET_NAME_RE`` now live in
+# :mod:`rtl_buddy_view.connectivity` (imported above) so the analyzer
+# and this renderer filter clock/reset trees by one shared definition.
+# They keep their original names here — the fallback for when the
+# domain map is absent, ``clocks[].ports`` being authoritative when
+# one is supplied.
 _NEUTRAL_EDGE_COLOR = "#cbd5e1"  # slate-300, falls back when no clock typing
+
+#: Block-diagram dataflow edge accent. Tailwind ``slate-600`` — reads
+#: as structural wiring next to the CDC red / RDC orange hazard
+#: overlays rather than competing with them.
+_BLOCK_EDGE_COLOR = "#475569"
+
+#: Cap on net names rendered on one block-diagram edge label. Beyond
+#: this the label shows the first ``MAX_BLOCK_EDGE_NETS`` names plus a
+#: ``…(+N more)`` tail — same visual-truncation contract as
+#: :data:`MAX_EDGE_LABEL_CONNECTIONS`.
+MAX_BLOCK_EDGE_NETS = 3
 
 
 def _emit_port_signal_edges(
-    top: HierNode, out: IO[str], domain_map: DomainMap | None
+    top: HierNode,
+    out: IO[str],
+    domain_map: DomainMap | None,
+    *,
+    as_cluster_tree: bool = False,
 ) -> None:
     """Connect input/output port anchors to children by signal flow.
 
@@ -318,6 +366,12 @@ def _emit_port_signal_edges(
     anchors produces a fan-out spiderweb that hides the actual data
     flow.
 
+    **Implicit connections**: the ``.port`` shorthand carries an empty
+    ``net_expr_text``; the elaborator binds it to the same-named net,
+    so we resolve it to ``port_name`` and trace it like any other bare
+    identifier. Skipping it (the pre-fix behaviour) silently dropped
+    every signal wired by shorthand.
+
     **Color**: when a domain map is present, edges are colored by
     the clock domain the signal lives in:
       * port_domains[] lookup for ports typed via
@@ -325,6 +379,12 @@ def _emit_port_signal_edges(
       * fall back to the destination/source child's predominant
         clock
       * fall back to a neutral slate when no clock is determinable.
+
+    ``as_cluster_tree`` mirrors the caller's layout mode. ``lhead`` /
+    ``ltail`` may only name a cluster that was actually emitted, so
+    the attribute is attached solely in cluster mode — in the default
+    box layout those clusters don't exist and Graphviz warns
+    ``lhead cluster_… not found``.
     """
     if top.module is None or not top.module.ports:
         return
@@ -345,6 +405,9 @@ def _emit_port_signal_edges(
         seen_out: set[str] = set()
         for conn in child.instance.port_connections:
             net = conn.net_expr_text.strip() if conn.net_expr_text else ""
+            if not net and conn.port_name is not None:
+                # Implicit ``.port`` shorthand — same-name net.
+                net = conn.port_name
             if not _IDENTIFIER_RE.match(net):
                 continue
             if (
@@ -362,7 +425,9 @@ def _emit_port_signal_edges(
             # u_dma's edge." Harmless attribute for box children
             # since their cluster id wasn't emitted.
             child_cluster = (
-                _cluster_id_for(child.instance_path) if child.children else None
+                _cluster_id_for(child.instance_path)
+                if (as_cluster_tree and child.children)
+                else None
             )
             if net in inputs and net not in seen_in:
                 seen_in.add(net)
@@ -418,11 +483,140 @@ def _signal_edge_color(
     return _palette_color(clk)
 
 
+def _emit_connectivity_edges(
+    top: HierNode, out: IO[str], module_table: ModuleTable | None
+) -> None:
+    """Emit block-diagram dataflow edges for every resolved scope.
+
+    Walks the whole tree, not just the top: a cluster with children of
+    its own is a scope in its own right, and its internal wiring is
+    exactly what a reader opens the box to see.
+
+    Without a ``module_table`` the analyzer cannot resolve child pin
+    directions, so nothing is emitted and block mode degrades to a
+    plain cluster tree — the same graceful-degradation contract the
+    overlays follow.
+    """
+    if module_table is None:
+        return
+    _emit_scope_connectivity(top, out, module_table, is_top=True)
+
+
+def _emit_scope_connectivity(
+    node: HierNode, out: IO[str], table: ModuleTable, *, is_top: bool
+) -> None:
+    """Emit one scope's sibling edges, then recurse into its children."""
+    if node.module is not None and node.children:
+        children = {
+            child.instance.name: child
+            for child in node.children
+            if child.instance is not None
+        }
+        port_directions = {p.name: p.direction for p in node.module.ports}
+        for edge in scope_connectivity(node.module, table):
+            src = _endpoint_ref(edge.src, children, port_directions, is_top=is_top)
+            dst = _endpoint_ref(edge.dst, children, port_directions, is_top=is_top)
+            if src is None or dst is None or src[0] == dst[0]:
+                continue
+            _write_block_edge(out, src, dst, edge)
+    # Sorted by instance path (not emission-order complexity) — this
+    # walk only decides *which edges appear where in the file*, and a
+    # stable alphabetical order keeps diffs readable.
+    for child in sorted(node.children, key=lambda c: c.instance_path):
+        _emit_scope_connectivity(child, out, table, is_top=False)
+
+
+def _endpoint_ref(
+    endpoint: Endpoint,
+    children: dict[str, HierNode],
+    port_directions: Mapping[str, str | None],
+    *,
+    is_top: bool,
+) -> tuple[str, str | None] | None:
+    """Resolve a connectivity endpoint to ``(node_id, cluster_id)``.
+
+    ``cluster_id`` is non-None only when the endpoint is a non-leaf
+    instance, i.e. one rendered as a ``subgraph cluster_…``; the caller
+    turns it into ``ltail`` / ``lhead`` so the edge clips at the box
+    border instead of punching through to the invisible anchor inside.
+
+    Returns ``None`` when the endpoint has no drawable counterpart:
+    an instance the hierarchy didn't build, or a port endpoint below
+    the top frame — nested scopes have no port anchors, their cluster
+    border *is* the port boundary.
+    """
+    kind, name = endpoint
+    if kind == "inst":
+        child = children.get(name)
+        if child is None:
+            return None
+        cluster = _cluster_id_for(child.instance_path) if child.children else None
+        return (child.instance_path, cluster)
+    if not is_top:
+        return None
+    direction = port_directions.get(name)
+    if direction in ("output", "inout"):
+        return (f"_out_{name}", None)
+    # Inputs and interface bundles both anchor on the source rank;
+    # ``bundle_interfaces`` in :func:`_emit_port_anchors` guarantees an
+    # interface port keeps its unflattened ``_in_<name>`` anchor.
+    return (f"_in_{name}", None)
+
+
+def _write_block_edge(
+    out: IO[str],
+    src: tuple[str, str | None],
+    dst: tuple[str, str | None],
+    edge: NetEdge,
+) -> None:
+    """Write one dataflow edge line."""
+    src_id, src_cluster = src
+    dst_id, dst_cluster = dst
+    attrs = [
+        f'color="{_BLOCK_EDGE_COLOR}"',
+        "penwidth=1.0",
+        "arrowsize=0.7",
+    ]
+    label = _format_net_label(edge.nets)
+    if label:
+        # ``xlabel`` rather than ``label``: under ``splines="ortho"``
+        # Graphviz cannot place an edge label on the spline and warns
+        # ("edge labels with splines=ortho not supported"), silently
+        # falling back. An external label sits beside the edge and
+        # routes cleanly.
+        attrs.append(f'xlabel="{label}"')
+        attrs.append("fontsize=9")
+        attrs.append(f'fontcolor="{_BLOCK_EDGE_COLOR}"')
+    if src_cluster:
+        attrs.append(f'ltail="{src_cluster}"')
+    if dst_cluster:
+        attrs.append(f'lhead="{dst_cluster}"')
+    out.write(f'    "{src_id}" -> "{dst_id}" [{", ".join(attrs)}];\n')
+
+
+def _format_net_label(nets: tuple[str, ...]) -> str:
+    """Render an edge's net list, truncated to :data:`MAX_BLOCK_EDGE_NETS`.
+
+    Same ``\\l``-per-line / ``…(+N more)`` convention as the
+    port-connection labels, so a wide bundle stays one narrow column
+    instead of stretching the layout.
+    """
+    if not nets:
+        return ""
+    shown = nets[:MAX_BLOCK_EDGE_NETS]
+    parts = [_escape(n) for n in shown]
+    overflow = len(nets) - len(shown)
+    if overflow:
+        parts.append(f"…(+{overflow} more)")
+    return r"\l".join(parts) + r"\l"
+
+
 def _emit_port_anchors(
     top: HierNode,
     out: IO[str],
     *,
     module_table: ModuleTable | None = None,
+    bundle_interfaces: bool = False,
 ) -> None:
     """Emit input/output port markers in source/sink rank groups.
 
@@ -442,11 +636,24 @@ def _emit_port_anchors(
     ``direction=None``, which excludes them from the input/output
     filters) — matching the pre-#105 behaviour for back-compat with
     callers that don't have a table on hand. (#105.)
+
+    ``bundle_interfaces`` (block-diagram mode) suppresses that
+    flattening: an interface port stays one anchor on the source rank,
+    because a block diagram's terminal for an APB port is the bus, not
+    its eleven constituent wires. It also keeps the anchor name
+    (``_in_<port>``) addressable by the connectivity analyzer, which
+    treats the bundle as a single endpoint.
     """
     if top.module is None or not top.module.ports:
         return
-    ports = flatten_interface_ports(top.module, module_table)
-    inputs = [p for p in ports if p.direction == "input"]
+    if bundle_interfaces:
+        ports = top.module.ports
+        inputs = [
+            p for p in ports if p.direction == "input" or p.port_kind == "interface"
+        ]
+    else:
+        ports = flatten_interface_ports(top.module, module_table)
+        inputs = [p for p in ports if p.direction == "input"]
     outputs = [p for p in ports if p.direction in ("output", "inout")]
 
     if inputs:
@@ -481,12 +688,20 @@ def _emit_port_anchors(
 
 
 def _emit_top_cdc_arrows(
-    top: HierNode, out: IO[str], domain_map: DomainMap | None
+    top: HierNode,
+    out: IO[str],
+    domain_map: DomainMap | None,
+    *,
+    as_cluster_tree: bool = False,
 ) -> None:
     """Emit a dashed-red arrow from an input-port anchor to a child with
     a CDC crossing in. The src_clock must be the name of one of the
     top's input ports; otherwise the crossing is left silently visible
     only through the per-child ``[clock]`` label.
+
+    ``as_cluster_tree`` gates ``lhead`` for the same reason it does in
+    :func:`_emit_port_signal_edges`: the cluster it names only exists
+    in cluster mode.
     """
     if domain_map is None:
         return
@@ -498,7 +713,11 @@ def _emit_top_cdc_arrows(
         # default — the SDC-confirmed true-CDC subset that the tree /
         # mermaid renderers also surface.
         seen: set[tuple[str, str]] = set()
-        child_cluster = _cluster_id_for(child.instance_path) if child.children else None
+        child_cluster = (
+            _cluster_id_for(child.instance_path)
+            if (as_cluster_tree and child.children)
+            else None
+        )
         lhead = f', lhead="{child_cluster}"' if child_cluster else ""
         for c in domain_map.crossings_into(child.instance_path):
             if c.src_clock not in input_names:
@@ -1157,19 +1376,30 @@ def _format_rdc_summary(child: HierNode, reset_map: ResetDomainMap | None) -> st
 
 
 def _emit_top_rdc_arrows(
-    top: HierNode, out: IO[str], reset_map: ResetDomainMap
+    top: HierNode,
+    out: IO[str],
+    reset_map: ResetDomainMap,
+    *,
+    as_cluster_tree: bool = False,
 ) -> None:
     """Emit a dashed-orange arrow from a reset-port anchor to a child with
     an RDC crossing in. The reset name must match one of the top's
     input ports; otherwise the crossing is left visible only through
     the destination child's label suffix.
+
+    ``as_cluster_tree`` gates ``lhead`` — see
+    :func:`_emit_port_signal_edges`.
     """
     if top.module is None:
         return
     input_names = {p.name for p in top.module.ports if p.direction == "input"}
     for child in top.children:
         seen: set[tuple[str, str]] = set()
-        child_cluster = _cluster_id_for(child.instance_path) if child.children else None
+        child_cluster = (
+            _cluster_id_for(child.instance_path)
+            if (as_cluster_tree and child.children)
+            else None
+        )
         lhead = f', lhead="{child_cluster}"' if child_cluster else ""
         for c in reset_map.crossings_into(child.instance_path):
             if c.reset not in input_names:

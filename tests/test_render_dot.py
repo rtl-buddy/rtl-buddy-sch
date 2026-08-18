@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import io
 
-from rtl_buddy_view.extractor import Instance, ParameterOverride, PortConnection
+from rtl_buddy_view.extractor import (
+    Instance,
+    ModuleTable,
+    ParameterOverride,
+    PortConnection,
+)
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.render import dot as dot_render
 
@@ -575,3 +580,338 @@ def test_signal_edge_colored_by_explicit_port_clock() -> None:
     ]
     assert 'color="#cbd5e1"' not in edge_line
     assert 'color="#' in edge_line
+
+
+# --- block-diagram mode -----------------------------------------------------
+
+
+def _blk_fixture() -> tuple[HierNode, ModuleTable]:
+    """``top`` with a clustered producer feeding a leaf consumer.
+
+    Shape mirrors ``tests/fixtures/block_diagram_demo`` so the
+    synthetic and the Verible-backed tests assert the same thing:
+
+        _in_din ─▶ u_prod (cluster, holds u_stage) ─▶ u_cons ─▶ _out_dout
+    """
+    from rtl_buddy_view.extractor import Module, Port
+
+    def port(name: str, direction: str | None) -> Port:
+        return Port(
+            name=name,
+            direction=direction,  # type: ignore[arg-type]
+            type_text=None,
+            location=None,
+        )
+
+    def conn(p: str, net: str) -> PortConnection:
+        return PortConnection(port_name=p, net_expr_text=net, location=None)
+
+    leaf_mod = Module(
+        name="leaf",
+        ports=(port("din", "input"), port("dout", "output")),
+        parameters=(),
+        instances=(),
+        location=None,
+    )
+    prod_mod = Module(
+        name="prod",
+        ports=(port("cmd", "input"), port("payload", "output")),
+        parameters=(),
+        instances=(
+            Instance(
+                name="u_stage",
+                module_name="leaf",
+                param_overrides=(),
+                port_connections=(conn("din", "cmd"), conn("dout", "payload")),
+                location=None,
+            ),
+        ),
+        location=None,
+    )
+    cons_mod = Module(
+        name="cons",
+        ports=(port("payload", "input"), port("result", "output")),
+        parameters=(),
+        instances=(),
+        location=None,
+    )
+    top_mod = Module(
+        name="top",
+        ports=(port("din", "input"), port("dout", "output")),
+        parameters=(),
+        instances=(
+            Instance(
+                name="u_prod",
+                module_name="prod",
+                param_overrides=(),
+                port_connections=(conn("cmd", "din"), conn("payload", "w")),
+                location=None,
+            ),
+            Instance(
+                name="u_cons",
+                module_name="cons",
+                param_overrides=(),
+                port_connections=(conn("payload", "w"), conn("result", "dout")),
+                location=None,
+            ),
+        ),
+        location=None,
+    )
+    table = ModuleTable(
+        modules_by_name={m.name: m for m in (top_mod, prod_mod, cons_mod, leaf_mod)}
+    )
+
+    stage = HierNode(
+        instance_path="top.u_prod.u_stage",
+        module_name="leaf",
+        instance=prod_mod.instances[0],
+        module=leaf_mod,
+        is_blackbox=False,
+    )
+    prod = HierNode(
+        instance_path="top.u_prod",
+        module_name="prod",
+        instance=top_mod.instances[0],
+        module=prod_mod,
+        is_blackbox=False,
+        children=(stage,),
+    )
+    cons = HierNode(
+        instance_path="top.u_cons",
+        module_name="cons",
+        instance=top_mod.instances[1],
+        module=cons_mod,
+        is_blackbox=False,
+    )
+    top = HierNode(
+        instance_path="top",
+        module_name="top",
+        instance=None,
+        module=top_mod,
+        is_blackbox=False,
+        children=(prod, cons),
+    )
+    return top, table
+
+
+def test_block_mode_implies_cluster_layout() -> None:
+    top, table = _blk_fixture()
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True, module_table=table)
+    text = out.getvalue()
+    assert "subgraph cluster_top_u_prod {" in text
+    # The leaf inside the cluster is a plain node, not a nested cluster.
+    assert "subgraph cluster_top_u_cons {" not in text
+
+
+def test_block_mode_emits_connectivity_edges_with_xlabel() -> None:
+    """Sibling dataflow, labelled via ``xlabel`` — ortho splines can't
+    place a regular edge label and Graphviz warns when asked to."""
+    top, table = _blk_fixture()
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True, module_table=table)
+    text = out.getvalue()
+    line = [ln for ln in text.splitlines() if '"top.u_prod" -> "top.u_cons"' in ln][0]
+    assert 'xlabel="w\\l"' in line
+    assert 'color="#475569"' in line
+    assert "penwidth=1.0" in line
+    assert "arrowsize=0.7" in line
+    # ``label=`` would be the warning-triggering attribute.
+    assert ", label=" not in line
+    # The clustered source clips at its border.
+    assert 'ltail="cluster_top_u_prod"' in line
+
+
+def test_block_mode_wires_top_port_anchors() -> None:
+    top, table = _blk_fixture()
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True, module_table=table)
+    text = out.getvalue()
+    assert '"_in_din" -> "top.u_prod"' in text
+    assert '"top.u_cons" -> "_out_dout"' in text
+
+
+def test_block_mode_drops_port_map_edge_labels() -> None:
+    """The parent→child port-map edges are the thing block mode replaces."""
+    top, table = _blk_fixture()
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True, module_table=table)
+    text = out.getvalue()
+    assert '"top" -> "top.u_prod"' not in text
+    assert '"top.u_prod" -> "top.u_prod.u_stage"' not in text
+    assert ".payload(" not in text
+
+
+def test_block_mode_skips_port_endpoints_below_the_top_frame() -> None:
+    """A nested scope's ports are represented by its cluster border,
+    so they must never sprout their own anchors or edges."""
+    top, table = _blk_fixture()
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True, module_table=table)
+    text = out.getvalue()
+    assert '"_in_cmd"' not in text
+    assert '"_out_payload"' not in text
+
+
+def test_block_mode_without_module_table_degrades_to_cluster_tree() -> None:
+    top, _ = _blk_fixture()
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True)
+    text = out.getvalue()
+    assert "subgraph cluster_top_u_prod {" in text
+    assert 'color="#475569"' not in text
+
+
+def test_block_mode_is_deterministic() -> None:
+    top, table = _blk_fixture()
+    first, second = io.StringIO(), io.StringIO()
+    dot_render.render(top, first, block_diagram=True, module_table=table)
+    dot_render.render(top, second, block_diagram=True, module_table=table)
+    assert first.getvalue() == second.getvalue()
+
+
+def test_block_mode_with_no_domain_map_matches_the_unannotated_case() -> None:
+    """Graceful degradation: an empty overlay changes nothing."""
+    from rtl_buddy_view.annotations import DomainMap
+
+    top, table = _blk_fixture()
+    plain, empty = io.StringIO(), io.StringIO()
+    dot_render.render(top, plain, block_diagram=True, module_table=table)
+    dot_render.render(
+        top,
+        empty,
+        block_diagram=True,
+        module_table=table,
+        domain_map=DomainMap(
+            schema_version="1.0",
+            generator_name="x",
+            generator_version="0",
+            design_top="top",
+            design_frontend="slang",
+        ),
+    )
+    assert plain.getvalue() == empty.getvalue()
+
+
+def test_block_mode_bundles_interface_ports_into_one_anchor() -> None:
+    """A block diagram's terminal for a bus is the bus, not its wires."""
+    from rtl_buddy_view.extractor import Interface, Modport, Module, Port
+
+    iface = Interface(
+        name="bus_if",
+        parameters=(),
+        signals=(),
+        modports=(Modport(name="sub", inputs=("sel",), outputs=("rdata",)),),
+        location=None,
+    )
+    sub_mod = Module(
+        name="sub",
+        ports=(Port(name="sel", direction="input", type_text=None, location=None),),
+        parameters=(),
+        instances=(),
+        location=None,
+    )
+    top_mod = Module(
+        name="top",
+        ports=(
+            Port(
+                name="bus",
+                direction=None,
+                type_text=None,
+                location=None,
+                port_kind="interface",
+                interface_type="bus_if",
+                modport="sub",
+            ),
+        ),
+        parameters=(),
+        instances=(
+            Instance(
+                name="u_sub",
+                module_name="sub",
+                param_overrides=(),
+                port_connections=(
+                    PortConnection(
+                        port_name="sel", net_expr_text="bus.sel", location=None
+                    ),
+                ),
+                location=None,
+            ),
+        ),
+        location=None,
+    )
+    table = ModuleTable(
+        modules_by_name={"top": top_mod, "sub": sub_mod},
+        interfaces_by_name={"bus_if": iface},
+    )
+    child = HierNode(
+        instance_path="top.u_sub",
+        module_name="sub",
+        instance=top_mod.instances[0],
+        module=sub_mod,
+        is_blackbox=False,
+    )
+    top = HierNode(
+        instance_path="top",
+        module_name="top",
+        instance=None,
+        module=top_mod,
+        is_blackbox=False,
+        children=(child,),
+    )
+    out = io.StringIO()
+    dot_render.render(top, out, block_diagram=True, module_table=table)
+    text = out.getvalue()
+    assert '"_in_bus"' in text
+    # Not flattened into per-signal anchors.
+    assert '"_in_bus.sel"' not in text
+    assert '"_in_bus" -> "top.u_sub"' in text
+
+
+# --- lhead only when the cluster actually exists -----------------------------
+
+
+def test_default_box_mode_omits_lhead_for_non_leaf_children() -> None:
+    """The bug: ``lhead`` named a cluster the box layout never emitted,
+    so Graphviz warned ``lhead cluster_… not found`` on every render."""
+    grand = _node("top.u_a.u_b", "grand", instance=_instance("u_b", "grand"))
+    child = _node(
+        "top.u_a",
+        "child",
+        instance=_instance("u_a", "child", connections=(_conn("d", "data_in"),)),
+        children=(grand,),
+    )
+    root = _top_with_ports(("data_in", "input"), children=(child,))
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    assert '"_in_data_in" -> "top.u_a"' in text
+    assert "lhead=" not in text
+    assert "subgraph cluster_top_u_a" not in text
+
+
+def test_cluster_mode_keeps_lhead_for_non_leaf_children() -> None:
+    grand = _node("top.u_a.u_b", "grand", instance=_instance("u_b", "grand"))
+    child = _node(
+        "top.u_a",
+        "child",
+        instance=_instance("u_a", "child", connections=(_conn("d", "data_in"),)),
+        children=(grand,),
+    )
+    root = _top_with_ports(("data_in", "input"), children=(child,))
+    out = io.StringIO()
+    dot_render.render(root, out, as_cluster_tree=True)
+    text = out.getvalue()
+    assert 'lhead="cluster_top_u_a"' in text
+
+
+def test_signal_edge_traces_implicit_named_connections() -> None:
+    """``.data_in`` shorthand binds to the same-named net; the pre-fix
+    renderer dropped every signal wired that way."""
+    inst = _instance("u_a", "child", connections=(_conn("data_in", ""),))
+    child = _node("top.u_a", "child", instance=inst)
+    root = _top_with_ports(("data_in", "input"), children=(child,))
+    out = io.StringIO()
+    dot_render.render(root, out)
+    text = out.getvalue()
+    assert '"_in_data_in" -> "top.u_a"' in text

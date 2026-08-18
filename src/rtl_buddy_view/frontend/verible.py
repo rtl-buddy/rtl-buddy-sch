@@ -27,6 +27,7 @@ from rtl_buddy_view._verible_install import find_binary
 from rtl_buddy_view.cst_cache import get_or_compute
 from rtl_buddy_view.offsets import OffsetIndex
 from rtl_buddy_view.extractor import (
+    Assign,
     DpiFunction,
     Instance,
     Interface,
@@ -171,6 +172,7 @@ def _walk_modules(
         dpi_functions = _extract_dpi_functions(
             node, file=file, offsets=offsets, source=source
         )
+        assigns = _extract_assigns(node, file=file, offsets=offsets, source=source)
         out.append(
             Module(
                 name=name,
@@ -179,6 +181,7 @@ def _walk_modules(
                 instances=instances,
                 location=loc,
                 dpi_functions=dpi_functions,
+                assigns=assigns,
             )
         )
     return out
@@ -881,6 +884,56 @@ def _positional_param_overrides(
         out.append(
             ParameterOverride(param_name=None, value_text=value_text, location=loc)
         )
+    return tuple(out)
+
+
+def _extract_assigns(
+    module_node: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[Assign, ...]:
+    """Extract continuous assignments from a ``kModuleDeclaration``.
+
+    Layout (confirmed against ``verible-verilog-syntax
+    --export_json --printtree``)::
+
+        kContinuousAssignmentStatement
+          assign
+          kAssignmentList
+            kNetVariableAssignment      <-- one per comma-separated target
+              kLPValue                  <-- lhs
+              =
+              kExpression               <-- rhs
+          ;
+
+    Each ``kNetVariableAssignment`` yields its own :class:`Assign`, so
+    ``assign a = b, c = d;`` produces two records.
+
+    Unlike :func:`_extract_instances` this walks the whole declaration
+    rather than only the top ``kModuleItemList``: assignments inside
+    generate blocks alias nets exactly like flat ones do, and the
+    connectivity analyzer only ever uses them as alias hints, so
+    over-capturing is strictly better than dropping them. Net
+    *declaration* assignments (``wire w = x;``) are a different CST
+    shape and are deliberately not captured — see
+    :class:`rtl_buddy_view.extractor.Assign`.
+    """
+    out: list[Assign] = []
+    for stmt in _iter_nodes_with_tag(module_node, "kContinuousAssignmentStatement"):
+        for nva in _iter_nodes_with_tag(stmt, "kNetVariableAssignment"):
+            lpvalue = _first_child_with_tag(nva, "kLPValue")
+            expr = _first_child_with_tag(nva, "kExpression")
+            if lpvalue is None or expr is None:
+                continue
+            lhs_text = _source_slice(lpvalue, source)
+            rhs_text = _source_slice(expr, source)
+            if lhs_text is None or rhs_text is None:
+                continue
+            span = _node_span(nva)
+            loc = (
+                SourceLocation(file=file)
+                if span is None
+                else _location(file, offsets, span[0], span[1])
+            )
+            out.append(Assign(lhs_text=lhs_text, rhs_text=rhs_text, location=loc))
     return tuple(out)
 
 
