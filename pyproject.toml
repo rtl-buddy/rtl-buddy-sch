@@ -10,7 +10,13 @@ dynamic = ["version"]
 description = "RTL hierarchy and connectivity visualization tool. Pluggable Verible (source CST) or slang (elaborated) frontend; renders Graphviz / ASCII / Mermaid / JSON; integrates with rtl-buddy."
 readme = "README.md"
 license = "BSD-3-Clause"
-license-files = ["LICENSE"]
+# THIRD-PARTY-NOTICES.md ships alongside LICENSE in the wheel's
+# .dist-info/licenses/. The wheel redistributes the compiled viewer
+# bundle, which inlines @viz-js/viz — an MIT wrapper around Graphviz
+# compiled to WASM, and Graphviz is EPL-2.0. EPL §3.1(a)/§3.3 want the
+# notices and the license text to travel with the distribution, so the
+# file has to be *in* the artefact, not just in the repo.
+license-files = ["LICENSE", "THIRD-PARTY-NOTICES.md"]
 requires-python = ">=3.11"
 authors = [
     { name = "Loh Zhi-Hern", email = "expsg-hern@users.noreply.github.com" }
