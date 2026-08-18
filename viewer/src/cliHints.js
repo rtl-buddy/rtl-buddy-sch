@@ -34,4 +34,13 @@ export const AXI_PERF_HINT =
 // it; the angle brackets are plain text (Vue escapes them on render).
 export const HUB_START_HINT = 'rb hub start --serve-viewer'
 
+// The schematic canvas (#163 P2) lays out ``layout.elk`` in the
+// browser. A view.json written by a producer from before that key
+// existed has nothing to lay out — and the SPA cannot synthesise it,
+// because formal pin names and declared bit widths come off the
+// module table only the analyzer has. So the empty state says which
+// side is stale and what to re-run, rather than "no data".
+export const RENDER_FOR_SCHEMATIC_HINT =
+  'rtl-buddy-view --top <top> --filelist <files.f> --format json'
+
 export const HUB_START_WITH_MODEL_HINT = `${HUB_START_HINT} --model <model_name>`

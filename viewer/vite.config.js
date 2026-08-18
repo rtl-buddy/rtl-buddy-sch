@@ -19,18 +19,27 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: true,
-    // Cap viz.js WASM at the budget called out in #18 (≤2 MB
-    // gzipped for the standalone HTML); the warning prints in CI
-    // if a future change pushes us over.
-    chunkSizeWarningLimit: 2048,
+    // Tripwire for the budget called out in #18: ≤2 MB **gzipped**
+    // for the standalone HTML. Rollup measures raw bytes, so the
+    // limit is set above the current floor and re-raised whenever a
+    // deliberate engine lands — otherwise it warns on every build and
+    // stops meaning anything.
+    //
+    // Floor today: two layout engines, both inlined (see below).
+    // viz.js's Graphviz WASM ≈1.6 MB raw / 620 kB gzipped; elkjs
+    // (#163 P2) adds ≈1.5 MB raw, landing at ≈3.1 MB raw / 1.07 MB
+    // gzipped — comfortably inside the gzipped budget that actually
+    // governs the single-file distribution.
+    chunkSizeWarningLimit: 3500,
     rollupOptions: {
       output: {
-        // Inline dynamic ``import('@viz-js/viz')`` into the main
-        // bundle for the standalone HTML use case — ``embed.py``
-        // walks ``<script src>`` references and would otherwise
-        // miss the runtime-resolved chunk. The dev server is
-        // unaffected (it doesn't run rollup), so first-render
-        // perception cost stays at "Vue shell → WASM" both ways.
+        // Inline dynamic ``import('@viz-js/viz')`` — and the same for
+        // ``import('elkjs')`` — into the main bundle for the
+        // standalone HTML use case: ``embed.py`` walks ``<script
+        // src>`` references and would otherwise miss the
+        // runtime-resolved chunk. The dev server is unaffected (it
+        // doesn't run rollup), so first-render perception cost stays
+        // at "Vue shell → engine" both ways.
         inlineDynamicImports: true,
       },
     },

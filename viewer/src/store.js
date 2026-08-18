@@ -214,7 +214,10 @@ export const useViewerStore = defineStore('viewer', {
     // Canvas view mode. ``hier`` = nested-cluster tree from the
     // producer's embedded layout. ``flow`` = SPA-derived one-level
     // block-diagram view with sibling-to-sibling connectivity
-    // inferred from per-node port expressions.
+    // inferred from per-node port expressions. ``sch`` = the elkjs
+    // schematic canvas, laid out in-browser from the producer's
+    // ``layout.elk`` payload (#163 P2) — the only mode whose SVG the
+    // SPA owns element-by-element rather than receiving as a string.
     viewMode: 'hier',
     // Explicit scope for the block-flow view (the instance whose
     // direct children are rendered). ``null`` means show
@@ -1210,7 +1213,7 @@ export const useViewerStore = defineStore('viewer', {
       this.selection = null
     },
     setViewMode(mode) {
-      if (mode === 'hier' || mode === 'flow') {
+      if (mode === 'hier' || mode === 'flow' || mode === 'sch') {
         this.viewMode = mode
       }
     },
