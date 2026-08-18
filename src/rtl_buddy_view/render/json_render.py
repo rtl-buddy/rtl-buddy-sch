@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import IO
 from urllib.parse import quote
 
+from rtl_buddy_view import elk_export
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.axi_perf_annotations import AxiPerfMap, Bundle as AxiPerfBundle
 from rtl_buddy_view.coverage_annotations import CoverageMap
@@ -88,9 +89,13 @@ def render(
     block. The Phase 5 web viewer prefers this over rebuilding DOT
     in JavaScript so the desktop terminal output and the browser
     schematic share a single layout — clusters, port-rank anchors,
-    edge labels, and clock-domain palette all included. Producers
-    that don't want the cost (or don't ship Graphviz on the consumer
-    side) can pass ``embed_layout=False`` to drop the block.
+    edge labels, and clock-domain palette all included. When a
+    ``module_table`` is supplied the same block additionally carries
+    ``layout.elk``, the engine-neutral schematic payload
+    (``docs/elk-json-v1.md``) the SPA's elkjs canvas lays out
+    in-browser. Producers that don't want the cost (or don't ship
+    Graphviz on the consumer side) can pass ``embed_layout=False``
+    to drop the block.
 
     ``axi_perf_source`` (the original ``--overlay axi-perf=PATH``
     argument) lands as a top-level ``axi_perf`` block carrying the
@@ -267,8 +272,24 @@ def _layout_block(
     The dot renderer is deterministic given the same inputs, so the
     embedded string is golden-stable across runs — the existing
     determinism contract holds.
+
+    A second, **additive** key rides alongside: ``layout.elk`` — the
+    engine-neutral schematic payload ``--format elk`` emits
+    (``docs/elk-json-v1.md``). It is not in ``JSON_CONTRACT``: this
+    is the SPA's schematic canvas talking to its own producer, not
+    the ``rb hier`` wire contract, and a consumer that doesn't know
+    the key ignores it exactly as the ``additionalProperties: true``
+    schema says it may. It needs the ``ModuleTable`` (formal pin
+    names and declared widths live there, not on ``HierNode``), so
+    a caller that didn't supply one gets the dot-only block it
+    always got — degraded, never wrong.
+
+    ``domain_map`` *is* forwarded to the ELK payload, unlike the DOT:
+    it lands there as a per-node ``rb.clock`` string, not as a baked
+    fill, so nothing the SPA's overlay toggle needs to clear is
+    frozen into the picture.
     """
-    del domain_map, reset_map, with_legend  # see docstring
+    del reset_map, with_legend  # see docstring
     buf = io.StringIO()
     # ``as_cluster_tree`` wraps every non-leaf instance in its own
     # cluster subgraph so the SPA's hierarchy view reads as a
@@ -288,11 +309,16 @@ def _layout_block(
             cluster_lookup[dot_render._cluster_id_for(n.instance_path)] = (
                 n.instance_path
             )
-    return {
+    block: dict = {
         "engine": "dot",
         "dot": buf.getvalue(),
         "cluster_lookup": cluster_lookup,
     }
+    if module_table is not None:
+        block["elk"] = elk_export.export_elk(
+            node, module_table, domain_map=domain_map, tool_version=_version()
+        )
+    return block
 
 
 def _overlays_present(

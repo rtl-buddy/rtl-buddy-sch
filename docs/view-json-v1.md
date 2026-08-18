@@ -70,6 +70,52 @@ That's surfaced at overlay load time, where the overlay's
 `design_top` fails to resolve into any instance path — a load-time
 warning is more actionable than a render-time error.
 
+### 1.2 The `layout` block — additive, not contract
+
+`--format json` bakes a pre-computed layout under a top-level
+`layout` key so the SPA renders on first paint instead of deriving
+one in JavaScript. **Nothing in it is pinned by `JSON_CONTRACT`**,
+and the whole block is optional — a producer run with
+`embed_layout=False` omits it and a consumer falls back to building
+its own picture from `nodes` + `edges`.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `engine` | string | Layout engine the `dot` string targets. Currently always `"dot"`. |
+| `dot` | string | A full Graphviz DOT source, cluster-tree shaped. Node ids are `nodes[].id` verbatim, so a consumer round-trips identity through Graphviz's auto-emitted `<title>` elements. |
+| `cluster_lookup` | object | Graphviz-sanitized cluster id → instance path. Needed only because DOT identity has to be recovered by scraping. |
+| `elk` | object | **The [`elk.json` v1](elk-json-v1.md) payload**, verbatim — the engine-neutral schematic graph (nested nodes, full pinouts, per-scope net bundles). Emitted whenever the renderer was given a `ModuleTable`; absent otherwise. |
+
+The two are alternative *pictures of the same design*, not a
+migration: `dot` feeds the viz.js hierarchy/block-flow canvas,
+`elk` feeds the elkjs schematic canvas
+([#163](https://github.com/rtl-buddy/rtl-buddy-sch/issues/163) P2),
+and both are keyed on the same instance paths so a selection made in
+one lands in the other.
+
+Why `elk` is additive rather than contract:
+
+- It is the SPA talking to its own producer. `rb hier` and the
+  `JSON_CONTRACT` tripwire cover the *downstream* wire; embedding a
+  second renderer's output under `layout` changes nothing a
+  downstream consumer reads.
+- The schema declares `additionalProperties: true` on both the
+  envelope and `layout`, so an older consumer validating a newer
+  payload passes unchanged — it simply doesn't look at the key.
+- `elk.json`'s own evolution rules (§5.4 of its reference) already
+  say new `rb` keys may appear at any time. Pinning it here would
+  create a second, stricter promise about the same bytes.
+
+`elk` requires a `ModuleTable`: formal pin names and declared bit
+widths are read off module declarations, not off the `HierNode`
+tree. A caller that renders without one gets the `dot`-only block —
+degraded, never a schematic with an invented pinout. The CLI always
+supplies the table, so `--format json` from the command line always
+carries `elk`.
+
+A consumer that finds no `layout.elk` is reading output from an
+older `rtl-buddy-view`; regenerating with a current one is the fix.
+
 ## 2. Node objects
 
 ```jsonc
@@ -351,6 +397,9 @@ change.
 
 - [`overlays.md`](overlays.md) — protocol for writing a third-party
   overlay whose data lands under `node.overlays.<name>`.
+- [`elk-json-v1.md`](elk-json-v1.md) — the schematic payload
+  embedded at `layout.elk` (§1.2) and emitted standalone by
+  `--format elk`.
 - [`hub-protocol.md`](hub-protocol.md) — hub event schema. The
   `link` URIs in `view.json` are dispatched as `select.src` events
   by the hub.

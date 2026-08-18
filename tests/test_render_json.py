@@ -31,6 +31,7 @@ from rtl_buddy_view.annotations import (
 from rtl_buddy_view.extractor import (
     Instance,
     Module,
+    ModuleTable,
     ParameterOverride,
     Port,
     PortConnection,
@@ -520,6 +521,71 @@ def test_layout_block_deterministic() -> None:
     root = _node("top", "top", children=(child,))
     a = _render(root)["layout"]["dot"]
     b = _render(root)["layout"]["dot"]
+    assert a == b
+
+
+def test_layout_block_carries_elk_payload_when_module_table_supplied() -> None:
+    """``layout.elk`` is the SPA schematic canvas's input (epic #163
+    P2): the same payload ``--format elk`` writes, embedded so the
+    canvas needs one fetch, not two.
+
+    Additive by design — ``JSON_CONTRACT`` does not pin it and the
+    schema's ``additionalProperties: true`` already admits it, so an
+    older consumer reading a newer view.json is unaffected.
+    """
+    child = _node("top.u_a", "child", inst_name="u_a")
+    root = _node("top", "top", children=(child,))
+    table = ModuleTable(
+        modules_by_name={
+            "top": Module(
+                name="top", location=None, ports=(), parameters=(), instances=()
+            ),
+            "child": Module(
+                name="child", location=None, ports=(), parameters=(), instances=()
+            ),
+        }
+    )
+    layout = _render(root, module_table=table)["layout"]
+    elk = layout["elk"]
+    # The ELK root IS the design top — node ids are instance paths,
+    # which is what makes a schematic selection join straight onto
+    # ``nodes[].id`` without a lookup table (unlike ``cluster_lookup``).
+    assert elk["id"] == "top"
+    assert [c["id"] for c in elk["children"]] == ["top.u_a"]
+    assert elk["rb"]["export"]["design"]["top"] == "top"
+    # The dot half is untouched — this is a second key, not a swap.
+    assert layout["engine"] == "dot"
+    assert layout["dot"].startswith("digraph hierarchy {")
+
+
+def test_layout_block_omits_elk_without_a_module_table() -> None:
+    """Formal pin names and declared widths live on the
+    ``ModuleTable``, not on ``HierNode`` — without one the payload
+    would claim a pinout it never saw. Degrade to the dot-only block
+    instead of emitting an empty-pinout schematic.
+    """
+    root = _node("top", "top")
+    layout = _render(root)["layout"]
+    assert "elk" not in layout
+
+
+def test_layout_elk_is_deterministic() -> None:
+    """Same determinism contract as the dot half: two renders over
+    the same graph produce identical bytes."""
+    child = _node("top.u_a", "child", inst_name="u_a")
+    root = _node("top", "top", children=(child,))
+    table = ModuleTable(
+        modules_by_name={
+            "top": Module(
+                name="top", location=None, ports=(), parameters=(), instances=()
+            ),
+            "child": Module(
+                name="child", location=None, ports=(), parameters=(), instances=()
+            ),
+        }
+    )
+    a = json.dumps(_render(root, module_table=table)["layout"]["elk"], sort_keys=True)
+    b = json.dumps(_render(root, module_table=table)["layout"]["elk"], sort_keys=True)
     assert a == b
 
 
