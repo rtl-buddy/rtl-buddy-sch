@@ -55,6 +55,8 @@ from typing import IO, Any
 
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.connectivity import (
+    _BLOCK_EXTRA_CLOCK_RE,
+    _BLOCK_EXTRA_RESET_RE,
     _CLOCK_NAME_RE,
     _RESET_NAME_RE,
     Endpoint,
@@ -370,13 +372,22 @@ def _port_entry(
         "rb": {
             "name": name,
             "direction": direction,
-            # Name-shaped, and deliberately the *conservative* token
-            # form the tree/dot renderers share — a false clock pin
-            # would put a chevron glyph on a data wire. The widened
-            # block-diagram patterns stay where they are: dropping an
-            # edge is recoverable, mislabelling a pin is not.
-            "is_clock": bool(_CLOCK_NAME_RE.search(name)),
-            "is_reset": bool(_RESET_NAME_RE.search(name)),
+            # Name-shaped: the shared token form PLUS the widened
+            # block-diagram patterns. The widened forms are what
+            # suppresses ``wclk``/``cclk`` *routing* as clock trees,
+            # and the pin flag must agree with that classification —
+            # a wire hidden as a clock whose pin renders as data
+            # would be incoherent in the schematic view. The widened
+            # patterns are false-positive-safe by construction
+            # (underscore-free stem for clocks, polarity tail for
+            # resets), so a chevron never lands on a domain-suffixed
+            # data pin like ``src_sel_cclk``.
+            "is_clock": bool(
+                _CLOCK_NAME_RE.search(name) or _BLOCK_EXTRA_CLOCK_RE.search(name)
+            ),
+            "is_reset": bool(
+                _RESET_NAME_RE.search(name) or _BLOCK_EXTRA_RESET_RE.search(name)
+            ),
             "width": width,
             "connected": connected,
         },

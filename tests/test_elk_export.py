@@ -326,6 +326,24 @@ def test_clock_and_reset_pins_are_marked(payload: dict) -> None:
     assert ports["din"]["is_clock"] is False
 
 
+def test_tokenless_clock_and_reset_pins_are_marked() -> None:
+    """The pin flag must agree with the widened edge-filter
+    classification: ``wclk`` routing is suppressed as a clock tree, so
+    its pin carries the chevron too — while domain-suffixed data pins
+    (``src_sel_cclk``) stay unflagged."""
+    from rtl_buddy_view.elk_export import _port_entry
+
+    def rb(name: str) -> dict:
+        return _port_entry("top.u_x", name, "input", 1, connected=True)["rb"]
+
+    assert rb("wclk")["is_clock"] is True
+    assert rb("cclk")["is_clock"] is True
+    assert rb("crst_n")["is_reset"] is True
+    assert rb("aresetn")["is_reset"] is True
+    assert rb("src_sel_cclk")["is_clock"] is False
+    assert rb("burst")["is_reset"] is False
+
+
 def test_port_widths_come_from_the_declared_type(payload: dict) -> None:
     ports = {p["rb"]["name"]: p["rb"] for p in payload["ports"]}
     assert ports["din"]["width"] == 8
