@@ -949,3 +949,73 @@ describe('the canvas styles the algebraic slash', () => {
     expect(rule[1]).not.toMatch(/#[0-9a-f]{3,8}/i)
   })
 })
+
+
+// --- unroutable sections -----------------------------------------------------
+
+describe('unroutable edge sections', () => {
+  const graphWithSection = (section) => ({
+    id: '$root',
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 100,
+    children: [
+      {
+        id: 'top',
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 100,
+        rb: { module_name: 'top' },
+        ports: [],
+        edges: [
+          {
+            id: 'e0',
+            sources: ['top.u_a:q'],
+            targets: ['top.u_b:d'],
+            rb: { nets: ['w'], bits: 1, bits_expr: null },
+            sections: [section],
+          },
+        ],
+        children: [],
+      },
+    ],
+  })
+
+  it('drops a section carrying null coordinates instead of drawing a stray line', () => {
+    // ELK cannot route an edge whose both ends are the laid-out
+    // node's own ports and answers with null coordinates; offsetting
+    // them painted wires escaping the sheet frame. The exporter now
+    // keeps such edges out of the payload, and the model drops any
+    // section like it, from any producer, as defence in depth.
+    const model = toSchematic(
+      graphWithSection({
+        startPoint: { x: null, y: 12 },
+        endPoint: { x: 50, y: 12 },
+      }),
+    )
+    expect(model.wires).toEqual([])
+  })
+
+  it('drops a section with a NaN bend point', () => {
+    const model = toSchematic(
+      graphWithSection({
+        startPoint: { x: 0, y: 12 },
+        bendPoints: [{ x: NaN, y: 12 }],
+        endPoint: { x: 50, y: 12 },
+      }),
+    )
+    expect(model.wires).toEqual([])
+  })
+
+  it('keeps a fully finite section', () => {
+    const model = toSchematic(
+      graphWithSection({
+        startPoint: { x: 0, y: 12 },
+        endPoint: { x: 50, y: 12 },
+      }),
+    )
+    expect(model.wires).toHaveLength(1)
+  })
+})
