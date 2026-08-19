@@ -51,6 +51,7 @@ from rtl_buddy_view.extractor import (
     flatten_interface_ports,
 )
 from rtl_buddy_view.graph import HierNode
+from rtl_buddy_view.hints import HintMap
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 
 MAX_EDGE_LABEL_CONNECTIONS = 6
@@ -105,6 +106,7 @@ def render(
     as_cluster_tree: bool = False,
     block_diagram: bool = False,
     module_table: ModuleTable | None = None,
+    hints: HintMap | None = None,
 ) -> None:
     """Render ``node`` and its subtree as a Graphviz ``.dot`` digraph.
 
@@ -140,6 +142,14 @@ def render(
     modules); without one the dataflow edges are skipped and the
     output degrades to a plain cluster tree. CDC / RDC overlay arrows
     keep working.
+
+    ``hints`` carries the resolved ``rbsch`` hint map (epic #159).
+    Only its *net* vocabulary is consumed here — classification
+    reaches the connectivity analyzer so hinted clocks drop out of
+    (and hinted data survives into) the dataflow, and ``main`` /
+    ``side`` emphasis styles the resulting edges. The box vocabulary
+    was already applied to the hierarchy before rendering. ``None``
+    is byte-identical to before the parameter existed.
 
     When ``reset_map`` is supplied (Phase 3), the renderer also emits:
 
@@ -209,6 +219,7 @@ def render(
         as_cluster_tree=as_cluster_tree or block_diagram,
         block_diagram=block_diagram,
         module_table=module_table,
+        hints=hints,
     )
     if with_legend and active_map is not None:
         _emit_legend(active_map, out)
@@ -224,6 +235,7 @@ def _emit_top_frame(
     as_cluster_tree: bool = False,
     block_diagram: bool = False,
     module_table: ModuleTable | None = None,
+    hints: HintMap | None = None,
 ) -> None:
     """Emit the top module as a titled cluster with port-rank anchors."""
     title = _escape(top.module_name)
@@ -299,7 +311,7 @@ def _emit_top_frame(
         # first-class endpoints, and it traces slices, field selects
         # and assign aliases that the bare-identifier match cannot.
         # Running both would double every port edge.
-        _emit_connectivity_edges(top, out, module_table)
+        _emit_connectivity_edges(top, out, module_table, hints)
     else:
         # Port → child signal-flow edges: when a child's port connection
         # has a bare-identifier net that matches a top input/output port
@@ -337,6 +349,11 @@ _NEUTRAL_EDGE_COLOR = "#cbd5e1"  # slate-300, falls back when no clock typing
 #: as structural wiring next to the CDC red / RDC orange hazard
 #: overlays rather than competing with them.
 _BLOCK_EDGE_COLOR = "#475569"
+
+#: De-emphasized (``rbsch: side``) dataflow edge. Tailwind
+#: ``slate-400`` — present but visually behind the structural slate,
+#: so the main path pops without the CSR wiring disappearing.
+_SIDE_EDGE_COLOR = "#94a3b8"
 
 #: Cap on net names rendered on one block-diagram edge label. Beyond
 #: this the label shows the first ``MAX_BLOCK_EDGE_NETS`` names plus a
@@ -485,7 +502,10 @@ def _signal_edge_color(
 
 
 def _emit_connectivity_edges(
-    top: HierNode, out: IO[str], module_table: ModuleTable | None
+    top: HierNode,
+    out: IO[str],
+    module_table: ModuleTable | None,
+    hints: HintMap | None = None,
 ) -> None:
     """Emit block-diagram dataflow edges for every resolved scope.
 
@@ -500,11 +520,16 @@ def _emit_connectivity_edges(
     """
     if module_table is None:
         return
-    _emit_scope_connectivity(top, out, module_table, is_top=True)
+    _emit_scope_connectivity(top, out, module_table, hints, is_top=True)
 
 
 def _emit_scope_connectivity(
-    node: HierNode, out: IO[str], table: ModuleTable, *, is_top: bool
+    node: HierNode,
+    out: IO[str],
+    table: ModuleTable,
+    hints: HintMap | None,
+    *,
+    is_top: bool,
 ) -> None:
     """Emit one scope's sibling edges, then recurse into its children."""
     if node.module is not None and node.children:
@@ -514,7 +539,10 @@ def _emit_scope_connectivity(
             if child.instance is not None
         }
         port_directions = {p.name: p.direction for p in node.module.ports}
-        for edge in scope_connectivity(node.module, table):
+        net_hints = (
+            hints.nets_for_module(node.module_name) if hints is not None else None
+        )
+        for edge in scope_connectivity(node.module, table, net_hints=net_hints):
             src = _endpoint_ref(edge.src, children, port_directions, is_top=is_top)
             dst = _endpoint_ref(edge.dst, children, port_directions, is_top=is_top)
             if src is None or dst is None or src[0] == dst[0]:
@@ -524,7 +552,7 @@ def _emit_scope_connectivity(
     # walk only decides *which edges appear where in the file*, and a
     # stable alphabetical order keeps diffs readable.
     for child in sorted(node.children, key=lambda c: c.instance_path):
-        _emit_scope_connectivity(child, out, table, is_top=False)
+        _emit_scope_connectivity(child, out, table, hints, is_top=False)
 
 
 def _endpoint_ref(
@@ -589,10 +617,19 @@ def _write_block_edge(
     # source's own box.
     tailport = "w" if src_id.startswith("_out_") or dst_id.startswith("_in_") else "e"
     headport = "e" if dst_id.startswith("_in_") else "w"
+    # ``rbsch`` emphasis (epic #159 phase 2): the main datapath gets
+    # weight, side wiring thins and grays so the money path pops.
+    # Unhinted edges keep the exact phase-1 attributes.
+    if edge.emphasis == "main":
+        edge_color, penwidth, arrowsize = _BLOCK_EDGE_COLOR, "2.2", "0.9"
+    elif edge.emphasis == "side":
+        edge_color, penwidth, arrowsize = _SIDE_EDGE_COLOR, "0.6", "0.6"
+    else:
+        edge_color, penwidth, arrowsize = _BLOCK_EDGE_COLOR, "1.0", "0.7"
     attrs = [
-        f'color="{_BLOCK_EDGE_COLOR}"',
-        "penwidth=1.0",
-        "arrowsize=0.7",
+        f'color="{edge_color}"',
+        f"penwidth={penwidth}",
+        f"arrowsize={arrowsize}",
         f"tailport={tailport}",
         f"headport={headport}",
     ]
@@ -605,7 +642,7 @@ def _write_block_edge(
         # routes cleanly.
         attrs.append(f'xlabel="{label}"')
         attrs.append("fontsize=9")
-        attrs.append(f'fontcolor="{_BLOCK_EDGE_COLOR}"')
+        attrs.append(f'fontcolor="{edge_color}"')
     if src_cluster:
         attrs.append(f'ltail="{src_cluster}"')
     if dst_cluster:

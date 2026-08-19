@@ -108,7 +108,7 @@ def test_parse_unknown_key_warns_with_known_set() -> None:
     assert len(payload.warnings) == 1
     warning = payload.warnings[0]
     assert "collpase" in warning
-    assert "collapse, hide, leaf" in warning
+    assert "clock, collapse, data, hide, leaf, main, reset, side" in warning
     assert "label=…" in warning
 
 
@@ -582,3 +582,250 @@ def test_public_constants_document_the_vocabulary() -> None:
     assert hints_mod.PRAGMA_PREFIX == "rbsch"
     assert hints_mod.KNOWN_FLAGS == ("collapse", "hide", "leaf")
     assert hints_mod.KNOWN_KEYS == ("label",)
+
+
+# --- phase 2: net vocabulary ------------------------------------------------
+
+
+def _net_decl(name: str, line: int, file: str = FILE):
+    from rtl_buddy_view.extractor import NetDecl
+
+    return NetDecl(
+        name=name,
+        type_text="logic",
+        location=SourceLocation(file=file, start_line=line),
+    )
+
+
+def _port_decl(name: str, line: int, file: str = FILE):
+    from rtl_buddy_view.extractor import Port
+
+    return Port(
+        name=name,
+        direction="input",
+        type_text="logic",
+        location=SourceLocation(file=file, start_line=line),
+    )
+
+
+def _net_module(
+    name: str,
+    line: int,
+    *,
+    nets: tuple = (),
+    ports: tuple = (),
+    instances: tuple[Instance, ...] = (),
+) -> Module:
+    return Module(
+        name=name,
+        ports=ports,
+        parameters=(),
+        instances=instances,
+        location=SourceLocation(file=FILE, start_line=line),
+        net_decls=nets,
+    )
+
+
+def test_parse_accepts_net_flags() -> None:
+    payload = parse_pragma_payload("clock main")
+    assert payload.flags == ("clock", "main")
+    assert payload.warnings == ()
+
+
+def test_parse_net_flag_with_value_warns() -> None:
+    payload = parse_pragma_payload("clock=false")
+    assert payload.flags == ()
+    assert "takes no value" in payload.warnings[0]
+
+
+def test_trailing_net_pragma_flags_every_declarator_on_the_line() -> None:
+    """``logic a, b;  // rbsch: clock`` classifies both declarators."""
+    table = _table(_net_module("m", 1, nets=(_net_decl("a", 5), _net_decl("b", 5))))
+    text = "\n" * 4 + "logic a, b;  // rbsch: clock\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets[("m", "a")].classification == "clock"
+    assert hints.nets[("m", "b")].classification == "clock"
+    assert hints.warnings == ()
+
+
+def test_standalone_net_pragma_covers_one_declaration_line_only() -> None:
+    """The next declaration *line*, never a run — one comment must not
+    silently reclassify half a module."""
+    table = _table(_net_module("m", 1, nets=(_net_decl("a", 5), _net_decl("b", 6))))
+    text = "\n" * 3 + "// rbsch: side\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets[("m", "a")].emphasis == "side"
+    assert ("m", "b") not in hints.nets
+
+
+def test_net_pragma_binds_to_a_port_declaration() -> None:
+    """A clock is very often a port of the scope being drawn."""
+    table = _table(_net_module("m", 1, ports=(_port_decl("tick", 3),)))
+    text = "\n" * 2 + "input logic tick,  // rbsch: clock\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets[("m", "tick")].classification == "clock"
+
+
+def test_box_pragma_skips_net_declarations() -> None:
+    """Phase-1 stability: teaching the index about nets must not
+    re-bind ``// rbsch: collapse`` sitting above a net declaration."""
+    table = _table(
+        _net_module(
+            "m",
+            1,
+            nets=(_net_decl("w", 4),),
+            instances=(_instance("u_x", "x", 5),),
+        )
+    )
+    text = "\n" * 2 + "// rbsch: collapse\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.instances[("m", "u_x")].collapse is True
+    assert hints.nets == {}
+    assert hints.warnings == ()
+
+
+def test_net_pragma_skips_box_declarations() -> None:
+    """The mirror image: a net word reaches past an instance to the
+    next net declaration."""
+    table = _table(
+        _net_module(
+            "m",
+            1,
+            nets=(_net_decl("w", 6),),
+            instances=(_instance("u_x", "x", 4),),
+        )
+    )
+    text = "\n" * 2 + "// rbsch: main\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets[("m", "w")].emphasis == "main"
+    assert hints.instances == {}
+
+
+def test_mixed_payload_binds_each_family_independently() -> None:
+    table = _table(
+        _net_module(
+            "m",
+            1,
+            nets=(_net_decl("w", 4),),
+            instances=(_instance("u_x", "x", 6),),
+        )
+    )
+    text = "\n" * 2 + "// rbsch: collapse main\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.instances[("m", "u_x")].collapse is True
+    assert hints.nets[("m", "w")].emphasis == "main"
+
+
+def test_net_pragma_with_no_net_target_warns() -> None:
+    table = _table(_net_module("m", 1, instances=(_instance("u_x", "x", 3),)))
+    text = "\n" * 2 + "u_x x ();  // rbsch: clock\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets == {}
+    assert any("matched no net or port declaration" in w for w in hints.warnings)
+
+
+def test_conflicting_classifications_warn_and_drop() -> None:
+    table = _table(_net_module("m", 1, nets=(_net_decl("w", 3),)))
+    text = "\n" * 2 + "logic w;  // rbsch: clock reset main\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    # The emphasis half of the payload still lands.
+    assert hints.nets[("m", "w")] == hints_mod.NetHints(emphasis="main")
+    assert any("mutually exclusive" in w for w in hints.warnings)
+
+
+def test_conflicting_emphasis_warns_and_drops() -> None:
+    table = _table(_net_module("m", 1, nets=(_net_decl("w", 3),)))
+    text = "\n" * 2 + "logic w;  // rbsch: main side data\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets[("m", "w")] == hints_mod.NetHints(classification="data")
+    assert any("mutually exclusive" in w for w in hints.warnings)
+
+
+def test_later_net_pragma_wins_per_field() -> None:
+    table = _table(_net_module("m", 1, nets=(_net_decl("w", 4),)))
+    text = "\n" * 2 + "// rbsch: clock\nlogic w;  // rbsch: data main\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets[("m", "w")] == hints_mod.NetHints(
+        classification="data", emphasis="main"
+    )
+
+
+def test_net_only_map_is_not_empty_but_leaves_the_tree_alone() -> None:
+    hints = HintMap(nets={("m", "w"): hints_mod.NetHints(emphasis="main")})
+    assert not hints.is_empty
+    root = _node("top", "m")
+    assert apply_hints(root, hints) is root
+
+
+def test_nets_for_module_filters_to_one_scope() -> None:
+    hints = HintMap(
+        nets={
+            ("m", "w"): hints_mod.NetHints(emphasis="main"),
+            ("other", "w"): hints_mod.NetHints(classification="clock"),
+        }
+    )
+    assert hints.nets_for_module("m") == {"w": hints_mod.NetHints(emphasis="main")}
+
+
+def test_sidecar_parses_nets() -> None:
+    hints = parse_hint_sidecar(
+        {
+            "schema_version": "1.1",
+            "nets": {
+                "m.tick": {"classification": "clock"},
+                "m.stage": {"emphasis": "main"},
+            },
+        },
+        source="hints.json",
+    )
+    assert hints.nets[("m", "tick")].classification == "clock"
+    assert hints.nets[("m", "stage")].emphasis == "main"
+    assert hints.warnings == ()
+
+
+def test_sidecar_bad_classification_value_raises() -> None:
+    with pytest.raises(HintsError, match="classification must be one of"):
+        parse_hint_sidecar(
+            {"schema_version": "1.1", "nets": {"m.w": {"classification": "clokc"}}},
+            source="hints.json",
+        )
+
+
+def test_sidecar_bad_emphasis_value_raises() -> None:
+    with pytest.raises(HintsError, match="emphasis must be one of"):
+        parse_hint_sidecar(
+            {"schema_version": "1.1", "nets": {"m.w": {"emphasis": "primary"}}},
+            source="hints.json",
+        )
+
+
+def test_sidecar_bad_net_key_raises() -> None:
+    with pytest.raises(HintsError, match="'<module>.<net_name>'"):
+        parse_hint_sidecar(
+            {"schema_version": "1.1", "nets": {"w": {"emphasis": "main"}}},
+            source="hints.json",
+        )
+
+
+def test_sidecar_unknown_net_field_warns_but_loads() -> None:
+    hints = parse_hint_sidecar(
+        {
+            "schema_version": "1.1",
+            "nets": {"m.w": {"emphasis": "side", "bundel": "x"}},
+        },
+        source="hints.json",
+    )
+    assert hints.nets[("m", "w")].emphasis == "side"
+    assert any("bundel" in w for w in hints.warnings)
+
+
+def test_merge_sidecar_overrides_net_fields_independently() -> None:
+    base = HintMap(
+        nets={("m", "w"): hints_mod.NetHints(classification="clock", emphasis="main")}
+    )
+    override = HintMap(nets={("m", "w"): hints_mod.NetHints(classification="data")})
+    merged = merge_hint_maps(base, override)
+    # Classification overridden, in-source emphasis kept.
+    assert merged.nets[("m", "w")] == hints_mod.NetHints(
+        classification="data", emphasis="main"
+    )

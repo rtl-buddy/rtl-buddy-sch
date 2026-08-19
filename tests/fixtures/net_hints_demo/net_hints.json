@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.1",
+  "nets": {
+    "nh_top.tick": { "classification": "data" },
+    "nh_top.stage_q": { "emphasis": "side" }
+  }
+}

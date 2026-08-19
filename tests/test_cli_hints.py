@@ -154,7 +154,7 @@ def test_malformed_sidecar_exits_1_with_the_overlay_prefix(tmp_path: Path) -> No
 
 def test_hints_overlay_is_listed() -> None:
     result = _run("--list-overlays")
-    assert "hints\t1.0\t(built-in)" in result.stdout
+    assert "hints\t1.1\t(built-in)" in result.stdout
 
 
 # --- warnings ---------------------------------------------------------------
@@ -178,5 +178,113 @@ def test_unknown_pragma_key_warns_on_stderr_and_still_renders(
     assert result.returncode == 0, result.stderr
     assert "hints: " in result.stderr
     assert "collpase" in result.stderr
-    assert "collapse, hide, leaf" in result.stderr
+    assert "clock, collapse, data, hide, leaf, main, reset, side" in result.stderr
     assert "u_sub" in result.stdout
+
+
+# --- phase 2: net classification end to end ---------------------------------
+
+NET_FIXTURES = Path(__file__).parent / "fixtures" / "net_hints_demo"
+NET_FILELIST = NET_FIXTURES / "files.f"
+
+_MAIN_STYLE = "penwidth=2.2"
+_SIDE_STYLE = 'color="#94a3b8", penwidth=0.6'
+
+
+def _render_net(*args: str) -> subprocess.CompletedProcess[str]:
+    return _run(
+        "--top",
+        "nh_top",
+        "--filelist",
+        str(NET_FILELIST),
+        "--format",
+        "dot",
+        "--block-diagram",
+        *args,
+    )
+
+
+def _edge_line(dot: str, net: str) -> str:
+    lines = [ln for ln in dot.splitlines() if f'xlabel="{net}' in ln]
+    assert len(lines) == 1, f"expected one {net} edge, got: {lines}"
+    return lines[0]
+
+
+def test_net_pragmas_reshape_the_block_diagram() -> None:
+    result = _render_net()
+    assert result.returncode == 0, result.stderr
+    dot = result.stdout
+    # `tick` (rbsch: clock) no longer leaks into the dataflow.
+    assert '"_in_tick" ->' not in dot
+    # `clk_result` (rbsch: data) is rescued from the clock filter.
+    assert '-> "_out_clk_result"' in dot
+    # `stage_q` (rbsch: main) is emboldened; `done_status`
+    # (rbsch: side) is thinned and grayed.
+    assert _MAIN_STYLE in _edge_line(dot, "busy_status")  # bundled with stage_q
+    assert _SIDE_STYLE in _edge_line(dot, "done_status")
+    assert "hints:" not in result.stderr
+
+
+def test_no_pragmas_restores_the_unclassified_dataflow() -> None:
+    result = _render_net("--no-pragmas")
+    assert result.returncode == 0, result.stderr
+    dot = result.stdout
+    assert '"_in_tick" ->' in dot
+    assert '-> "_out_clk_result"' not in dot
+    assert _MAIN_STYLE not in dot
+    assert _SIDE_STYLE not in dot
+
+
+def test_net_sidecar_overrides_the_in_source_pragmas() -> None:
+    result = _render_net("--overlay", f"hints={NET_FIXTURES / 'net_hints.json'}")
+    assert result.returncode == 0, result.stderr
+    dot = result.stdout
+    # Sidecar revokes `tick`'s clock classification (data) — the
+    # edges return — and demotes `stage_q` from main to side.
+    assert '"_in_tick" ->' in dot
+    assert _SIDE_STYLE in _edge_line(dot, "busy_status")
+    # Untouched in-source hints keep working through the merge.
+    assert '-> "_out_clk_result"' in dot
+
+
+def test_net_hints_reach_the_elk_export_structurally() -> None:
+    """The SPA canvas and the dot figure must agree on what exists."""
+    result = _run(
+        "--top",
+        "nh_top",
+        "--filelist",
+        str(NET_FILELIST),
+        "--format",
+        "elk",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+
+    def edge_nets(node: dict) -> list[str]:
+        nets = [n for e in node["edges"] for n in e["rb"]["nets"]]
+        for child in node["children"]:
+            nets.extend(edge_nets(child))
+        return nets
+
+    nets = edge_nets(payload)
+    assert "tick" not in nets
+    assert "clk_result" in nets
+
+
+def test_net_hints_leave_the_hierarchy_formats_untouched() -> None:
+    """Classification and emphasis are dataflow-only: tree output is
+    byte-identical with and without the net pragmas."""
+    with_hints = _run(
+        "--top", "nh_top", "--filelist", str(NET_FILELIST), "--format", "tree"
+    )
+    without = _run(
+        "--top",
+        "nh_top",
+        "--filelist",
+        str(NET_FILELIST),
+        "--format",
+        "tree",
+        "--no-pragmas",
+    )
+    assert with_hints.returncode == 0 and without.returncode == 0
+    assert with_hints.stdout == without.stdout

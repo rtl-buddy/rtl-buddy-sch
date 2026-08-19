@@ -32,6 +32,16 @@ agrees on what exists; ``label`` rides along on
 :attr:`rtl_buddy_view.graph.HierNode.display_label` for renderers that
 know how to show it.
 
+Phase 2 adds **net classification**: ``clock`` / ``reset`` / ``data``
+override the name-regex classifier the block-diagram connectivity
+analyzer uses to drop clock trees (in both directions — a clock named
+``tick`` can be suppressed, a data net named ``clkd_result`` can be
+rescued), and ``main`` / ``side`` set the emphasis a renderer draws
+the net's edge with. Net hints never transform the hierarchy; they are
+consumed by :func:`rtl_buddy_view.connectivity.scope_connectivity`
+(classification, emphasis) and styled by the dot renderer
+(emphasis).
+
 Unknown vocabulary never raises. A typo'd key is collected as a warning
 naming the known set (the self-correcting-typo pattern the overlay
 registry uses for unknown overlay names) so a bad pragma degrades to
@@ -45,6 +55,7 @@ import shlex
 from collections.abc import Mapping, MutableSequence, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Literal, cast
 
 from rtl_buddy_view.extractor import ModuleTable
 from rtl_buddy_view.graph import HierNode
@@ -57,11 +68,17 @@ PRAGMA_PREFIX = "rbsch"
 
 #: Sidecar schema version this loader emits/accepts. Same
 #: major-must-match / minor-may-drift rule as the clock-domain map.
-SIDECAR_SCHEMA_VERSION = "1.0"
+SIDECAR_SCHEMA_VERSION = "1.1"
 SUPPORTED_SCHEMA_MAJOR = 1
 
-#: Valueless pragma words.
+#: Valueless pragma words that shape a *box* (module or instance).
 KNOWN_FLAGS: tuple[str, ...] = ("collapse", "hide", "leaf")
+
+#: Valueless pragma words that classify a *net* (a body declaration
+#: or a port). ``clock`` / ``reset`` / ``data`` override the
+#: name-regex clock-tree classifier in both directions; ``main`` /
+#: ``side`` set the emphasis the net's dataflow edge is drawn with.
+KNOWN_NET_FLAGS: tuple[str, ...] = ("clock", "data", "main", "reset", "side")
 
 #: ``key=value`` pragma words.
 KNOWN_KEYS: tuple[str, ...] = ("label",)
@@ -71,6 +88,19 @@ MODULE_ONLY_FLAGS: tuple[str, ...] = ("leaf",)
 
 #: Flags that only mean something on an instance.
 INSTANCE_ONLY_FLAGS: tuple[str, ...] = ("collapse", "hide")
+
+#: The two families inside the net vocabulary. Words *within* one
+#: family are mutually exclusive on a single pragma; the conflict is
+#: resolved (warned and dropped) in :func:`resolve_hints`, where the
+#: pragma's location is known for the message.
+CLASSIFICATION_FLAGS: tuple[str, ...] = ("clock", "data", "reset")
+EMPHASIS_FLAGS: tuple[str, ...] = ("main", "side")
+
+#: What a net's ``classification`` may resolve to.
+Classification = Literal["clock", "data", "reset"]
+
+#: What a net's ``emphasis`` may resolve to.
+Emphasis = Literal["main", "side"]
 
 
 class HintsError(ValueError):
@@ -116,7 +146,7 @@ class PragmaPayload:
 def _unknown_word_warning(word: str) -> str:
     return (
         f"unknown {PRAGMA_PREFIX} key {word!r}; known flags: "
-        f"{', '.join(KNOWN_FLAGS)}; known keys: "
+        f"{', '.join(sorted(KNOWN_FLAGS + KNOWN_NET_FLAGS))}; known keys: "
         f"{', '.join(f'{k}=…' for k in KNOWN_KEYS)}"
     )
 
@@ -154,7 +184,7 @@ def parse_pragma_payload(payload: str) -> PragmaPayload:
     for token in tokens:
         key, sep, value = token.partition("=")
         if not sep:
-            if token in KNOWN_FLAGS:
+            if token in KNOWN_FLAGS or token in KNOWN_NET_FLAGS:
                 flags.add(token)
             elif token in KNOWN_KEYS:
                 warnings.append(
@@ -170,7 +200,7 @@ def parse_pragma_payload(payload: str) -> PragmaPayload:
             # typo either way and the warning-free path keeps the
             # diagram rendering.
             options[key] = value
-        elif key in KNOWN_FLAGS:
+        elif key in KNOWN_FLAGS or key in KNOWN_NET_FLAGS:
             warnings.append(
                 f"{PRAGMA_PREFIX} flag {key!r} takes no value; "
                 f"write it bare (drop the '={value}')"
@@ -296,17 +326,48 @@ class InstanceHints:
 
 
 @dataclass(frozen=True)
+class NetHints:
+    """Hints attached to one net, keyed by ``(module, net name)``.
+
+    "Net" is anything a wire in a scope can be named after: a body
+    declaration (``logic [18:0] payload;``) or a port. Both carry a
+    :class:`~rtl_buddy_view.extractor.SourceLocation`, so both take a
+    pragma.
+
+    ``classification`` overrides the connectivity analyzer's
+    name-regex clock-tree filter — ``"clock"`` / ``"reset"`` suppress
+    a net whose name doesn't look the part, ``"data"`` rescues one
+    whose name wrongly does. ``emphasis`` is renderer-facing:
+    ``"main"`` emboldens the edge carrying this net, ``"side"`` thins
+    and grays it. ``None`` everywhere means "this source said
+    nothing" — the same tri-state rule the box hints follow, so a
+    sidecar can override an in-source word rather than only add.
+    """
+
+    classification: Classification | None = None
+    emphasis: Emphasis | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return self.classification is None and self.emphasis is None
+
+
+@dataclass(frozen=True)
 class HintMap:
     """Resolved hints, keyed the way the graph layer looks them up.
 
     Modules are keyed by name; instances by ``(parent_module_name,
     instance_name)`` — the pair a :class:`HierNode` can produce from
     itself and its parent without a path-string convention, and the
-    same pair the sidecar spells ``"parent.inst"``.
+    same pair the sidecar spells ``"parent.inst"``. Nets are keyed by
+    ``(module_name, net_name)`` — a net name is meaningful only
+    inside the module that declares it, and the sidecar spells the
+    pair ``"module.net"``.
     """
 
     modules: Mapping[str, ModuleHints] = field(default_factory=dict)
     instances: Mapping[tuple[str, str], InstanceHints] = field(default_factory=dict)
+    nets: Mapping[tuple[str, str], NetHints] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
 
     @property
@@ -318,7 +379,7 @@ class HintMap:
         :func:`apply_hints` short-circuits on it. Warnings alone
         don't make a map non-empty.
         """
-        return not self.modules and not self.instances
+        return not self.modules and not self.instances and not self.nets
 
     def for_module(self, module_name: str) -> ModuleHints | None:
         return self.modules.get(module_name)
@@ -328,15 +389,29 @@ class HintMap:
     ) -> InstanceHints | None:
         return self.instances.get((parent_module, instance_name))
 
+    def nets_for_module(self, module_name: str) -> dict[str, NetHints]:
+        """The net hints scoped to one module, keyed by net name.
+
+        This is the shape
+        :func:`rtl_buddy_view.connectivity.scope_connectivity`
+        consumes — that function analyzes exactly one scope, so it
+        should never see (or filter) another module's nets.
+        """
+        return {net: h for (mod, net), h in self.nets.items() if mod == module_name}
+
 
 @dataclass(frozen=True)
 class _Decl:
     """A pragma-attachable declaration recovered from the module table."""
 
     line: int
-    is_instance: bool
-    module: str  # defining module, or the parent module for an instance
-    instance: str | None
+    kind: Literal["module", "instance", "net"]
+    module: str  # defining module, or the enclosing module otherwise
+    instance: str | None = None
+    net: str | None = None
+
+
+_KIND_ORDER = {"instance": 0, "module": 1, "net": 2}
 
 
 def _declaration_index(table: ModuleTable) -> dict[str, tuple[_Decl, ...]]:
@@ -344,45 +419,83 @@ def _declaration_index(table: ModuleTable) -> dict[str, tuple[_Decl, ...]]:
 
     Ties sort instances before modules so a same-line collision (a
     one-line module wrapping an instantiation) resolves to the more
-    specific target deterministically.
+    specific target deterministically. Net declarations and ports —
+    the phase-2 targets — sort last on a line, which is invisible in
+    practice: box association and net association each filter to
+    their own kind before looking.
     """
     per_file: dict[str, list[_Decl]] = {}
+
+    def _add(file: str, decl: _Decl) -> None:
+        per_file.setdefault(file, []).append(decl)
+
     for module in table.modules_by_name.values():
         loc = module.location
         if loc is not None and loc.start_line is not None:
-            per_file.setdefault(loc.file, []).append(
-                _Decl(
-                    line=loc.start_line,
-                    is_instance=False,
-                    module=module.name,
-                    instance=None,
-                )
+            _add(
+                loc.file, _Decl(line=loc.start_line, kind="module", module=module.name)
             )
         for inst in module.instances:
             iloc = inst.location
             if iloc is None or iloc.start_line is None:
                 continue
-            per_file.setdefault(iloc.file, []).append(
+            _add(
+                iloc.file,
                 _Decl(
                     line=iloc.start_line,
-                    is_instance=True,
+                    kind="instance",
                     module=module.name,
                     instance=inst.name,
-                )
+                ),
+            )
+        # Nets: body declarations and ports both — a clock is very
+        # often a port of the scope being drawn, and both carry the
+        # SourceLocation association needs.
+        for net in module.net_decls:
+            nloc = net.location
+            if nloc is None or nloc.start_line is None:
+                continue
+            _add(
+                nloc.file,
+                _Decl(
+                    line=nloc.start_line,
+                    kind="net",
+                    module=module.name,
+                    net=net.name,
+                ),
+            )
+        for port in module.ports:
+            ploc = port.location
+            if ploc is None or ploc.start_line is None:
+                continue
+            _add(
+                ploc.file,
+                _Decl(
+                    line=ploc.start_line,
+                    kind="net",
+                    module=module.name,
+                    net=port.name,
+                ),
             )
     return {
         file: tuple(
             sorted(
                 decls,
-                key=lambda d: (d.line, not d.is_instance, d.module, d.instance or ""),
+                key=lambda d: (
+                    d.line,
+                    _KIND_ORDER[d.kind],
+                    d.module,
+                    d.instance or "",
+                    d.net or "",
+                ),
             )
         )
         for file, decls in sorted(per_file.items())
     }
 
 
-def _associate(pragma: Pragma, decls: Sequence[_Decl]) -> _Decl | None:
-    """Bind ``pragma`` to a declaration per the phase-1 rules.
+def _associate_box(pragma: Pragma, decls: Sequence[_Decl]) -> _Decl | None:
+    """Bind ``pragma`` to a module / instance declaration (phase-1 rules).
 
     - Trailing pragma (code to its left): the declaration *starting*
       on that line. A trailing pragma on a non-declaration line binds
@@ -390,26 +503,62 @@ def _associate(pragma: Pragma, decls: Sequence[_Decl]) -> _Decl | None:
       a stray comment silently reshape a diagram several lines away.
     - Standalone pragma: the nearest declaration starting below it in
       the same file.
+
+    Filters to box declarations first, so the phase-2 net targets
+    can never re-bind a phase-1 pragma: ``// rbsch: collapse`` above
+    a net declaration still reaches the instance below it.
     """
+    box = [d for d in decls if d.kind != "net"]
     if not pragma.own_line:
-        for decl in decls:
+        for decl in box:
             if decl.line == pragma.line:
                 return decl
         return None
-    for decl in decls:
+    for decl in box:
         if decl.line > pragma.line:
             return decl
     return None
 
 
+def _associate_nets(pragma: Pragma, decls: Sequence[_Decl]) -> tuple[_Decl, ...]:
+    """Bind a net pragma to the net / port declarations it covers.
+
+    - Trailing: every net declarator *starting on that line* —
+      ``logic a, b;  // rbsch: clock`` flags both.
+    - Standalone: the next net or port declaration below it, again
+      covering every declarator on that declaration's line.
+
+    One *line* of declarators, never a run: classification is
+    per-net intent, and spilling onto the following declarations
+    would let one comment silently reclassify half a module.
+    """
+    net_decls = [d for d in decls if d.kind == "net"]
+    if not pragma.own_line:
+        return tuple(d for d in net_decls if d.line == pragma.line)
+    below = [d for d in net_decls if d.line > pragma.line]
+    if not below:
+        return ()
+    first_line = below[0].line
+    return tuple(d for d in below if d.line == first_line)
+
+
 def _describe(decl: _Decl) -> str:
-    if decl.is_instance:
+    if decl.kind == "instance":
         return f"instance {decl.instance!r} in module {decl.module!r}"
+    if decl.kind == "net":
+        return f"net {decl.net!r} in module {decl.module!r}"
     return f"module {decl.module!r}"
 
 
 def resolve_hints(pragmas: Sequence[Pragma], table: ModuleTable) -> HintMap:
-    """Bind scanned pragmas to modules / instances in ``table``.
+    """Bind scanned pragmas to modules / instances / nets in ``table``.
+
+    A payload may mix the box vocabulary (``leaf`` / ``collapse`` /
+    ``hide`` / ``label``) with the net vocabulary (``clock`` /
+    ``reset`` / ``data`` / ``main`` / ``side``). Each family
+    associates independently, against declarations of its own kind —
+    which is what keeps phase 1 stable: teaching the language about
+    nets cannot re-bind a pragma that never mentions one.
 
     Wrong-target-kind use (``leaf`` on an instance, ``collapse`` on a
     module) is a warning, not an error: the intent is legible, the
@@ -418,6 +567,7 @@ def resolve_hints(pragmas: Sequence[Pragma], table: ModuleTable) -> HintMap:
     warnings: list[str] = []
     modules: dict[str, ModuleHints] = {}
     instances: dict[tuple[str, str], InstanceHints] = {}
+    nets: dict[tuple[str, str], NetHints] = {}
     index = _declaration_index(table)
 
     for pragma in pragmas:
@@ -425,59 +575,137 @@ def resolve_hints(pragmas: Sequence[Pragma], table: ModuleTable) -> HintMap:
         warnings.extend(f"{where}: {w}" for w in pragma.payload.warnings)
         if pragma.payload.is_empty:
             continue
-        decl = _associate(pragma, index.get(pragma.file, ()))
-        if decl is None:
-            warnings.append(
-                f"{where}: {PRAGMA_PREFIX} pragma matched no module or "
-                f"instance declaration ("
-                + (
-                    "a trailing pragma binds to a declaration starting on the same line"
-                    if not pragma.own_line
-                    else "a standalone pragma binds to the next declaration below it"
-                )
-                + ")"
-            )
-            continue
-
-        label = pragma.option("label")
-        if decl.is_instance:
-            assert decl.instance is not None
-            key = (decl.module, decl.instance)
-            current = instances.get(key, InstanceHints())
-            for flag in pragma.flags:
-                if flag in MODULE_ONLY_FLAGS:
-                    warnings.append(
-                        f"{where}: {flag!r} applies to a module definition, "
-                        f"not {_describe(decl)}; move it above the module "
-                        f"declaration (or use 'collapse' here)"
-                    )
-                elif flag == "collapse":
-                    current = replace(current, collapse=True)
-                elif flag == "hide":
-                    current = replace(current, hide=True)
-            if label is not None:
-                current = replace(current, label=label)
-            instances[key] = current
-        else:
-            current_m = modules.get(decl.module, ModuleHints())
-            for flag in pragma.flags:
-                if flag in INSTANCE_ONLY_FLAGS:
-                    warnings.append(
-                        f"{where}: {flag!r} applies to an instance, not "
-                        f"{_describe(decl)}; move it onto the instantiation "
-                        f"(or use 'leaf' here)"
-                    )
-                elif flag == "leaf":
-                    current_m = replace(current_m, leaf=True)
-            if label is not None:
-                current_m = replace(current_m, label=label)
-            modules[decl.module] = current_m
+        decls = index.get(pragma.file, ())
+        box_flags = tuple(f for f in pragma.flags if f in KNOWN_FLAGS)
+        net_flags = tuple(f for f in pragma.flags if f in KNOWN_NET_FLAGS)
+        # ``label`` — the only key so far — is box vocabulary.
+        if box_flags or pragma.payload.options:
+            _resolve_box(pragma, where, box_flags, decls, modules, instances, warnings)
+        if net_flags:
+            _resolve_nets(pragma, where, net_flags, decls, nets, warnings)
 
     return HintMap(
         modules={k: v for k, v in sorted(modules.items()) if not v.is_empty},
         instances={k: v for k, v in sorted(instances.items()) if not v.is_empty},
+        nets={k: v for k, v in sorted(nets.items()) if not v.is_empty},
         warnings=tuple(warnings),
     )
+
+
+def _resolve_box(
+    pragma: Pragma,
+    where: str,
+    box_flags: tuple[str, ...],
+    decls: Sequence[_Decl],
+    modules: dict[str, ModuleHints],
+    instances: dict[tuple[str, str], InstanceHints],
+    warnings: list[str],
+) -> None:
+    """Apply one pragma's box vocabulary (phase-1 body, unchanged rules)."""
+    decl = _associate_box(pragma, decls)
+    if decl is None:
+        warnings.append(
+            f"{where}: {PRAGMA_PREFIX} pragma matched no module or "
+            f"instance declaration ("
+            + (
+                "a trailing pragma binds to a declaration starting on the same line"
+                if not pragma.own_line
+                else "a standalone pragma binds to the next declaration below it"
+            )
+            + ")"
+        )
+        return
+
+    label = pragma.option("label")
+    if decl.kind == "instance":
+        assert decl.instance is not None
+        key = (decl.module, decl.instance)
+        current = instances.get(key, InstanceHints())
+        for flag in box_flags:
+            if flag in MODULE_ONLY_FLAGS:
+                warnings.append(
+                    f"{where}: {flag!r} applies to a module definition, "
+                    f"not {_describe(decl)}; move it above the module "
+                    f"declaration (or use 'collapse' here)"
+                )
+            elif flag == "collapse":
+                current = replace(current, collapse=True)
+            elif flag == "hide":
+                current = replace(current, hide=True)
+        if label is not None:
+            current = replace(current, label=label)
+        instances[key] = current
+    else:
+        current_m = modules.get(decl.module, ModuleHints())
+        for flag in box_flags:
+            if flag in INSTANCE_ONLY_FLAGS:
+                warnings.append(
+                    f"{where}: {flag!r} applies to an instance, not "
+                    f"{_describe(decl)}; move it onto the instantiation "
+                    f"(or use 'leaf' here)"
+                )
+            elif flag == "leaf":
+                current_m = replace(current_m, leaf=True)
+        if label is not None:
+            current_m = replace(current_m, label=label)
+        modules[decl.module] = current_m
+
+
+def _resolve_nets(
+    pragma: Pragma,
+    where: str,
+    net_flags: tuple[str, ...],
+    decls: Sequence[_Decl],
+    nets: dict[tuple[str, str], NetHints],
+    warnings: list[str],
+) -> None:
+    """Apply one pragma's net vocabulary to its covered declarators."""
+    targets = _associate_nets(pragma, decls)
+    if not targets:
+        warnings.append(
+            f"{where}: net pragma ({', '.join(net_flags)}) matched no net "
+            f"or port declaration ("
+            + (
+                "a trailing net pragma binds to the declarators starting "
+                "on the same line"
+                if not pragma.own_line
+                else "a standalone net pragma binds to the next net or "
+                "port declaration below it"
+            )
+            + ")"
+        )
+        return
+
+    classifications = tuple(f for f in net_flags if f in CLASSIFICATION_FLAGS)
+    emphases = tuple(f for f in net_flags if f in EMPHASIS_FLAGS)
+    classification: Classification | None = None
+    emphasis: Emphasis | None = None
+    if len(set(classifications)) > 1:
+        warnings.append(
+            f"{where}: {', '.join(sorted(set(classifications)))} are "
+            f"mutually exclusive; classification dropped"
+        )
+    elif classifications:
+        classification = cast(Classification, classifications[0])
+    if len(set(emphases)) > 1:
+        warnings.append(
+            f"{where}: {', '.join(sorted(set(emphases)))} are mutually "
+            f"exclusive; emphasis dropped"
+        )
+    elif emphases:
+        emphasis = cast(Emphasis, emphases[0])
+    if classification is None and emphasis is None:
+        return
+
+    for decl in targets:
+        assert decl.net is not None
+        key = (decl.module, decl.net)
+        current = nets.get(key, NetHints())
+        if classification is not None:
+            current = replace(current, classification=classification)
+        if emphasis is not None:
+            current = replace(current, emphasis=emphasis)
+        nets[key] = current
 
 
 def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
@@ -508,9 +736,23 @@ def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
             hide=current_i.hide if inst_hints.hide is None else inst_hints.hide,
             label=current_i.label if inst_hints.label is None else inst_hints.label,
         )
+    nets = dict(base.nets)
+    for net_key, net_hints in override.nets.items():
+        current_n = nets.get(net_key, NetHints())
+        nets[net_key] = NetHints(
+            classification=(
+                current_n.classification
+                if net_hints.classification is None
+                else net_hints.classification
+            ),
+            emphasis=(
+                current_n.emphasis if net_hints.emphasis is None else net_hints.emphasis
+            ),
+        )
     return HintMap(
         modules=dict(sorted(modules.items())),
         instances=dict(sorted(instances.items())),
+        nets=dict(sorted(nets.items())),
         warnings=base.warnings + override.warnings,
     )
 
@@ -613,7 +855,52 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
         if not inst_hints.is_empty:
             instances[(parts[0], parts[1])] = inst_hints
 
-    return HintMap(modules=modules, instances=instances, warnings=tuple(warnings))
+    nets: dict[tuple[str, str], NetHints] = {}
+    raw_nets = payload.get("nets", {})
+    if not isinstance(raw_nets, dict):
+        raise HintsError(f"{source}: 'nets' must be a JSON object")
+    for key_text, entry in sorted(raw_nets.items()):
+        where = f"{source}: nets.{key_text}"
+        parts = key_text.split(".")
+        if len(parts) != 2 or not all(parts):
+            raise HintsError(f"{where}: key must be '<module>.<net_name>'")
+        if not isinstance(entry, dict):
+            raise HintsError(f"{where}: entry must be a JSON object")
+        net_hints = NetHints()
+        for name, value in sorted(entry.items()):
+            if name == "classification":
+                text = _require_str(value, where=where, key=name)
+                if text not in CLASSIFICATION_FLAGS:
+                    # A wrong *value* raises like a wrong type does: a
+                    # sidecar is a deliberate artefact, and a typo'd
+                    # "clokc" silently classifying nothing is worse
+                    # than a loud failure.
+                    raise HintsError(
+                        f"{where}: classification must be one of "
+                        f"{', '.join(sorted(CLASSIFICATION_FLAGS))}; got {text!r}"
+                    )
+                net_hints = replace(
+                    net_hints, classification=cast(Classification, text)
+                )
+            elif name == "emphasis":
+                text = _require_str(value, where=where, key=name)
+                if text not in EMPHASIS_FLAGS:
+                    raise HintsError(
+                        f"{where}: emphasis must be one of "
+                        f"{', '.join(sorted(EMPHASIS_FLAGS))}; got {text!r}"
+                    )
+                net_hints = replace(net_hints, emphasis=cast(Emphasis, text))
+            else:
+                warnings.append(f"{where}: {_unknown_word_warning(name)}")
+        if not net_hints.is_empty:
+            nets[(parts[0], parts[1])] = net_hints
+
+    return HintMap(
+        modules=modules,
+        instances=instances,
+        nets=nets,
+        warnings=tuple(warnings),
+    )
 
 
 def load_hint_sidecar(path: Path) -> HintMap:

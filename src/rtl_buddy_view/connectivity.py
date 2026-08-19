@@ -60,6 +60,7 @@ from dataclasses import dataclass
 from typing import Literal, TypeVar
 
 from rtl_buddy_view.extractor import Module, ModuleTable, ParameterOverride
+from rtl_buddy_view.hints import NetHints
 from rtl_buddy_view.width_expr import (
     IDENT_RE,
     sum_width_exprs,
@@ -164,6 +165,16 @@ class NetEdge:
 
     All of them are additive with defaults: the block-diagram renderer
     predates them and its output is unchanged.
+
+    ``emphasis`` is the author's statement about how much this edge
+    matters — ``"main"`` for the primary datapath, ``"side"`` for CSR
+    and status wiring — read off ``rbsch`` net hints (epic #159 phase
+    2). Resolved here rather than in a renderer because the nets are
+    still in hand: an edge is emphasized when any of its nets is, and
+    ``main`` beats ``side`` within one bundle (the author called part
+    of it the money path; thinning the whole edge would hide that).
+    ``None`` — the default, and the only value when no hints are
+    supplied — leaves every consumer unchanged.
     """
 
     src: Endpoint
@@ -173,6 +184,7 @@ class NetEdge:
     dst_pins: tuple[str, ...] = ()
     bits: int | None = None
     bits_expr: str | None = None
+    emphasis: Literal["main", "side"] | None = None
 
 
 def root_identifiers(expr_text: str) -> tuple[str, ...]:
@@ -329,6 +341,7 @@ def scope_connectivity(
     table: ModuleTable,
     *,
     params: Mapping[str, str] | None = None,
+    net_hints: Mapping[str, NetHints] | None = None,
 ) -> tuple[NetEdge, ...]:
     """Compute net-level dataflow among ``module``'s direct children.
 
@@ -375,6 +388,17 @@ def scope_connectivity(
       of the flow graph, so the filter sees exactly the net set an
       undirected alias model would have built.
 
+    ``net_hints`` is this scope's slice of the ``rbsch`` net
+    vocabulary (:meth:`rtl_buddy_view.hints.HintMap.nets_for_module`),
+    keyed by net name. A ``classification`` overrides the name-regex
+    clock/reset filter in both directions — a net classified
+    ``"clock"``/``"reset"`` counts as clock-like whatever it is
+    called, and one classified ``"data"`` (or carrying any
+    ``emphasis``) keeps its group in the dataflow even when every
+    name in it looks like a clock. An ``emphasis`` lands on the
+    resulting edge's :attr:`NetEdge.emphasis`. ``None`` (the
+    default) is byte-identical to before the parameter existed.
+
     Returned edges are bundled per endpoint pair and sorted by
     ``(src, dst)``. Each carries the formal pin names it attaches to
     (``src_pins`` / ``dst_pins``) and, when every net's width is
@@ -411,7 +435,7 @@ def scope_connectivity(
     # all of its signals and all of the pins they land on.
     bundled: dict[tuple[Endpoint, Endpoint], tuple[set[str], set[str], set[str]]] = {}
     for group in groups.values():
-        if _is_clock_or_reset_group(group.names):
+        if _is_clock_or_reset_group(group.names, net_hints):
             continue
         for src, dst, nets, src_pins, dst_pins in group.edges(flow):
             slot = bundled.setdefault((src, dst), (set(), set(), set()))
@@ -428,6 +452,7 @@ def scope_connectivity(
             dst_pins=tuple(sorted(dst_pins)),
             bits=_bundle_bits(nets, widths),
             bits_expr=_bundle_bits_expr(nets, widths, exprs),
+            emphasis=_bundle_emphasis(nets, net_hints),
         )
         for (src, dst), (nets, src_pins, dst_pins) in sorted(bundled.items())
     )
@@ -908,19 +933,61 @@ def _build_groups(
     return groups
 
 
-def _is_clock_or_reset_group(names: set[str]) -> bool:
-    """True when every net name in the component looks like a clock/reset.
+def _is_clock_or_reset_group(
+    names: set[str], net_hints: Mapping[str, NetHints] | None = None
+) -> bool:
+    """True when every net in the component reads as a clock/reset.
 
     A group with even one data-looking name is kept: an
     ``assign en = go & ~clk_locked;`` style alias should not take the
     whole group down with it.
+
+    An ``rbsch`` classification hint beats the name regexes in both
+    directions — ``"clock"``/``"reset"`` make a net clock-like
+    whatever it is called, ``"data"`` makes it data. A net carrying
+    an ``emphasis`` is data too: ``main`` and ``side`` are statements
+    about a *dataflow* edge, so making them also spell ``data`` saves
+    the author the second word on exactly the nets phase 2 exists
+    for.
     """
     if not names:
         return True
-    return all(
-        _CLOCK_NAME_RE.search(name)
-        or _RESET_NAME_RE.search(name)
-        or _BLOCK_EXTRA_CLOCK_RE.search(name)
-        or _BLOCK_EXTRA_RESET_RE.search(name)
-        for name in names
-    )
+
+    def clock_like(name: str) -> bool:
+        hint = net_hints.get(name) if net_hints else None
+        if hint is not None:
+            if hint.classification in ("clock", "reset"):
+                return True
+            if hint.classification == "data" or hint.emphasis is not None:
+                return False
+        return bool(
+            _CLOCK_NAME_RE.search(name)
+            or _RESET_NAME_RE.search(name)
+            or _BLOCK_EXTRA_CLOCK_RE.search(name)
+            or _BLOCK_EXTRA_RESET_RE.search(name)
+        )
+
+    return all(clock_like(name) for name in names)
+
+
+def _bundle_emphasis(
+    nets: set[str], net_hints: Mapping[str, NetHints] | None
+) -> Literal["main", "side"] | None:
+    """The emphasis a bundle inherits from its member nets.
+
+    ``main`` beats ``side``: when one bundle carries both, the author
+    called part of it the money path, and thinning the whole edge
+    would hide that. No hinted member → ``None`` (drawn as today).
+    """
+    if not net_hints:
+        return None
+    found = {
+        net_hints[name].emphasis
+        for name in nets
+        if name in net_hints and net_hints[name].emphasis is not None
+    }
+    if "main" in found:
+        return "main"
+    if "side" in found:
+        return "side"
+    return None
