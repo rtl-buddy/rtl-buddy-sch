@@ -234,7 +234,9 @@ subprocess as `rb hier` — the wrapper is
 The contract:
 
 - **CLI flags consumed today**: `--top`, `--filelist`, `--format`,
-  `--output`, `--frontend`, `--cdc-annotations`, `--clock-legend`.
+  `--output`, `--frontend`, `--cdc-annotations`, `--clock-legend`,
+  `--block-diagram` (forwarded by `rb hier --block-diagram`,
+  [rtl-buddy/rtl_buddy#460](https://github.com/rtl-buddy/rtl_buddy/pull/460)).
   Renaming or removing any of these will break the `rtl_buddy`
   wrapper.
 - **`query` subcommands consumed by `rb hier-query`**
