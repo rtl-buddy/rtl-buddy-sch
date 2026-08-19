@@ -55,10 +55,17 @@ Remaining limits, all downstream of not running an elaborator:
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeVar
 
-from rtl_buddy_view.extractor import Module, ModuleTable
+from rtl_buddy_view.extractor import Module, ModuleTable, ParameterOverride
+from rtl_buddy_view.width_expr import (
+    IDENT_RE,
+    sum_width_exprs,
+    width_expr_of,
+    width_of,
+)
 
 #: Clock/reset-like names appearing as an underscore-delimited token.
 #: Used to drop the clock and reset trees from block diagrams — they
@@ -99,7 +106,12 @@ _PACKED_RANGE_RE = re.compile(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]")
 #: ``'``), and not a system task/function name (not preceded by ``$``).
 #: The lookbehind also excludes identifier characters so the tail of a
 #: longer identifier never matches on its own.
-_ROOT_IDENT_RE = re.compile(r"(?<![A-Za-z0-9_$.'])[A-Za-z_][A-Za-z0-9_$]*")
+#:
+#: Defined in :mod:`rtl_buddy_view.width_expr`, which asks the same
+#: lexical question of a width bound ("which names here could a
+#: parameter stand in for") that this module asks of a net expression
+#: ("which names here are roots"). One pattern, one place.
+_ROOT_IDENT_RE = IDENT_RE
 
 #: ``("inst", <instance name>)`` or ``("port", <port name>)`` — one end
 #: of a :class:`NetEdge`, relative to the scope being analyzed.
@@ -128,13 +140,29 @@ class NetEdge:
 
     ``bits`` is the bundle's total width — the sum over ``nets`` of
     each net's width, resolved in the ranked order documented on
-    :func:`_net_widths` (driving pin → the scope's own net
+    :func:`_net_width_info` (driving pin → the scope's own net
     declaration → the scope's own port declaration), always parsed by
     :func:`port_width`. ``None`` when any net in the bundle has an
     unknown width, because a partial sum would read as a real number
-    to a consumer drawing bus slashes.
+    to a consumer drawing bus slashes. **Numeric only**: a bundle
+    whose width is knowable in symbols but not in integers leaves this
+    ``None``.
 
-    All three are additive with defaults: the block-diagram renderer
+    ``bits_expr`` is the **independent** algebraic answer — the
+    bundle's width written in the names the declarations use
+    (``"PTR_W"``, ``"WIDTH+1"``), read off the ranges as written with
+    no parameter substitution. It is *not* mutually exclusive with
+    ``bits``: a bundle of one ``[WIDTH-1:0]`` net bound
+    ``#(.WIDTH(19))`` is both ``bits=19`` and ``bits_expr="WIDTH"``,
+    and the consumer decides which to show (the canvas prefers the
+    expression — the name says which knob moves the bus, the number is
+    one instantiation's detail). ``None`` when no net contributes a
+    symbol, when a net is unknown both ways, or when the expression
+    would not be clean — see
+    :func:`rtl_buddy_view.width_expr.sum_width_exprs` for the
+    abstention rules.
+
+    All of them are additive with defaults: the block-diagram renderer
     predates them and its output is unchanged.
     """
 
@@ -144,6 +172,7 @@ class NetEdge:
     src_pins: tuple[str, ...] = ()
     dst_pins: tuple[str, ...] = ()
     bits: int | None = None
+    bits_expr: str | None = None
 
 
 def root_identifiers(expr_text: str) -> tuple[str, ...]:
@@ -174,23 +203,40 @@ def root_identifiers(expr_text: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
-def port_width(type_text: str | None) -> int | None:
+def port_width(
+    type_text: str | None, params: Mapping[str, str] | None = None
+) -> int | None:
     """Declared bit width of a port from its verbatim type slice.
 
     ``logic [7:0]`` → 8, ``logic`` → 1, ``logic [PTR_W-1:0]`` → None,
     ``None`` → None::
 
-        port_width("logic [18:0]")    == 19
-        port_width("wire")            == 1
-        port_width("logic [W-1:0]")   is None
+        port_width("logic [18:0]")                     == 19
+        port_width("wire")                             == 1
+        port_width("logic [W-1:0]")                    is None
+        port_width("logic [W-1:0]", {"W": "19"})       == 19
+        port_width("logic [W-1:0]", {"W": "PTR_W"})    is None
 
-    No expression evaluation and no type resolution — a parameterised
-    bound is reported as *unknown* rather than guessed, because a
-    wrong bus width on a schematic is worse than an unlabelled wire.
-    Only the leading packed range is read: for
-    ``logic [3:0][7:0]`` (a packed array) the first dimension is
-    returned, which is the number of elements, not the bit count —
-    a documented under-report rather than a silent wrong total.
+    ``params`` maps parameter names to their **verbatim value text**
+    at this binding site (see :func:`instance_params`). When the
+    literal range parse fails, the bounds are re-read with those
+    values substituted and folded by
+    :func:`rtl_buddy_view.width_expr.eval_int_expr` — integers,
+    ``+ - *``, parentheses and unary minus only. A ``$clog2`` call, a
+    division, or a parameter that resolves to another symbol folds to
+    nothing and the answer stays *unknown*, because a wrong bus width
+    on a schematic is worse than an unlabelled wire.
+
+    :func:`port_width_expr` is the other, independent answer, computed
+    from the same slice without substitution. Both are always
+    computed; neither suppresses the other.
+
+    The literal parse runs first and unchanged, so no width that
+    resolved before ``params`` existed can move. Only the leading
+    packed range is read: for ``logic [3:0][7:0]`` (a packed array)
+    the first dimension is returned, which is the number of elements,
+    not the bit count — a documented under-report rather than a silent
+    wrong total.
 
     Callers holding a :class:`~rtl_buddy_view.extractor.Port` should
     additionally treat ``port_kind != "wire"`` as unknown: an
@@ -202,7 +248,7 @@ def port_width(type_text: str | None) -> int | None:
     if "[" in type_text:
         match = _PACKED_RANGE_RE.search(type_text)
         if match is None:
-            return None
+            return width_of(type_text, params)
         msb, lsb = int(match.group(1)), int(match.group(2))
         return abs(msb - lsb) + 1
     if not type_text.strip():
@@ -210,12 +256,95 @@ def port_width(type_text: str | None) -> int | None:
     return 1
 
 
-def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...]:
+def port_width_expr(type_text: str | None) -> str | None:
+    """Algebraic bit width of a port, read off the type **as written**.
+
+    The companion to :func:`port_width`, and deliberately *not*
+    subordinate to it — the two are independent answers and a port may
+    carry both::
+
+        port_width_expr("logic [7:0]")            is None
+        port_width_expr("logic [PTR_W-1:0]")      == "PTR_W"
+        port_width_expr("logic [WIDTH-1:0]")      == "WIDTH"   # even
+                                                   # under #(.WIDTH(19)),
+                                                   # where port_width is 19
+        port_width_expr("logic [$clog2(D)-1:0]")  is None
+
+    No ``params`` argument, on purpose: substituting would replace the
+    name the designer wrote with the caller's name or with one
+    instantiation's number, and the name is the point (see
+    :func:`rtl_buddy_view.width_expr.width_expr_of`). Only the one
+    clean pattern documented on
+    :func:`rtl_buddy_view.width_expr.simplify_range` produces an
+    answer; everything else is silence.
+    """
+    if type_text is None or "[" not in type_text:
+        return None
+    if _PACKED_RANGE_RE.search(type_text) is not None:
+        return None  # a literal range — there is no algebra in it
+    return width_expr_of(type_text)
+
+
+def module_param_defaults(module: Module | None) -> dict[str, str]:
+    """``name -> default value text`` for a module's own parameters.
+
+    The floor every width substitution starts from: what the module
+    says its parameters are when nobody overrides them.
+    """
+    if module is None:
+        return {}
+    return {p.name: p.default_text for p in module.parameters if p.default_text}
+
+
+def instance_params(
+    child: Module | None, overrides: tuple[ParameterOverride, ...] = ()
+) -> dict[str, str]:
+    """Effective parameter values at one binding site.
+
+    The child's declared defaults, with ``#(.WIDTH(19))`` written over
+    them. A positional override is resolved against the child's
+    declared parameter order — the same resolution
+    ``elk_export._param_overrides`` makes for its label, and safe here
+    for the same reason: an index into a declaration we *have* is not
+    a guess. A positional override on an unknown child is dropped.
+
+    Values stay verbatim source text (``"19"``, ``"PTR_W"``,
+    ``"$clog2(DEPTH)"``); deciding which of those is a number is
+    :mod:`rtl_buddy_view.width_expr`'s job, not this one's.
+    """
+    params = module_param_defaults(child)
+    declared = [p.name for p in child.parameters] if child is not None else []
+    for index, override in enumerate(overrides):
+        name = override.param_name
+        if name is None:
+            if index >= len(declared):
+                continue
+            name = declared[index]
+        params[name] = override.value_text
+    return params
+
+
+def scope_connectivity(
+    module: Module,
+    table: ModuleTable,
+    *,
+    params: Mapping[str, str] | None = None,
+) -> tuple[NetEdge, ...]:
     """Compute net-level dataflow among ``module``'s direct children.
 
     Endpoints are ``module``'s own ports and its direct child
     instances — nothing deeper. Call it once per scope to build a
     nested block diagram.
+
+    ``params`` is the effective parameter map of the *instance* this
+    scope is being drawn for (:func:`instance_params`), used to width
+    the scope's own nets and ports. It matters whenever a module is
+    instantiated with an override: ``ip_async_fifo``'s ``DATA_W``
+    defaults to 8 and the demo binds it to 19, so a caller that knows
+    the binding site must say so or every wire inside that instance is
+    labelled with the wrong number. Omit it and the module's own
+    defaults are used, which is the best a per-module caller (the
+    ``--block-diagram`` dot renderer) can do.
 
     Resolution rules:
 
@@ -249,13 +378,14 @@ def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...
     Returned edges are bundled per endpoint pair and sorted by
     ``(src, dst)``. Each carries the formal pin names it attaches to
     (``src_pins`` / ``dst_pins``) and, when every net's width is
-    knowable, the bundle's total ``bits`` — both captured here, where
-    the binding site is still in hand, rather than re-derived by a
-    renderer intersecting net names after the fact. Widths come from
-    the ranked sources :func:`_net_widths` documents, so a net that
-    only an ``assign`` drives is still measured, from its own
-    declaration.
+    knowable, the bundle's total ``bits`` (or ``bits_expr`` when the
+    answer is algebraic) — all captured here, where the binding site
+    is still in hand, rather than re-derived by a renderer
+    intersecting net names after the fact. Widths come from the ranked
+    sources :func:`_net_width_info` documents, so a net that only an
+    ``assign`` drives is still measured, from its own declaration.
     """
+    scope_params = params if params is not None else module_param_defaults(module)
     # Pins first so their roots exist as flow-graph nodes before the
     # assign pass wires them; isolated roots still need a component of
     # their own for the direct same-net case.
@@ -274,7 +404,7 @@ def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...
                 flow.connect(rhs, lhs)
 
     groups = _build_groups(module, pins, flow)
-    widths = _net_widths(module, pins)
+    widths, exprs = _net_width_info(module, pins, scope_params)
 
     # (src, dst) -> (net names, src formals, dst formals), accumulated
     # across every group that produced the pair so a bundle carries
@@ -297,6 +427,7 @@ def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...
             src_pins=tuple(sorted(src_pins)),
             dst_pins=tuple(sorted(dst_pins)),
             bits=_bundle_bits(nets, widths),
+            bits_expr=_bundle_bits_expr(nets, widths, exprs),
         )
         for (src, dst), (nets, src_pins, dst_pins) in sorted(bundled.items())
     )
@@ -312,7 +443,11 @@ class _Pin:
     ``formal`` is the child's own port name (the ``.q`` of ``.q(w)``)
     — the schematic-facing identity that survives into
     :attr:`NetEdge.src_pins`. ``type_text`` is that port's declared
-    type slice, kept for :func:`port_width`.
+    type slice, kept for :func:`port_width`, and ``params`` is the
+    child instance's effective parameter map, which is what turns
+    ``logic [WIDTH-1:0]`` into a number (or into ``PTR_W``). Stored as
+    a sorted tuple of pairs rather than a dict so the frozen dataclass
+    stays hashable and comparable.
     """
 
     endpoint: Endpoint
@@ -320,6 +455,7 @@ class _Pin:
     roots: tuple[str, ...]
     formal: str
     type_text: str | None = None
+    params: tuple[tuple[str, str], ...] = ()
 
 
 #: ``endpoint -> net root -> formal pin names``. One bucket per role
@@ -505,6 +641,7 @@ def _collect_pins(module: Module, table: ModuleTable) -> tuple[_Pin, ...]:
             if child is not None
             else {}
         )
+        params = tuple(sorted(instance_params(child, inst.param_overrides).items()))
         endpoint: Endpoint = ("inst", inst.name)
         for conn in inst.port_connections:
             if conn.port_name is None:
@@ -526,13 +663,22 @@ def _collect_pins(module: Module, table: ModuleTable) -> tuple[_Pin, ...]:
                     roots=roots,
                     formal=conn.port_name,
                     type_text=types.get(conn.port_name),
+                    params=params,
                 )
             )
     return tuple(pins)
 
 
-def _net_widths(module: Module, pins: tuple[_Pin, ...]) -> dict[str, int]:
+def _net_width_info(
+    module: Module, pins: tuple[_Pin, ...], params: Mapping[str, str]
+) -> tuple[dict[str, int], dict[str, str]]:
     """Width of each net root, resolved through three ranked sources.
+
+    Returns two maps: the numeric widths, and the algebraic ones for
+    the nets that only have a symbolic answer. Both are filled by the
+    same three tiers with the same abstention rules — a net's number
+    and its expression are two readings of one declaration, so they
+    cannot be resolved from different sources.
 
     In precedence order, first tier that yields an unambiguous number
     wins:
@@ -572,18 +718,27 @@ def _net_widths(module: Module, pins: tuple[_Pin, ...]) -> dict[str, int]:
     net's, which over-states a wide net driven piecewise. That is the
     same trade the rest of this module makes: bit ranges are ignored.
     """
-    resolved: dict[str, int] = {}
-    for tier in (
-        _driver_widths(module, pins),
-        _decl_widths(module),
-        _port_widths(module),
+    widths: dict[str, int] = {}
+    exprs: dict[str, str] = {}
+    for tier_widths, tier_exprs in (
+        _driver_widths(module, pins, params),
+        _decl_widths(module, params),
+        _port_widths(module, params),
     ):
-        for root, width in tier.items():
-            resolved.setdefault(root, width)
-    return resolved
+        for root, width in tier_widths.items():
+            widths.setdefault(root, width)
+        for root, expr in tier_exprs.items():
+            exprs.setdefault(root, expr)
+    return widths, exprs
 
 
-def _resolve(candidates: dict[str, set[int | None]]) -> dict[str, int]:
+#: One tier's answer: ``(numeric widths, algebraic widths)``.
+_Tier = tuple[dict[str, int], dict[str, str]]
+
+_Width = TypeVar("_Width", int, str)
+
+
+def _resolve(candidates: dict[str, set[_Width | None]]) -> dict[str, _Width]:
     """Keep only the names one tier pinned to exactly one known width."""
     return {
         root: next(iter(widths))  # type: ignore[misc]
@@ -592,40 +747,87 @@ def _resolve(candidates: dict[str, set[int | None]]) -> dict[str, int]:
     }
 
 
-def _driver_widths(module: Module, pins: tuple[_Pin, ...]) -> dict[str, int]:
-    """Tier 1 — widths declared by whatever drives the net."""
-    candidates: dict[str, set[int | None]] = {}
+class _Candidates:
+    """A tier's evidence, numeric and algebraic, gathered side by side.
+
+    Every ``record`` call adds one reading of one name in this tier;
+    :meth:`resolved` then applies the abstention rule (exactly one
+    known value, no unknowns) to each map independently.
+    """
+
+    def __init__(self) -> None:
+        self.widths: dict[str, set[int | None]] = {}
+        self.exprs: dict[str, set[str | None]] = {}
+
+    def record(
+        self,
+        name: str,
+        type_text: str | None,
+        params: Mapping[str, str] | None,
+        *,
+        known: bool = True,
+    ) -> None:
+        """Record what ``type_text`` says about ``name``.
+
+        Both answers, always: the number (with ``params`` substituted)
+        and the expression (as written). They are independent, so a
+        net may resolve to 19 *and* to ``"WIDTH"``.
+
+        ``known=False`` records the *absence* of an answer — an
+        interface bundle, a multi-root binding — which is what makes
+        the tier abstain rather than resolve from its other evidence.
+        """
+        width = port_width(type_text, params) if known else None
+        expr = port_width_expr(type_text) if known else None
+        self.widths.setdefault(name, set()).add(width)
+        self.exprs.setdefault(name, set()).add(expr)
+
+    def resolved(self) -> _Tier:
+        return _resolve(self.widths), _resolve(self.exprs)
+
+
+def _driver_widths(
+    module: Module, pins: tuple[_Pin, ...], params: Mapping[str, str]
+) -> _Tier:
+    """Tier 1 — widths declared by whatever drives the net.
+
+    A pin is read with the *child instance's* parameters (``.WIDTH(19)``
+    at that binding site), a scope port with the scope's own.
+    """
+    candidates = _Candidates()
     for pin in pins:
         if pin.direction not in ("output", "inout"):
             continue
         if len(pin.roots) != 1:
             for root in pin.roots:
-                candidates.setdefault(root, set()).add(None)
+                candidates.record(root, None, None, known=False)
             continue
-        candidates.setdefault(pin.roots[0], set()).add(port_width(pin.type_text))
+        candidates.record(pin.roots[0], pin.type_text, dict(pin.params))
     for port in module.ports:
         if port.direction != "input":
             continue
-        width = port_width(port.type_text) if port.port_kind == "wire" else None
-        candidates.setdefault(port.name, set()).add(width)
-    return _resolve(candidates)
+        candidates.record(
+            port.name, port.type_text, params, known=port.port_kind == "wire"
+        )
+    return candidates.resolved()
 
 
-def _decl_widths(module: Module) -> dict[str, int]:
+def _decl_widths(module: Module, params: Mapping[str, str]) -> _Tier:
     """Tier 2 — widths from the scope's own net/variable declarations."""
-    candidates: dict[str, set[int | None]] = {}
+    candidates = _Candidates()
     for decl in module.net_decls:
-        candidates.setdefault(decl.name, set()).add(port_width(decl.type_text))
-    return _resolve(candidates)
+        candidates.record(decl.name, decl.type_text, params)
+    return candidates.resolved()
 
 
-def _port_widths(module: Module) -> dict[str, int]:
+def _port_widths(module: Module, params: Mapping[str, str]) -> _Tier:
     """Tier 3 — widths from the scope's own port declarations."""
-    candidates: dict[str, set[int | None]] = {}
+    candidates = _Candidates()
     for port in module.ports:
-        width = port_width(port.type_text) if port.port_kind == "wire" else None
-        candidates.setdefault(port.name, set()).add(width)
-    return _resolve(candidates)
+        candidates.record(
+            port.name, port.type_text, params, known=port.port_kind == "wire"
+        )
+    return candidates.resolved()
 
 
 def _bundle_bits(nets: set[str], widths: dict[str, int]) -> int | None:
@@ -637,6 +839,37 @@ def _bundle_bits(nets: set[str], widths: dict[str, int]) -> int | None:
             return None
         total += width
     return total
+
+
+def _bundle_bits_expr(
+    nets: set[str], widths: dict[str, int], exprs: dict[str, str]
+) -> str | None:
+    """Algebraic total of a bundle, or ``None``.
+
+    Each net contributes **its symbolic term when it has one** — a net
+    that is both 19 bits and ``WIDTH``-wide contributes ``WIDTH``, and
+    is deliberately *not* also counted in the numeric remainder. Nets
+    with no expression contribute their number. One term plus the
+    remainder prints (``"WIDTH+1"``); two terms, an all-numeric bundle
+    (``bits`` says it better), or a net that is unknown both ways
+    abstains. See :func:`rtl_buddy_view.width_expr.sum_width_exprs` for
+    why identical terms are not collected.
+
+    Sorted iteration, like everything else here: the emitted string is
+    part of the payload's bytes.
+    """
+    numeric = 0
+    terms: list[str] = []
+    for net in sorted(nets):
+        expr = exprs.get(net)
+        if expr is not None:
+            terms.append(expr)
+            continue
+        width = widths.get(net)
+        if width is None:
+            return None
+        numeric += width
+    return sum_width_exprs(terms, numeric)
 
 
 def _build_groups(

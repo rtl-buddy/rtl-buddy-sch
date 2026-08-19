@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from rtl_buddy_view.connectivity import (
     NetEdge,
+    instance_params,
     port_width,
+    port_width_expr,
     root_identifiers,
     scope_connectivity,
 )
@@ -20,6 +22,8 @@ from rtl_buddy_view.extractor import (
     Module,
     ModuleTable,
     NetDecl,
+    Parameter,
+    ParameterOverride,
     Port,
     PortConnection,
 )
@@ -44,11 +48,19 @@ def _conn(port_name: str | None, net: str = "") -> PortConnection:
     return PortConnection(port_name=port_name, net_expr_text=net, location=None)
 
 
-def _inst(name: str, module_name: str, *conns: PortConnection) -> Instance:
+def _inst(
+    name: str,
+    module_name: str,
+    *conns: PortConnection,
+    params: tuple[tuple[str | None, str], ...] = (),
+) -> Instance:
     return Instance(
         name=name,
         module_name=module_name,
-        param_overrides=(),
+        param_overrides=tuple(
+            ParameterOverride(param_name=n, value_text=v, location=None)
+            for n, v in params
+        ),
         port_connections=conns,
         location=None,
     )
@@ -61,11 +73,14 @@ def _module(
     instances: tuple[Instance, ...] = (),
     assigns: tuple[Assign, ...] = (),
     net_decls: tuple[NetDecl, ...] = (),
+    parameters: tuple[tuple[str, str], ...] = (),
 ) -> Module:
     return Module(
         name=name,
         ports=ports,
-        parameters=(),
+        parameters=tuple(
+            Parameter(name=n, default_text=v, location=None) for n, v in parameters
+        ),
         instances=instances,
         location=None,
         assigns=assigns,
@@ -656,6 +671,33 @@ def test_port_width_of_a_missing_or_empty_type_is_unknown() -> None:
     assert port_width("   ") is None
 
 
+def test_port_width_folds_a_parameterised_bound_when_params_pin_it() -> None:
+    assert port_width("logic [WIDTH-1:0]", {"WIDTH": "19"}) == 19
+    assert port_width("logic [DATA_W*2-1:0]", {"DATA_W": "4"}) == 8
+    # A parameter that resolves to another symbol is still no number.
+    assert port_width("logic [WIDTH-1:0]", {"WIDTH": "PTR_W"}) is None
+    assert port_width("logic [$clog2(D)-1:0]", {"D": "8"}) is None
+
+
+def test_literal_ranges_are_never_re_read_through_params() -> None:
+    """The substitution tier is a fallback, so nothing resolved moves."""
+    assert port_width("logic [18:0]", {"WIDTH": "3"}) == 19
+    assert port_width("logic", {"WIDTH": "3"}) == 1
+
+
+def test_port_width_expr_names_the_declaration_regardless_of_the_number() -> None:
+    """The two answers are independent, and both may be present."""
+    assert port_width_expr("logic [PTR_W-1:0]") == "PTR_W"
+    assert port_width_expr("logic [WIDTH-1:0]") == "WIDTH"
+    # …even where the binding site folds a real number out of it.
+    assert port_width("logic [WIDTH-1:0]", {"WIDTH": "19"}) == 19
+    assert port_width_expr("logic [WIDTH-1:0]") == "WIDTH"
+    # A range written in integers is not algebra.
+    assert port_width_expr("logic [18:0]") is None
+    assert port_width_expr("logic") is None
+    assert port_width_expr(None) is None
+
+
 # --- formal pins ------------------------------------------------------------
 
 
@@ -1002,3 +1044,291 @@ def test_an_interface_port_has_no_width_to_lend() -> None:
     )
     (edge,) = scope_connectivity(top, _table(top, _SINK))
     assert edge.bits is None
+
+
+# --- bit widths: parameter substitution (tier 1) -----------------------------
+
+
+def test_a_literal_override_widths_a_parameterised_pin() -> None:
+    """``[WIDTH-1:0]`` + ``#(.WIDTH(19))`` is 19 bits **and** ``WIDTH``.
+
+    Both answers, neither suppressing the other: the number for a
+    consumer that wants arithmetic, the name for the reader who wants
+    to know which knob sets this bus.
+    """
+    wide = _module(
+        "wide",
+        ports=(_port("q", "output", "logic [WIDTH-1:0]"),),
+        parameters=(("WIDTH", "8"),),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("q", "w"), params=(("WIDTH", "19"),)),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, _SINK))
+    assert (edge.bits, edge.bits_expr) == (19, "WIDTH")
+
+
+def test_an_unoverridden_pin_falls_back_to_the_childs_default() -> None:
+    wide = _module(
+        "wide",
+        ports=(_port("q", "output", "logic [WIDTH-1:0]"),),
+        parameters=(("WIDTH", "8"),),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("q", "w")),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, _SINK))
+    assert (edge.bits, edge.bits_expr) == (8, "WIDTH")
+
+
+def test_a_positional_override_resolves_against_the_declared_order() -> None:
+    """An index into a declaration we *have* is not a guess."""
+    wide = _module(
+        "wide",
+        ports=(_port("q", "output", "logic [WIDTH-1:0]"),),
+        parameters=(("DEPTH", "4"), ("WIDTH", "8")),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst(
+                "u_wide", "wide", _conn("q", "w"), params=((None, "16"), (None, "3"))
+            ),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, _SINK))
+    assert edge.bits == 3
+
+
+def test_substitution_folds_arithmetic_but_never_guesses() -> None:
+    """``$clog2`` has no fold, so the width stays honestly unknown."""
+    wide = _module(
+        "wide",
+        ports=(_port("q", "output", "logic [$clog2(DEPTH)-1:0]"),),
+        parameters=(("DEPTH", "8"),),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("q", "w")),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, _SINK))
+    assert (edge.bits, edge.bits_expr) == (None, None)
+
+
+def test_scope_params_width_the_scopes_own_declarations() -> None:
+    """A net declared ``[DATA_W-1:0]`` is as wide as this instance built it.
+
+    The default (8) is what the module says; ``params`` is what the
+    binding site said, and only one of those numbers belongs on the
+    wires of this box.
+    """
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_sink", "sink", _conn("d", "pay")),
+            _inst("u_src", "src", _conn("q", "raw")),
+        ),
+        assigns=(_assign("pay", "raw"),),
+        net_decls=(_decl("pay", "logic [DATA_W-1:0]"),),
+        parameters=(("DATA_W", "8"),),
+    )
+    table = _table(top, _SRC, _SINK)
+    (default_edge,) = scope_connectivity(top, table)
+    assert default_edge.bits == 8
+    (bound_edge,) = scope_connectivity(top, table, params={"DATA_W": "19"})
+    assert bound_edge.bits == 19
+
+
+# --- bit widths: the algebraic answer (tier 2) -------------------------------
+
+
+def test_a_symbolic_override_leaves_only_the_expression() -> None:
+    """``.WIDTH(PTR_W)`` with ``PTR_W`` computed: no number exists.
+
+    The expression is the child's own ``WIDTH``, not the caller's
+    ``PTR_W`` — it is read off the declaration, and the declaration is
+    where the name means something.
+    """
+    sync = _module(
+        "ip_cdc_sync",
+        ports=(
+            _port("d", "input", "logic [WIDTH-1:0]"),
+            _port("q", "output", "logic [WIDTH-1:0]"),
+        ),
+        parameters=(("WIDTH", "1"),),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst(
+                "u_sync", "ip_cdc_sync", _conn("q", "w"), params=(("WIDTH", "PTR_W"),)
+            ),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, sync, _SINK))
+    assert (edge.bits, edge.bits_expr) == (None, "WIDTH")
+
+
+def test_a_scope_declaration_keeps_its_own_name() -> None:
+    """``logic [PTR_W-1:0] gray;`` in the scope reads as ``PTR_W``."""
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "raw")),
+            _inst("u_sink", "sink", _conn("d", "gray")),
+        ),
+        assigns=(_assign("gray", "raw"),),
+        net_decls=(_decl("gray", "logic [PTR_W-1:0]"),),
+    )
+    (edge,) = scope_connectivity(top, _table(top, _SRC, _SINK))
+    assert (edge.bits, edge.bits_expr) == (None, "PTR_W")
+
+
+def test_bits_stay_numeric_only_beside_the_expression() -> None:
+    """``bits`` semantics are unchanged: integers, or ``null``.
+
+    A numerically *declared* bundle also has no expression to show —
+    a number is not algebra.
+    """
+    wide = _module(
+        "wide",
+        ports=(
+            _port("payload", "output", "logic [18:0]"),
+            _port("valid", "output", "logic"),
+        ),
+    )
+    dual = _module(
+        "dual",
+        ports=(
+            _port("data", "input", "logic [18:0]"),
+            _port("vld", "input", "logic"),
+        ),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("payload", "pay"), _conn("valid", "vld")),
+            _inst("u_dual", "dual", _conn("data", "pay"), _conn("vld", "vld")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, dual))
+    assert edge.bits == 20
+    assert edge.bits_expr is None
+
+
+def test_bits_expr_sums_one_symbol_and_the_numeric_remainder() -> None:
+    wide = _module(
+        "wide",
+        ports=(
+            _port("payload", "output", "logic [PTR_W-1:0]"),
+            _port("valid", "output", "logic"),
+        ),
+    )
+    dual = _module(
+        "dual",
+        ports=(_port("data", "input", None), _port("vld", "input", None)),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("payload", "pay"), _conn("valid", "vld")),
+            _inst("u_dual", "dual", _conn("data", "pay"), _conn("vld", "vld")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, dual))
+    assert (edge.bits, edge.bits_expr) == (None, "PTR_W+1")
+
+
+def test_bits_expr_abstains_on_two_symbolic_terms() -> None:
+    """Collecting like terms needs an algebra we deliberately don't have."""
+    wide = _module(
+        "wide",
+        ports=(
+            _port("a", "output", "logic [PTR_W-1:0]"),
+            _port("b", "output", "logic [DATA_W-1:0]"),
+        ),
+    )
+    dual = _module(
+        "dual",
+        ports=(_port("x", "input", None), _port("y", "input", None)),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("a", "n1"), _conn("b", "n2")),
+            _inst("u_dual", "dual", _conn("x", "n1"), _conn("y", "n2")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, dual))
+    assert (edge.bits, edge.bits_expr) == (None, None)
+
+
+def test_bits_expr_abstains_when_any_net_is_wholly_unknown() -> None:
+    """Same rule as ``bits``: a partial sum is not an answer."""
+    wide = _module(
+        "wide",
+        ports=(
+            _port("a", "output", "logic [PTR_W-1:0]"),
+            _port("b", "output", None),
+        ),
+    )
+    dual = _module(
+        "dual",
+        ports=(_port("x", "input", None), _port("y", "input", None)),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("a", "n1"), _conn("b", "n2")),
+            _inst("u_dual", "dual", _conn("x", "n1"), _conn("y", "n2")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, dual))
+    assert (edge.bits, edge.bits_expr) == (None, None)
+
+
+def test_an_unclean_bound_prints_nothing_at_all() -> None:
+    """``[$clog2(D)-1:0]`` is knowable to no tier — silence beats noise."""
+    wide = _module("wide", ports=(_port("q", "output", "logic [$clog2(DEPTH)-1:0]"),))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("q", "w")),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, _SINK))
+    assert (edge.bits, edge.bits_expr) == (None, None)
+
+
+# --- instance_params ---------------------------------------------------------
+
+
+def test_instance_params_writes_overrides_over_the_defaults() -> None:
+    child = _module(
+        "child",
+        parameters=(("WIDTH", "8"), ("DEPTH", "16")),
+    )
+    overrides = _inst("u", "child", params=(("WIDTH", "19"),)).param_overrides
+    assert instance_params(child, overrides) == {"WIDTH": "19", "DEPTH": "16"}
+
+
+def test_instance_params_of_an_unknown_child_keeps_only_named_overrides() -> None:
+    """A positional override on a blackbox has no order to resolve against."""
+    overrides = _inst(
+        "u", "bb", params=((None, "19"), ("MODE", "fast"))
+    ).param_overrides
+    assert instance_params(None, overrides) == {"MODE": "fast"}

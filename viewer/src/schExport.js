@@ -76,6 +76,10 @@ export const INLINE_STYLE_PROPS = Object.freeze([
   'font-family',
   'font-size',
   'font-weight',
+  // The algebraic bus width's only distinguishing mark is its italic
+  // (SchematicCanvas ``.sch-slash-text.symbolic``); dropping it here
+  // would silently turn ``/PTR_W`` into a claim that it is a count.
+  'font-style',
   'text-anchor',
   'dominant-baseline',
 ])

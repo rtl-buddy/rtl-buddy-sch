@@ -61,7 +61,9 @@ from rtl_buddy_view.connectivity import (
     _RESET_NAME_RE,
     Endpoint,
     NetEdge,
+    instance_params,
     port_width,
+    port_width_expr,
     scope_connectivity,
 )
 from rtl_buddy_view.extractor import Instance, Module, ModuleTable
@@ -126,6 +128,11 @@ PORT_RB_CONTRACT: dict[str, type | tuple[type, ...]] = {
     "is_clock": bool,
     "is_reset": bool,
     "width": (int, type(None)),
+    # Always present, ``null`` unless the declared range is written in
+    # names — the same always-there-nullable shape ``width`` and
+    # ``clock`` use, so a consumer never branches on key existence.
+    # May be set *alongside* a resolved ``width``.
+    "width_expr": (str, type(None)),
     "connected": bool,
 }
 
@@ -140,6 +147,10 @@ EDGE_CONTRACT: dict[str, type | tuple[type, ...]] = {
 EDGE_RB_CONTRACT: dict[str, type | tuple[type, ...]] = {
     "nets": list,
     "bits": (int, type(None)),
+    # The algebraic width, in the names the declarations use. Nullable
+    # and always present, like ``bits`` — and independent of it: both
+    # may be set for one bundle.
+    "bits_expr": (str, type(None)),
     "src_pins": list,
     "dst_pins": list,
 }
@@ -249,7 +260,16 @@ def _node(
         _node(child, table, domain_map)
         for child in sorted(hier.children, key=lambda c: c.instance_path)
     ]
-    ports = _ports(hier, table)
+    # The parameter values this instance was *built* with — defaults
+    # written over by its own ``#(...)`` overrides. Every width read
+    # inside this scope goes through them, because ``ip_async_fifo``'s
+    # ``DATA_W`` is 8 by declaration and 19 at the binding site, and
+    # only one of those numbers belongs on the wires of this box.
+    params = instance_params(
+        hier.module,
+        hier.instance.param_overrides if hier.instance is not None else (),
+    )
+    ports = _ports(hier, table, params)
     port_ids = {port["id"] for port in ports}
     for child in children:
         port_ids.update(port["id"] for port in child["ports"])
@@ -269,7 +289,7 @@ def _node(
         },
         "ports": ports,
         "children": children,
-        "edges": _edges(hier, table, port_ids),
+        "edges": _edges(hier, table, port_ids, params),
     }
 
 
@@ -327,7 +347,9 @@ def _clock_of(hier: HierNode, domain_map: DomainMap | None) -> str | None:
 # --- ports ------------------------------------------------------------------
 
 
-def _ports(hier: HierNode, table: ModuleTable) -> list[dict[str, Any]]:
+def _ports(
+    hier: HierNode, table: ModuleTable, params: dict[str, str]
+) -> list[dict[str, Any]]:
     """Every port of this node's module, connected or not.
 
     A blackbox has no declaration to read, so its pinout is recovered
@@ -336,12 +358,18 @@ def _ports(hier: HierNode, table: ModuleTable) -> list[dict[str, Any]]:
     width and are sorted by name (there is no declaration order to
     preserve); a declared module keeps its header order, which is the
     pinout a datasheet would print.
+
+    ``params`` is this instance's effective parameter map, so a
+    ``logic [WIDTH-1:0]`` pin reports the width it was *built* with —
+    19 under ``#(.WIDTH(19))``. ``width_expr`` is read off the same
+    slice **unsubstituted** (``"WIDTH"``), so a pin routinely carries
+    both; the consumer picks.
     """
     module = hier.module
     connected = _connected_formals(hier.instance, module)
     if module is None:
         return [
-            _port_entry(hier.instance_path, name, None, None, connected=True)
+            _port_entry(hier.instance_path, name, None, None, None, connected=True)
             for name in sorted(connected)
         ]
     return [
@@ -349,7 +377,8 @@ def _ports(hier: HierNode, table: ModuleTable) -> list[dict[str, Any]]:
             hier.instance_path,
             port.name,
             port.direction,
-            port_width(port.type_text) if port.port_kind == "wire" else None,
+            port_width(port.type_text, params) if port.port_kind == "wire" else None,
+            port_width_expr(port.type_text) if port.port_kind == "wire" else None,
             # The root has no binding site: it is the sheet boundary,
             # so its pins are connected to the outside world by
             # definition.
@@ -364,6 +393,7 @@ def _port_entry(
     name: str,
     direction: str | None,
     width: int | None,
+    width_expr: str | None = None,
     *,
     connected: bool,
 ) -> dict[str, Any]:
@@ -389,6 +419,12 @@ def _port_entry(
                 _RESET_NAME_RE.search(name) or _BLOCK_EXTRA_RESET_RE.search(name)
             ),
             "width": width,
+            # Independent of ``width``, not a fallback for it: the
+            # declared name (``WIDTH``) and the built number (19) are
+            # both facts about this pin, and the consumer chooses
+            # which to draw (elk.json §6.2 — the canvas prefers the
+            # name).
+            "width_expr": width_expr,
             "connected": connected,
         },
     }
@@ -418,7 +454,7 @@ def _connected_formals(instance: Instance | None, module: Module | None) -> set[
 
 
 def _edges(
-    hier: HierNode, table: ModuleTable, port_ids: set[str]
+    hier: HierNode, table: ModuleTable, port_ids: set[str], params: dict[str, str]
 ) -> list[dict[str, Any]]:
     """This scope's sibling dataflow, as ELK edges.
 
@@ -439,7 +475,7 @@ def _edges(
         if child.instance is not None
     }
     edges: list[dict[str, Any]] = []
-    for edge in scope_connectivity(module, table):
+    for edge in scope_connectivity(module, table, params=params):
         source = _endpoint_ref(
             edge.src, edge.src_pins, hier.instance_path, child_paths, port_ids
         )
@@ -460,6 +496,7 @@ def _edge_entry(edge: NetEdge, source: str, target: str) -> dict[str, Any]:
         "rb": {
             "nets": list(edge.nets),
             "bits": edge.bits,
+            "bits_expr": edge.bits_expr,
             "src_pins": list(edge.src_pins),
             "dst_pins": list(edge.dst_pins),
         },

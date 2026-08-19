@@ -114,6 +114,7 @@ matching.
     "is_clock": false,
     "is_reset": false,
     "width": 1,
+    "width_expr": null,
     "connected": true
   }
 }
@@ -124,8 +125,13 @@ matching.
 | `name` | string | The formal port name. |
 | `direction` | `"input"` \| `"output"` \| `"inout"` \| null | `null` for an interface-bundle port and for a blackbox pin. |
 | `is_clock` / `is_reset` | bool | Name-shaped, using the conservative token form (`clk`/`clock`, `rst`/`reset` as an underscore-delimited token). P2/P4 draw the chevron and bubble glyphs off these. |
-| `width` | int \| null | Declared bit width; `null` when the bound is parameterised (`[PTR_W-1:0]`), the type is an aggregate, or the port is an interface bundle. |
+| `width` | int \| null | Declared bit width, **as this instance was parameterised** — `[WIDTH-1:0]` under `#(.WIDTH(19))` is 19. `null` when the bound doesn't resolve to an integer, the type is an aggregate, or the port is an interface bundle. See § 6.1. |
+| `width_expr` | string \| null | The width in the names the declaration uses, read **as written** (`[WIDTH-1:0]` → `"WIDTH"`). Independent of `width`: a pin may carry both (`19` *and* `"WIDTH"`). `null` for a range written in integers. See § 6.2. |
 | `connected` | bool | The port is bound at this instance's binding site. Always `true` on the root, which has no binding site. |
+
+Widths are resolved **per instance path**, not per module: the same
+module instantiated twice with different overrides reports different
+pin widths on its two nodes, which is what the drawing needs.
 
 Two rules matter here:
 
@@ -157,6 +163,7 @@ ordered endpoint pair.
   "rb": {
     "nets": ["cmd_payload_apb", "cmd_src_valid"],
     "bits": null,
+    "bits_expr": null,
     "src_pins": ["hwif_out"],
     "dst_pins": ["src_data", "src_valid"]
   }
@@ -167,7 +174,8 @@ ordered endpoint pair.
 | --- | ---- | ----- |
 | `sources` / `targets` | array of 1 id | A **port id** when the formal pin at that end is unambiguous (exactly one pin), the **node id** otherwise. |
 | `rb.nets` | array of string | Net names the bundle carries, sorted. |
-| `rb.bits` | int \| null | Total width: the sum of each net's width, taken from that net's **driving** pin. `null` when any net in the bundle is of unknown width — a partial sum would read as a real bus width. |
+| `rb.bits` | int \| null | Total width: the sum of each net's width, taken from that net's **driving** pin. **Integers only.** `null` when any net in the bundle is of unknown width — a partial sum would read as a real bus width. |
+| `rb.bits_expr` | string \| null | The bundle's width in the names the declarations use (`"PTR_W"`, `"WIDTH+1"`). Independent of `bits` — both may be set. `null` when no net contributes a name, when one is unknown both ways, or when the sum wouldn't be clean. See § 6.2. |
 | `rb.src_pins` / `rb.dst_pins` | array of string | The formal pins the bundle attaches to at each end, sorted. Populated even when the endpoint degrades to a node id, so the label is never lost. |
 
 Why the degradation: one edge may stand for two pins at once
@@ -250,14 +258,33 @@ result:
 3. the scope's own **port declaration**, for a net that *is* an
    `output` / `inout` port fed by an assign.
 
+Within each tier, a **parameterised** bound is re-read with that
+binding site's parameters substituted before it is given up on:
+`logic [WIDTH-1:0]` on a pin bound `#(.WIDTH(19))` is 19 bits, and
+`logic [DATA_W-1:0]` inside an instance built `#(.DATA_W(19))` is 19
+bits — not the module's declared default of 8. Substituted text is
+folded by a **hand-rolled integer evaluator** (`width_expr.py`) that
+understands integers, `+ - *`, parentheses and unary minus and
+*nothing else*: no `eval`, no `ast`, and no approximation. The values
+substituted are the child's declared defaults with the instance's own
+`#(...)` overrides written over them (positional overrides resolved
+against the declared order), one pass, never chasing a value's own
+identifiers.
+
 Anything still unresolved leaves `rb.bits` `null` for the whole
 bundle: a partial sum would read as a real bus width to whoever draws
 the slash. What stays unresolved:
 
-- A **parameterised** bound (`logic [WIDTH-1:0]`, `logic [PTR_W-1:0]`,
-  `logic [$clog2(DEPTH)-1:0]`) — on a port or on a net declaration
-  alike. rtl-buddy-view does not evaluate parameter expressions, and
-  a wrong bus width is worse than an unlabelled wire.
+- A bound that does not **fold to an integer**: a parameter that
+  resolves to another symbol (`#(.WIDTH(PTR_W))` with `PTR_W` a
+  computed localparam), a `$clog2` call, a division, an exponent, a
+  ternary, a sized literal. A wrong bus width is still worse than an
+  unlabelled wire, so nothing is guessed — but § 6.2's `width_expr` /
+  `bits_expr` usually still name the width, and are emitted for the
+  *resolved* cases too.
+- A **localparam** bound: only header parameters are captured, so
+  `localparam int PTR_W = $clog2(DEPTH)+1;` is a symbol with no value
+  attached (again, § 6.2).
 - A declaration the preprocessor **hides inside a macro body**: the
   extractor reads Verible's CST of the source as written, so a net
   declared by a `` `DECLARE_BUS(x) `` expansion is not there to read.
@@ -277,7 +304,88 @@ the slash. What stays unresolved:
 - Two **drivers disagreeing** on width, and a driver bound to a
   concatenation (`.q({a, b})`) where the port's width belongs to no
   single net.
-### 6.2 Dataflow
+
+### 6.2 Algebraic widths (`bits_expr` / `width_expr`)
+
+A parameterised width has **two** true answers, and the payload
+carries both.
+
+```jsonc
+// ip_cdc_handshake #(.WIDTH(19)) u_hs_cmd (...);   // logic [WIDTH-1:0] src_data
+{ "rb": { "name": "src_data", "width": 19, "width_expr": "WIDTH", … } }
+
+// ip_async_fifo's gray pointers:  logic [PTR_W-1:0] wptr_gray;
+// with localparam int PTR_W = $clog2(DEPTH)+1 — no integer exists
+{ "rb": { "nets": ["wptr_gray"], "bits": null, "bits_expr": "PTR_W", … } }
+```
+
+**`width_expr` / `bits_expr` are derived from the range as written —
+no substitution.** `[WIDTH-1:0]` is `"WIDTH"` whether or not
+`#(.WIDTH(19))` folds it to 19. The parameter *name* is what the
+designer wrote and what carries the design intent: `/WIDTH` tells a
+reader which knob moves that bus, while `/19` is one instantiation's
+elaboration detail and `/PTR_W` would be the caller's private name for
+it. Substitution serves the **numeric** answer only (§ 6.1).
+
+Corollary: a range already written in integers (`[18:0]`) has **no**
+expression. A number is not algebra, and copying it into a field that
+promises a name would be a second `bits`.
+
+**The whole rule set** — deliberately tiny, deterministic, and not a
+computer-algebra system:
+
+1. **One clean pattern produces an expression**: the `lsb` folds to
+   literal `0` *and* the `msb` ends in `- 1`. The answer is the rest
+   of the `msb`, whitespace-normalized — `[X-1:0]` → `"X"`,
+   `[X+K-1:0]` → `"X+K"`.
+2. What is left must be nothing but identifiers, integers, `+ - *` and
+   parentheses, and must still **contain an identifier**.
+   `[$clog2(D)-1:0]`, `[X-2:0]`, `[X:0]`, `[X-1:1]` and `[18:0]` all
+   produce **nothing**.
+3. **Bundle summing** (edges only): each net contributes its
+   expression when it has one — *not* also its number — and its number
+   otherwise. Exactly one symbolic term prints, followed by the
+   numeric remainder: `"PTR_W"`, `"WIDTH+1"` (a `+0` is omitted).
+   **Two or more terms abstain, identical ones included**: folding
+   `PTR_W + PTR_W` into `2*PTR_W` needs an equality between two source
+   texts that a structural tool cannot justify (two scopes may spell
+   two different localparams the same way), and every expression
+   printed is one net's declared width, verbatim.
+4. A bundle where no net contributes a name has **no** expression —
+   `bits` says it better. A net that is unknown *both* ways sinks the
+   whole bundle, exactly as it sinks `bits`.
+5. Anything longer than **20 characters** abstains — past that it is a
+   second label, not an annotation.
+
+What a consumer may rely on:
+
+- **`bits` / `width` are numeric-only and unchanged.** They are `null`
+  unless the width is a real integer; the algebraic value never leaks
+  into them. A consumer that wants numbers keeps getting numbers
+  wherever they resolve.
+- **The two are independent.** Either, neither, or *both* may be set
+  for one port or one edge. A consumer that reads only `bits` is
+  correct, just less informative.
+
+**Display preference: the expression wins.** The SPA's schematic draws
+`bits_expr` when it is present and `bits` otherwise, rendering the
+symbolic form in *italic* so a reader can tell a name from a count.
+Compactness is guaranteed upstream by rules 3 and 5, so there is
+nothing for the renderer to second-guess. The one exception is
+honesty, not preference: a bundle resolved to exactly **1 bit** draws
+as a hairline with no slash at all — a slash means "bus", and that one
+is a single wire.
+
+Silence beats noise throughout: an unlabelled wire reads as "unknown",
+while a cryptic or wrong label reads as fact.
+
+> **Elaboration changes only half of this.** § 6.1's substitution is a
+> stopgap for a frontend that doesn't elaborate; when the slang
+> frontend (`frontend/slang.py`) lands, parameters resolve properly and
+> it becomes redundant. The algebraic form survives it entirely — an
+> elaborator gives you the number, never the name the designer wrote.
+
+### 6.3 Dataflow
 
 - Positional port connections contribute no dataflow (the child's
   port order isn't authoritative enough), though they do mark a port

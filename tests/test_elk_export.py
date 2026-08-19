@@ -376,6 +376,7 @@ def test_a_single_pin_edge_references_port_ids(payload: dict) -> None:
     assert edge["rb"] == {
         "nets": ["w"],
         "bits": 8,
+        "bits_expr": None,
         "src_pins": ["q"],
         "dst_pins": ["a"],
     }
@@ -625,3 +626,132 @@ def test_positional_overrides_resolve_through_the_declaration() -> None:
     assert nodes["top.u_leaf"]["rb"]["param_overrides"] == [["W", "4"]]
     # The interface's own parameter list is the declaration here.
     assert nodes["top.u_if"]["rb"]["param_overrides"] == [["AW", "8"]]
+
+
+# --- algebraic widths -------------------------------------------------------
+#
+# The shape the demo design has: a synchroniser whose pins are typed
+# ``[WIDTH-1:0]`` and bound with ``#(.WIDTH(PTR_W))``, next to one
+# bound with a literal. The first is knowable only in symbols, the
+# second is knowable as a number.
+
+
+def _param_width_table() -> ModuleTable:
+    sync = Module(
+        name="ip_cdc_sync",
+        ports=(
+            _port("d", "input", "logic [WIDTH-1:0]"),
+            _port("q", "output", "logic [WIDTH-1:0]"),
+        ),
+        parameters=(Parameter("WIDTH", "1", None),),
+        instances=(),
+        location=None,
+    )
+    sink = Module(
+        name="sink",
+        ports=(
+            _port("a", "input", None),
+            _port("b", "input", None),
+            # Literally declared, for the "a number is not algebra" case.
+            _port("c", "input", "logic [7:0]"),
+        ),
+        parameters=(),
+        instances=(),
+        location=None,
+    )
+    top = Module(
+        name="top",
+        ports=(_port("din", "input", "logic"),),
+        parameters=(),
+        instances=(
+            Instance(
+                name="u_sym",
+                module_name="ip_cdc_sync",
+                param_overrides=(ParameterOverride("WIDTH", "PTR_W", None),),
+                port_connections=(_conn("d", "din"), _conn("q", "gray")),
+                location=None,
+            ),
+            Instance(
+                name="u_num",
+                module_name="ip_cdc_sync",
+                param_overrides=(ParameterOverride("WIDTH", "19", None),),
+                port_connections=(_conn("d", "din"), _conn("q", "payload")),
+                location=None,
+            ),
+            Instance(
+                name="u_sink",
+                module_name="sink",
+                param_overrides=(),
+                port_connections=(_conn("a", "gray"), _conn("b", "payload")),
+                location=None,
+            ),
+        ),
+        location=None,
+    )
+    return ModuleTable(modules_by_name={m.name: m for m in (top, sync, sink)})
+
+
+@pytest.fixture
+def param_payload() -> dict:
+    table = _param_width_table()
+    return elk_export.export_elk(build_hierarchy(table, "top"), table)
+
+
+def test_a_literal_override_carries_both_the_number_and_the_name(
+    param_payload: dict,
+) -> None:
+    """19 bits *and* ``WIDTH``-wide — neither answer suppresses the other."""
+    ports = {
+        p["rb"]["name"]: p["rb"] for p in _by_id(param_payload)["top.u_num"]["ports"]
+    }
+    assert ports["q"]["width"] == 19
+    assert ports["q"]["width_expr"] == "WIDTH"
+
+
+def test_a_symbolic_override_leaves_only_the_name(param_payload: dict) -> None:
+    """``#(.WIDTH(PTR_W))``: no integer exists, so only the name does."""
+    ports = {
+        p["rb"]["name"]: p["rb"] for p in _by_id(param_payload)["top.u_sym"]["ports"]
+    }
+    assert ports["q"]["width"] is None
+    assert ports["q"]["width_expr"] == "WIDTH"
+    assert ports["d"]["width_expr"] == "WIDTH"
+
+
+def test_a_literally_declared_pin_has_no_expression(param_payload: dict) -> None:
+    """``[7:0]`` is a number, and a number is not algebra."""
+    ports = {
+        p["rb"]["name"]: p["rb"] for p in _by_id(param_payload)["top.u_sink"]["ports"]
+    }
+    assert ports["c"]["width"] == 8
+    assert ports["c"]["width_expr"] is None
+
+
+def test_edges_carry_the_name_whether_or_not_a_number_resolved(
+    param_payload: dict,
+) -> None:
+    edges = _edges_by_id(param_payload)
+    symbolic = edges["top.u_sym:q->top.u_sink:a"]["rb"]
+    assert (symbolic["bits"], symbolic["bits_expr"]) == (None, "WIDTH")
+    both = edges["top.u_num:q->top.u_sink:b"]["rb"]
+    assert (both["bits"], both["bits_expr"]) == (19, "WIDTH")
+
+
+def test_bits_stays_numeric_only_across_the_whole_payload(
+    param_payload: dict, payload: dict
+) -> None:
+    """``bits`` never becomes a string; the two are independent."""
+    both_seen = False
+    for candidate in (param_payload, payload):
+        for edge in _edges_by_id(candidate).values():
+            bits, expr = edge["rb"]["bits"], edge["rb"]["bits_expr"]
+            assert bits is None or isinstance(bits, int)
+            assert expr is None or isinstance(expr, str)
+            both_seen = both_seen or (bits is not None and expr is not None)
+        for node in _by_id(candidate).values():
+            for port in node["ports"]:
+                width, expr = port["rb"]["width"], port["rb"]["width_expr"]
+                assert width is None or isinstance(width, int)
+                assert expr is None or isinstance(expr, str)
+    # And the coexistence is real, not merely permitted.
+    assert both_seen
