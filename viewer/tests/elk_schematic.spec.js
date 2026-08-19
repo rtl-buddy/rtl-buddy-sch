@@ -506,8 +506,11 @@ describe('subtreeOf', () => {
 
 describe('geometry helpers', () => {
   it('draws an out-flag pointing right and an in-flag pointing right', () => {
-    expect(flagPath(0, 0, 40, 20, true)).toContain('M0,0')
-    expect(flagPath(0, 0, 40, 20, false)).toContain('M9,0')
+    // One shape, pointing with the flow: the path starts at the flat
+    // left edge and puts the tip on the right for inputs and outputs
+    // alike — an input's tip touches the wire it drives.
+    expect(flagPath(0, 0, 40, 20)).toContain('M0,0')
+    expect(flagPath(0, 0, 40, 20)).toContain('l9,10 l-9,10')
   })
 
   it('emits square-cornered polylines', () => {

@@ -524,9 +524,12 @@ const flagBoxes = computed(() =>
     const y = f.y - FLAG_HEIGHT / 2
     return {
       ...f,
-      d: flagPath(x, y, width, FLAG_HEIGHT, f.out),
-      textX: f.out ? x + 8 : x + width - 8,
-      anchor: f.out ? 'start' : 'end',
+      // Both flags point rightward — the direction the signal flows
+      // on an LR sheet — so an input's tip lands exactly on its
+      // wire. The label sits in the flat body, clear of the tip.
+      d: flagPath(x, y, width, FLAG_HEIGHT),
+      textX: x + 8,
+      anchor: 'start',
     }
   }),
 )
@@ -902,8 +905,12 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-2);
 }
 .svg-host {
+  /* Start below the floating tab / toolbar row: pan-zoom's fit
+     measures this element, so reserving the strip here keeps the
+     sheet's top edge from ever landing under the buttons. */
   width: 100%;
-  height: 100%;
+  height: calc(100% - 3rem);
+  margin-top: 3rem;
   cursor: grab;
 }
 .svg-host:active { cursor: grabbing; }

@@ -1097,8 +1097,12 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-2);
 }
 .svg-host {
+  /* Start below the floating tab / toolbar row: pan-zoom's fit
+     measures this element, so reserving the strip here keeps the
+     sheet's top edge from ever landing under the buttons. */
   width: 100%;
-  height: 100%;
+  height: calc(100% - 3rem);
+  margin-top: 3rem;
   cursor: grab;
 }
 .svg-host:active { cursor: grabbing; }
