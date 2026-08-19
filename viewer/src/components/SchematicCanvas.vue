@@ -181,6 +181,8 @@
               />
               <text
                 class="sch-slash-text"
+                :class="{ symbolic: wire.slashSymbolic }"
+                :data-slash-symbolic="wire.slashSymbolic ? 'true' : null"
                 :x="slashOf(wire).x + 6"
                 :y="slashOf(wire).y - 4"
               >{{ wire.slash }}</text>
@@ -979,6 +981,13 @@ onBeforeUnmount(() => {
 .sch-slash-text {
   fill: var(--fg);
   font-size: 8.5px;
+}
+/* An algebraic width (``/PTR_W``) is not a measurement — it is the
+   declaration's own arithmetic, unresolved because nothing has
+   elaborated the design yet. Italic is the one typographic signal
+   that says "symbol, not count" without a legend. */
+.sch-slash-text.symbolic {
+  font-style: italic;
 }
 
 .sch-pin line {

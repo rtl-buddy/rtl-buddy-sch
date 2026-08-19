@@ -218,6 +218,68 @@ test.describe('hover highlighting', () => {
   })
 })
 
+// --- algebraic bus widths -----------------------------------------------------
+//
+// The producer emits ``rb.bits_expr`` for a width that only exists in
+// symbols before elaboration (``[W-1:0]``, elk.json §6.3). The fixture
+// design is fully literal, so the case is grafted on in memory — the
+// same trick ``withClockOverlay`` uses below, and for the same reason:
+// regenerating a fixture to carry one key would re-emit every other
+// byte of it too.
+
+/** The fixture with a declared name grafted onto one 8-bit edge. */
+function withSymbolicWidth(base) {
+  const data = JSON.parse(JSON.stringify(base))
+  let done = false
+  const graft = (node) => {
+    for (const edge of node.edges || []) {
+      if (done || edge.rb?.bits !== 8) continue
+      // The number stays: the producer knows both, and the canvas has
+      // to prefer the name.
+      edge.rb.bits_expr = 'W'
+      done = true
+    }
+    for (const child of node.children || []) graft(child)
+  }
+  graft(data.layout.elk)
+  if (!done) throw new Error('fixture has no 8-bit edge to graft onto')
+  return data
+}
+
+test.describe('algebraic bus widths', () => {
+  test('draws the declared name in italic instead of the number', async ({
+    page,
+  }) => {
+    await openSchematic(page, withSymbolicWidth(payload))
+    const symbolic = page.locator('.sch-slash-text.symbolic')
+    await expect(symbolic.first()).toBeVisible()
+    // The grafted edge is 8 bits AND `W`-wide — the name wins.
+    await expect(symbolic.first()).toHaveText('/W')
+    await expect(page.locator('.sch-slash-text', { hasText: '/8' })).toHaveCount(0)
+    // Italic is the whole signal: this label is a parameter name, not
+    // a bit count.
+    const style = await symbolic
+      .first()
+      .evaluate((el) => getComputedStyle(el).fontStyle)
+    expect(style).toBe('italic')
+    // A numeric slash on the same sheet stays upright.
+    const numeric = page.locator('.sch-slash-text:not(.symbolic)')
+    if ((await numeric.count()) > 0) {
+      const upright = await numeric
+        .first()
+        .evaluate((el) => getComputedStyle(el).fontStyle)
+      expect(upright).toBe('normal')
+    }
+  })
+
+  test('the unmodified fixture carries no symbolic slash at all', async ({
+    page,
+  }) => {
+    await openSchematic(page, payload)
+    await expect(page.locator('.sch-slash-text.symbolic')).toHaveCount(0)
+  })
+})
+
 // --- P4: clock-domain shading + sheet frame ----------------------------------
 
 /** The fixture with a two-domain clock overlay grafted on. */

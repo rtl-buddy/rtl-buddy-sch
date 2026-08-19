@@ -7,6 +7,10 @@
 // Both directions are pure functions precisely so they can be pinned
 // without a WASM engine or a DOM.
 
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { describe, expect, it } from 'vitest'
 import {
   MIN_NODE_WIDTH,
@@ -27,6 +31,7 @@ import {
   flagPath,
   highlightFor,
   isActiveLow,
+  isSymbolicSlash,
   makeCanvasMeasurer,
   nodeIdOfEndpoint,
   orderPorts,
@@ -295,6 +300,34 @@ describe('busSlash', () => {
     // null width is "unknown", not "one bit" — a guessed bus width is
     // worse than an unlabelled wire (elk.json §6).
     expect(busSlash(null)).toBeNull()
+  })
+
+  it('prefers the declared name over the folded number', () => {
+    // ``[WIDTH-1:0]`` bound ``#(.WIDTH(19))`` is both; the name is
+    // what tells a reader which knob sets the bus (elk.json §6.2).
+    expect(busSlash(19, 'WIDTH')).toBe('/WIDTH')
+    expect(busSlash(null, 'PTR_W')).toBe('/PTR_W')
+    expect(busSlash(undefined, 'PTR_W+1')).toBe('/PTR_W+1')
+    // No name: the number, exactly as before.
+    expect(busSlash(19, null)).toBe('/19')
+    expect(busSlash(null, '  ')).toBeNull()
+    expect(busSlash(null, 7)).toBeNull()
+    expect(busSlash(null, null)).toBeNull()
+  })
+
+  it('keeps a resolved 1-bit wire a hairline, name or no name', () => {
+    // A slash means "bus". This one is known to be a single wire, so
+    // the name would be a promise the geometry contradicts.
+    expect(busSlash(1, 'WIDTH')).toBeNull()
+    expect(busSlash(1)).toBeNull()
+  })
+
+  it('flags the drawn label as a name so the canvas can italicise it', () => {
+    expect(isSymbolicSlash(null, 'PTR_W')).toBe(true)
+    expect(isSymbolicSlash(19, 'WIDTH')).toBe(true)
+    expect(isSymbolicSlash(19, null)).toBe(false)
+    expect(isSymbolicSlash(1, 'WIDTH')).toBe(false) // nothing is drawn
+    expect(isSymbolicSlash(null, null)).toBe(false)
   })
 })
 
@@ -821,5 +854,98 @@ describe('sheetFrame', () => {
     const empty = sheetFrame({ width: 0, height: 0 }, [])
     expect(empty.frame.width).toBe(SHEET_MARGIN * 2)
     expect(empty.title.rows).toEqual([])
+  })
+})
+
+// --- algebraic bus widths -----------------------------------------------------
+
+describe('algebraic widths in the draw model', () => {
+  const withEdge = (rb) => ({
+    id: '$root',
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 100,
+    children: [
+      {
+        id: 'top',
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 100,
+        rb: { module_name: 'top' },
+        ports: [],
+        edges: [
+          {
+            id: 'e0',
+            sources: ['top.u_a:q'],
+            targets: ['top.u_b:d'],
+            rb,
+            sections: [
+              { startPoint: { x: 0, y: 0 }, endPoint: { x: 50, y: 0 } },
+            ],
+          },
+        ],
+        children: [],
+      },
+    ],
+  })
+
+  it('carries the expression onto the wire when bits is null', () => {
+    const [wire] = toSchematic(withEdge({ nets: ['gray'], bits: null, bits_expr: 'PTR_W' })).wires
+    expect(wire.bits).toBeNull()
+    expect(wire.bitsExpr).toBe('PTR_W')
+    expect(wire.slash).toBe('/PTR_W')
+    // Unknown-but-parameterised reads as a bus: nobody parameterises
+    // a single bit, and the italic says which kind of answer it is.
+    expect(wire.bus).toBe(true)
+    expect(wire.slashSymbolic).toBe(true)
+  })
+
+  it('draws the name, not the number, when the producer knows both', () => {
+    const [wire] = toSchematic(withEdge({ nets: ['pay'], bits: 19, bits_expr: 'WIDTH' })).wires
+    expect(wire.bits).toBe(19)
+    expect(wire.slash).toBe('/WIDTH')
+    expect(wire.slashSymbolic).toBe(true)
+  })
+
+  it('leaves a purely numeric wire exactly as it was', () => {
+    const [wire] = toSchematic(withEdge({ nets: ['pay'], bits: 19, bits_expr: null })).wires
+    expect(wire.slash).toBe('/19')
+    expect(wire.slashSymbolic).toBe(false)
+    expect(wire.bitsExpr).toBeNull()
+  })
+
+  it('keeps a 1-bit wire a hairline even when it has a name', () => {
+    const [wire] = toSchematic(withEdge({ nets: ['en'], bits: 1, bits_expr: 'WIDTH' })).wires
+    expect(wire.slash).toBeNull()
+    expect(wire.bus).toBe(false)
+    expect(wire.slashSymbolic).toBe(false)
+  })
+
+  it('stays silent for a producer that predates the key', () => {
+    const [wire] = toSchematic(withEdge({ nets: ['w'], bits: null })).wires
+    expect(wire.slash).toBeNull()
+    expect(wire.bus).toBe(false)
+    expect(wire.slashSymbolic).toBe(false)
+  })
+})
+
+describe('the canvas styles the algebraic slash', () => {
+  const canvas = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'components', 'SchematicCanvas.vue'),
+    'utf8',
+  )
+
+  it('binds the symbolic class off the draw model', () => {
+    expect(canvas).toContain("{ symbolic: wire.slashSymbolic }")
+  })
+
+  it('italicises it, with no colour decision of its own', () => {
+    const rule = canvas.match(/\.sch-slash-text\.symbolic\s*\{([^}]*)\}/)
+    expect(rule).not.toBeNull()
+    expect(rule[1]).toContain('font-style: italic')
+    // Colour lives in the token sheet (docs/design-tokens.md).
+    expect(rule[1]).not.toMatch(/#[0-9a-f]{3,8}/i)
   })
 })
