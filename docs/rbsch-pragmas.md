@@ -11,8 +11,9 @@ describes.
 > Phase 1 (epic
 > [#159](https://github.com/rtl-buddy/rtl-buddy-sch/issues/159))
 > ships abstraction control and semantic labels; phase 2 adds net
-> classification. Bundles, layout hints and blackbox pin pinning are
-> phases 3–5 of the same epic; this document grows with them.
+> classification; phase 3 adds named bundles. Layout hints and
+> blackbox pin pinning are phases 4–5 of the same epic; this
+> document grows with them.
 
 ## The `rb` prefix convention
 
@@ -45,9 +46,9 @@ every other tool.
   vocabulary shapes modules and instances (`leaf`, `collapse`,
   `hide`), the **net** vocabulary classifies wires (`clock`,
   `reset`, `data`, `main`, `side`).
-- `key=value` words carry a value: `label="CSR block (PeakRDL)"`.
-  Quoting follows shell rules (single or double quotes), so a value
-  with spaces must be quoted.
+- `key=value` words carry a value: `label="CSR block (PeakRDL)"`
+  (box) and `bundle=cmd_bus` (net). Quoting follows shell rules
+  (single or double quotes), so a value with spaces must be quoted.
 - Only `//` line comments are scanned; `/* rbsch: … */`
   is not a pragma.
 - Order doesn't matter, and several words may share one comment.
@@ -100,7 +101,11 @@ Two net-specific refinements:
   `logic a, b;  // rbsch: clock` classifies both `a` and `b`. A
   standalone net pragma covers the next declaration *line* — one
   line, never a run, so one comment cannot silently reclassify half
-  a module.
+  a module. The one exception is `bundle=`: a bundle is by
+  definition a statement about a group, so its standalone form
+  covers the **contiguous run** of net declarations below it (a
+  blank line or any non-declaration line ends the run), and any
+  other net words on the same pragma ride along with it.
 - Ports are net targets too: a clock is very often a port of the
   scope being drawn, and a trailing `// rbsch: clock` on the port
   declaration is the natural spelling.
@@ -182,6 +187,45 @@ module nh_top (
   logic       done_status;  // rbsch: side
 ```
 
+## Phase 3 vocabulary — named bundles
+
+A handshake is one interface but many nets — and two *directions*,
+because ready flows against the data. Inferred edges can only show
+what the wires do; `bundle=` lets the author say what they *mean*:
+
+| pragma | valid on | effect |
+|---|---|---|
+| `bundle=<name>` | net declaration(s) | the nets form one named wire group: their edge is labeled `<name>` instead of the net list, drawn thick, and a same-named return path folds into the data direction |
+
+```systemverilog
+  // rbsch: bundle=cmd_bus
+  logic        cmd_valid;
+  logic [15:0] cmd_data;
+  logic        cmd_ready;
+```
+
+- The standalone form covers the **contiguous declaration run**
+  (see the association rules); the trailing form covers its line.
+- An edge takes the bundle name only when **every** net on it
+  carries the same `bundle=` — all-or-nothing, because naming an
+  edge that also hauls unrelated nets would claim more than the
+  author said. A mixed edge keeps its plain net-list label.
+- When the same bundle name appears on edges in **both** directions
+  between one pair of blocks, the return path folds into the data
+  direction — the side carrying more payload wins (compared in bits
+  when both widths are known, in net count otherwise), its nets and
+  pins merge in, and the diagram shows one thick edge pointing the
+  way the data goes. A symmetric tie keeps both edges: guessing the
+  data direction would point an arrow the wrong way on exactly the
+  interfaces where the reader can't tell either.
+- The bus slash (`bits`) keeps describing the kept direction's nets
+  only: it is the payload width, not payload plus handshake.
+- An explicit `main` / `side` emphasis on a member net wins over the
+  bundle's default thickness — the per-net word is the more specific
+  statement.
+- The member nets stay in the JSON / ELK payloads; only the label
+  changes.
+
 ## Sidecar JSON
 
 Vendor and generated IP can't take a comment. The same vocabulary
@@ -207,7 +251,8 @@ rtl-buddy-view --top demo_tiny_alu_subsys_top \
   },
   "nets": {
     "demo_tiny_alu_subsys_top.tick": { "classification": "clock" },
-    "demo_tiny_alu_subsys_top.result_bus": { "emphasis": "main" }
+    "demo_tiny_alu_subsys_top.result_bus": { "emphasis": "main" },
+    "demo_tiny_alu_subsys_top.cmd_valid": { "bundle": "cmd_bus" }
   }
 }
 ```
@@ -216,10 +261,11 @@ rtl-buddy-view --top demo_tiny_alu_subsys_top \
   `"<parent_module>.<instance_name>"`; `nets` (phase 2) by
   `"<module>.<net_name>"` — the same pairs the in-source paths
   resolve to. No key half may contain a dot.
-- A net entry spells the two families as fields:
-  `"classification"` is one of `"clock"` / `"reset"` / `"data"`,
-  `"emphasis"` is `"main"` or `"side"`. An invalid value raises —
-  it would otherwise silently classify nothing.
+- A net entry spells the families as fields: `"classification"` is
+  one of `"clock"` / `"reset"` / `"data"`, `"emphasis"` is `"main"`
+  or `"side"` (invalid values raise — they would otherwise silently
+  classify nothing), and `"bundle"` is the wire-group name, where
+  `""` is the explicit revoke of an in-source membership.
 - Every entry field is optional. An absent field means "says
   nothing", which is what lets a sidecar `"leaf": false` *revoke* an
   in-source `leaf` (or `"classification": "data"` revoke an
