@@ -351,7 +351,7 @@ def main(
     # In-source pragmas are the default input (the sources are
     # already named by the filelist); the sidecar overlay is the
     # override for IP whose source can't carry comments.
-    root = _apply_hints_or_warn(
+    root, hint_map = _apply_hints_or_warn(
         root,
         table,
         filelist,
@@ -433,6 +433,7 @@ def main(
             coverage_map=coverage_map,
             coverage_metric=coverage_metric.value,
             block_diagram=block_diagram,
+            hints=hint_map,
         )
     else:
         with output_path.open("w") as sink:
@@ -452,6 +453,7 @@ def main(
                 coverage_map=coverage_map,
                 coverage_metric=coverage_metric.value,
                 block_diagram=block_diagram,
+                hints=hint_map,
             )
 
 
@@ -548,6 +550,7 @@ def _render(
     coverage_map: CoverageMap | None = None,
     coverage_metric: str = "lines",
     block_diagram: bool = False,
+    hints: HintMap | None = None,
 ) -> None:
     # The coverage overlay contributes to view.json only (the web
     # viewer paints the heatmap); tree/dot/mermaid output is
@@ -564,6 +567,7 @@ def _render(
             with_legend=clock_legend,
             block_diagram=block_diagram,
             module_table=module_table,
+            hints=hints,
         )
     elif fmt is OutputFormat.mermaid:
         mermaid_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
@@ -576,6 +580,7 @@ def _render(
             sink,
             module_table=module_table if module_table is not None else ModuleTable(),
             domain_map=domain_map,
+            hints=hints,
         )
     elif fmt is OutputFormat.json:
         json_render.render(
@@ -604,8 +609,14 @@ def _apply_hints_or_warn(
     *,
     no_pragmas: bool,
     sidecar: object,
-) -> HierNode:
+) -> tuple[HierNode, HintMap]:
     """Scan pragmas, merge the sidecar, and rewrite the hierarchy.
+
+    Returns the rewritten root *and* the resolved map: the box
+    vocabulary is fully consumed by the rewrite, but the net
+    vocabulary (phase 2) is consumed downstream — by the connectivity
+    analyzer and the dot/ELK renderers — so the map itself must
+    survive to the render call.
 
     The I/O half of the hint layer: :mod:`rtl_buddy_view.hints` never
     opens a file for the in-source path, so the sources are read here
@@ -642,7 +653,7 @@ def _apply_hints_or_warn(
     hinted = apply_hints(root, hints, warnings=warnings)
     for message in list(hints.warnings) + warnings:
         typer.echo(f"hints: {message}", err=True)
-    return hinted
+    return hinted, hints
 
 
 def _parse_design_or_exit(filelist: Path, frontend: Frontend) -> ModuleTable:

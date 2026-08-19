@@ -68,6 +68,7 @@ from rtl_buddy_view.connectivity import (
 )
 from rtl_buddy_view.extractor import Instance, Module, ModuleTable
 from rtl_buddy_view.graph import HierNode
+from rtl_buddy_view.hints import HintMap
 
 SCHEMA_VERSION = 1
 TOOL_NAME = "rtl-buddy-view"
@@ -195,6 +196,7 @@ def render(
     domain_map: DomainMap | None = None,
     tool_version: str | None = None,
     indent: int = 2,
+    hints: HintMap | None = None,
 ) -> None:
     """Write ``node``'s ELK payload to ``out`` as JSON."""
     payload = export_elk(
@@ -202,6 +204,7 @@ def render(
         module_table,
         domain_map=domain_map,
         tool_version=tool_version,
+        hints=hints,
     )
     json.dump(payload, out, indent=indent)
     out.write("\n")
@@ -213,6 +216,7 @@ def export_elk(
     *,
     domain_map: DomainMap | None = None,
     tool_version: str | None = None,
+    hints: HintMap | None = None,
 ) -> dict[str, Any]:
     """Build the ELK-shaped schematic payload rooted at ``root``.
 
@@ -226,9 +230,18 @@ def export_elk(
     (AGENTS.md § Adding a renderer): ``None`` or empty means the
     output is identical to the un-annotated case, with every
     ``rb.clock`` null.
+
+    ``hints`` (epic #159 phase 2) contributes only its *net
+    classification* here, and only structurally: a net the author
+    classified ``clock``/``reset`` drops out of the dataflow, one
+    classified ``data`` survives the clock-tree filter — the same
+    edges the dot block diagram draws, so the canvas and the figure
+    agree on what exists. No new payload keys: emphasis is styling,
+    and styling additions to this schema go through their own
+    contract review. ``None`` is byte-identical to before.
     """
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
-    payload = _node(root, table, active_map, is_root=True)
+    payload = _node(root, table, active_map, hints, is_root=True)
     payload["rb"]["export"] = {
         "schema_version": SCHEMA_VERSION,
         "generator": {
@@ -247,6 +260,7 @@ def _node(
     hier: HierNode,
     table: ModuleTable,
     domain_map: DomainMap | None,
+    hints: HintMap | None = None,
     *,
     is_root: bool = False,
 ) -> dict[str, Any]:
@@ -259,7 +273,7 @@ def _node(
     throws.
     """
     children = [
-        _node(child, table, domain_map)
+        _node(child, table, domain_map, hints)
         for child in sorted(hier.children, key=lambda c: c.instance_path)
     ]
     # The parameter values this instance was *built* with — defaults
@@ -291,7 +305,9 @@ def _node(
         },
         "ports": ports,
         "children": children,
-        "edges": _edges(hier, table, port_ids, params, allow_port_to_port=is_root),
+        "edges": _edges(
+            hier, table, port_ids, params, hints, allow_port_to_port=is_root
+        ),
     }
 
 
@@ -460,6 +476,7 @@ def _edges(
     table: ModuleTable,
     port_ids: set[str],
     params: dict[str, str],
+    hints: HintMap | None = None,
     *,
     allow_port_to_port: bool = False,
 ) -> list[dict[str, Any]]:
@@ -482,7 +499,8 @@ def _edges(
         if child.instance is not None
     }
     edges: list[dict[str, Any]] = []
-    for edge in scope_connectivity(module, table, params=params):
+    net_hints = hints.nets_for_module(module.name) if hints is not None else None
+    for edge in scope_connectivity(module, table, params=params, net_hints=net_hints):
         if not allow_port_to_port and edge.src[0] == "port" and edge.dst[0] == "port":
             # A pure input→output feed-through inside a compound —
             # ``assign busy = pending | ~empty`` reaching from one of

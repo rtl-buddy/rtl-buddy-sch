@@ -1332,3 +1332,110 @@ def test_instance_params_of_an_unknown_child_keeps_only_named_overrides() -> Non
         "u", "bb", params=((None, "19"), ("MODE", "fast"))
     ).param_overrides
     assert instance_params(None, overrides) == {"MODE": "fast"}
+
+
+# --- rbsch net hints (epic #159 phase 2) ------------------------------------
+
+
+def _hints(**by_name: object):
+    from rtl_buddy_view.hints import NetHints
+
+    out: dict[str, NetHints] = {}
+    for name, value in by_name.items():
+        assert isinstance(value, NetHints)
+        out[name] = value
+    return out
+
+
+def _net_hint(classification: str | None = None, emphasis: str | None = None):
+    from rtl_buddy_view.hints import NetHints
+
+    return NetHints(
+        classification=classification,  # type: ignore[arg-type]
+        emphasis=emphasis,  # type: ignore[arg-type]
+    )
+
+
+def test_hinted_clock_net_is_dropped() -> None:
+    """``rbsch: clock`` suppresses a clock the name regexes can't see."""
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "tick")),
+            _inst("u_sink", "sink", _conn("d", "tick")),
+        ),
+    )
+    table = _table(top, _SRC, _SINK)
+    assert scope_connectivity(top, table) != ()
+    assert (
+        scope_connectivity(
+            top, table, net_hints=_hints(tick=_net_hint(classification="clock"))
+        )
+        == ()
+    )
+
+
+def test_hinted_data_net_survives_the_clock_filter() -> None:
+    """``rbsch: data`` rescues a data net whose name reads as a clock."""
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "cclk")),
+            _inst("u_sink", "sink", _conn("d", "cclk")),
+        ),
+    )
+    table = _table(top, _SRC, _SINK)
+    assert scope_connectivity(top, table) == ()
+    edges = scope_connectivity(
+        top, table, net_hints=_hints(cclk=_net_hint(classification="data"))
+    )
+    assert [e.nets for e in edges] == [("cclk",)]
+
+
+def test_emphasis_lands_on_the_edge_and_implies_data() -> None:
+    """``main``/``side`` are statements about a *dataflow* edge, so a
+    hinted net also survives the clock filter without a second word."""
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "cclk")),
+            _inst("u_sink", "sink", _conn("d", "cclk")),
+        ),
+    )
+    table = _table(top, _SRC, _SINK)
+    edges = scope_connectivity(
+        top, table, net_hints=_hints(cclk=_net_hint(emphasis="side"))
+    )
+    assert [e.emphasis for e in edges] == ["side"]
+
+
+def test_main_beats_side_within_a_bundle() -> None:
+    src2 = _module("src2", ports=(_port("q", "output"), _port("r", "output")))
+    sink2 = _module("sink2", ports=(_port("d", "input"), _port("e", "input")))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src2", _conn("q", "a"), _conn("r", "b")),
+            _inst("u_sink", "sink2", _conn("d", "a"), _conn("e", "b")),
+        ),
+    )
+    edges = scope_connectivity(
+        top,
+        _table(top, src2, sink2),
+        net_hints=_hints(a=_net_hint(emphasis="main"), b=_net_hint(emphasis="side")),
+    )
+    assert [e.emphasis for e in edges] == ["main"]
+
+
+def test_empty_net_hints_are_byte_identical_to_none() -> None:
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "w")),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+    )
+    table = _table(top, _SRC, _SINK)
+    assert scope_connectivity(top, table) == scope_connectivity(
+        top, table, net_hints={}
+    )
