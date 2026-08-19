@@ -5,6 +5,14 @@
 **redistributed inside the published wheel**, together with the
 notices those licenses require us to pass on.
 
+> **First wheel to carry this file: v0.8.1.** The v0.8.0 release was
+> built from the commit merged one position *before* this file landed
+> (the stack #162→#164→#172 merged within the same second, and the
+> release workflow builds from the labeled PR's own merge commit, not
+> from the final stack tip), so its `.dist-info/licenses/` contains
+> only `LICENSE`. The v0.8.0 *code* is unaffected; v0.8.1 exists to
+> put these notices into the artefact, as EPL-2.0 §3 expects.
+
 ## What this file covers (and what it does not)
 
 The wheel built from this repository contains exactly two things
