@@ -15,6 +15,16 @@
         @click="store.setViewMode('flow')"
         :title="flowTabTitle"
       >Block Flow</button>
+      <!-- Third mode: the elkjs pin-level schematic (#163 P2). It is a
+           separate component (the SVG is Vue's, not a viz.js string),
+           so App.vue swaps the whole canvas — this button only has to
+           set the mode. -->
+      <button
+        type="button"
+        class="canvas-tab"
+        @click="store.setViewMode('sch')"
+        :title="schTabTitle"
+      >Schematic</button>
       <nav
         v-if="breadcrumb.length > 0"
         class="scope-breadcrumb"
@@ -105,6 +115,11 @@ const flowTabTitle = computed(() =>
   store.flowScopeId
     ? `One-level signal flow under ${store.flowScopeId}`
     : 'One-level signal flow (select a node to scope)',
+)
+const schTabTitle = computed(() =>
+  store.graph?.layout?.elk
+    ? 'Pin-level schematic laid out in-browser by elkjs'
+    : 'Pin-level schematic — this view.json predates the layout.elk payload',
 )
 // "Up" is only meaningful when the current scope isn't already the
 // design top — popping past top would lose context.

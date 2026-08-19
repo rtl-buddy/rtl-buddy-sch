@@ -113,7 +113,14 @@
         @mousedown.prevent="startResize"
       ></div>
       <div class="canvas-wrap">
-        <GraphCanvas />
+        <!-- One canvas slot, three modes. The schematic is a *mode*,
+             not a new hub pane: it draws the same design from the same
+             view.json and shares the selection, so a second origin
+             would only make two panes evict each other (AGENTS.md
+             § hub protocol). The mode tabs live on the canvas itself
+             — both components render the same strip. -->
+        <SchematicCanvas v-if="store.viewMode === 'sch'" />
+        <GraphCanvas v-else />
         <div v-if="store.status === 'loading'" class="loading-overlay">
           <div class="spinner" aria-hidden="true"></div>
           <span>Loading…</span>
@@ -159,6 +166,7 @@
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useViewerStore } from './store.js'
 import GraphCanvas from './components/GraphCanvas.vue'
+import SchematicCanvas from './components/SchematicCanvas.vue'
 import OverlayPanel from './components/OverlayPanel.vue'
 import NodeDetail from './components/NodeDetail.vue'
 import EdgeDetail from './components/EdgeDetail.vue'
