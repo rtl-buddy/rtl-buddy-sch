@@ -49,6 +49,7 @@ src/rtl_buddy_view/
 ├── graph.py               # build_hierarchy(table, top) → HierNode tree
 ├── graph_export.py        # graph.json v1 (design tier); GRAPH_CONTRACT pinned
 ├── query.py               # walk, subtree, instances_of, port_connections, source_snippet
+├── connectivity.py        # scope_connectivity(): sibling dataflow for --block-diagram
 ├── annotations.py         # DomainMap loader (rtl-buddy-cdc#106 schema v1.0)
 └── render/
     ├── __init__.py

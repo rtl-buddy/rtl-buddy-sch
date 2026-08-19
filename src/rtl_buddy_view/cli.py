@@ -234,6 +234,16 @@ def main(
         help="Dot format only: emit a side legend listing each clock "
         "with its assigned color swatch. No effect without a clock overlay.",
     ),
+    block_diagram: bool = typer.Option(
+        False,
+        "--block-diagram",
+        help="Dot format only: render a documentation block diagram "
+        "instead of the instantiation tree. Nesting becomes "
+        "containment (each non-leaf instance is its own box) and the "
+        "arrows show sibling-to-sibling dataflow — which block drives "
+        "which net — rather than parent-to-child port maps. Ignored "
+        "with a warning for other formats.",
+    ),
 ) -> None:
     """Render the hierarchy of ``--top`` to ``--format``."""
     # A subcommand (``query``) is being dispatched — the render
@@ -261,6 +271,17 @@ def main(
     if top is None and tb_top is None:
         typer.echo("error: --top or --tb-top is required", err=True)
         raise typer.Exit(code=2)
+
+    if block_diagram and output_format is not OutputFormat.dot:
+        # Additive flag, so an ignored value must never be silent —
+        # a user asking for a block diagram and getting a tree back
+        # deserves to know which half of the request was dropped.
+        typer.echo(
+            f"warning: --block-diagram applies to --format dot only "
+            f"(got {output_format.value}); ignoring",
+            err=True,
+        )
+        block_diagram = False
 
     overlay_specs = _collect_overlays(overlays_flag, cdc_annotations, rdc_annotations)
 
@@ -376,6 +397,7 @@ def main(
             module_table=table,
             coverage_map=coverage_map,
             coverage_metric=coverage_metric.value,
+            block_diagram=block_diagram,
         )
     else:
         with output_path.open("w") as sink:
@@ -394,6 +416,7 @@ def main(
                 module_table=table,
                 coverage_map=coverage_map,
                 coverage_metric=coverage_metric.value,
+                block_diagram=block_diagram,
             )
 
 
@@ -489,6 +512,7 @@ def _render(
     module_table: ModuleTable | None = None,
     coverage_map: CoverageMap | None = None,
     coverage_metric: str = "lines",
+    block_diagram: bool = False,
 ) -> None:
     # The coverage overlay contributes to view.json only (the web
     # viewer paints the heatmap); tree/dot/mermaid output is
@@ -503,6 +527,7 @@ def _render(
             reset_map=reset_map,
             axi_perf_map=axi_perf_map,
             with_legend=clock_legend,
+            block_diagram=block_diagram,
             module_table=module_table,
         )
     elif fmt is OutputFormat.mermaid:
