@@ -80,8 +80,15 @@ KNOWN_FLAGS: tuple[str, ...] = ("collapse", "hide", "leaf")
 #: ``side`` set the emphasis the net's dataflow edge is drawn with.
 KNOWN_NET_FLAGS: tuple[str, ...] = ("clock", "data", "main", "reset", "side")
 
-#: ``key=value`` pragma words.
+#: ``key=value`` pragma words (box vocabulary).
 KNOWN_KEYS: tuple[str, ...] = ("label",)
+
+#: ``key=value`` pragma words that target a net. ``bundle=<name>``
+#: names the wire group a net belongs to: every net sharing a bundle
+#: name between one pair of endpoints renders as a single named edge,
+#: and a return path (valid/ready style) folds into the data
+#: direction.
+KNOWN_NET_KEYS: tuple[str, ...] = ("bundle",)
 
 #: Flags that only mean something on a module declaration.
 MODULE_ONLY_FLAGS: tuple[str, ...] = ("leaf",)
@@ -147,7 +154,7 @@ def _unknown_word_warning(word: str) -> str:
     return (
         f"unknown {PRAGMA_PREFIX} key {word!r}; known flags: "
         f"{', '.join(sorted(KNOWN_FLAGS + KNOWN_NET_FLAGS))}; known keys: "
-        f"{', '.join(f'{k}=…' for k in KNOWN_KEYS)}"
+        f"{', '.join(f'{k}=…' for k in sorted(KNOWN_KEYS + KNOWN_NET_KEYS))}"
     )
 
 
@@ -186,7 +193,7 @@ def parse_pragma_payload(payload: str) -> PragmaPayload:
         if not sep:
             if token in KNOWN_FLAGS or token in KNOWN_NET_FLAGS:
                 flags.add(token)
-            elif token in KNOWN_KEYS:
+            elif token in KNOWN_KEYS or token in KNOWN_NET_KEYS:
                 warnings.append(
                     f'{PRAGMA_PREFIX} key {token!r} needs a value (write {token}="…")'
                 )
@@ -195,7 +202,7 @@ def parse_pragma_payload(payload: str) -> PragmaPayload:
             continue
         if not key:
             warnings.append(f"{PRAGMA_PREFIX} token {token!r} has no key before '='")
-        elif key in KNOWN_KEYS:
+        elif key in KNOWN_KEYS or key in KNOWN_NET_KEYS:
             # Last spelling wins; a repeated key in one comment is a
             # typo either way and the warning-free path keeps the
             # diagram rendering.
@@ -346,10 +353,19 @@ class NetHints:
 
     classification: Classification | None = None
     emphasis: Emphasis | None = None
+    #: Name of the wire group this net belongs to (phase 3). ``None``
+    #: means unspecified; ``""`` — reachable only through a sidecar —
+    #: is the explicit revoke, and every consumer treats it as "no
+    #: bundle" (the truthiness check they all share).
+    bundle: str | None = None
 
     @property
     def is_empty(self) -> bool:
-        return self.classification is None and self.emphasis is None
+        return (
+            self.classification is None
+            and self.emphasis is None
+            and self.bundle is None
+        )
 
 
 @dataclass(frozen=True)
@@ -520,7 +536,9 @@ def _associate_box(pragma: Pragma, decls: Sequence[_Decl]) -> _Decl | None:
     return None
 
 
-def _associate_nets(pragma: Pragma, decls: Sequence[_Decl]) -> tuple[_Decl, ...]:
+def _associate_nets(
+    pragma: Pragma, decls: Sequence[_Decl], *, run: bool = False
+) -> tuple[_Decl, ...]:
     """Bind a net pragma to the net / port declarations it covers.
 
     - Trailing: every net declarator *starting on that line* —
@@ -528,9 +546,18 @@ def _associate_nets(pragma: Pragma, decls: Sequence[_Decl]) -> tuple[_Decl, ...]
     - Standalone: the next net or port declaration below it, again
       covering every declarator on that declaration's line.
 
-    One *line* of declarators, never a run: classification is
-    per-net intent, and spilling onto the following declarations
+    By default one *line* of declarators, never a run: classification
+    is per-net intent, and spilling onto the following declarations
     would let one comment silently reclassify half a module.
+
+    ``run=True`` — the ``bundle=`` association rule — extends a
+    *standalone* pragma over the contiguous run of net declarations
+    below it (consecutive source lines, multiple declarators per line
+    included). A bundle is by definition a statement about a group,
+    and the epic's canonical spelling is one comment above the
+    member declarations; a blank line (or any non-declaration line)
+    ends the run, so the group stays exactly the visually grouped
+    block of code.
     """
     net_decls = [d for d in decls if d.kind == "net"]
     if not pragma.own_line:
@@ -538,8 +565,14 @@ def _associate_nets(pragma: Pragma, decls: Sequence[_Decl]) -> tuple[_Decl, ...]
     below = [d for d in net_decls if d.line > pragma.line]
     if not below:
         return ()
-    first_line = below[0].line
-    return tuple(d for d in below if d.line == first_line)
+    covered = [below[0]]
+    for decl in below[1:]:
+        last_line = covered[-1].line
+        if decl.line == last_line or (run and decl.line == last_line + 1):
+            covered.append(decl)
+        else:
+            break
+    return tuple(covered)
 
 
 def _describe(decl: _Decl) -> str:
@@ -578,11 +611,16 @@ def resolve_hints(pragmas: Sequence[Pragma], table: ModuleTable) -> HintMap:
         decls = index.get(pragma.file, ())
         box_flags = tuple(f for f in pragma.flags if f in KNOWN_FLAGS)
         net_flags = tuple(f for f in pragma.flags if f in KNOWN_NET_FLAGS)
-        # ``label`` — the only key so far — is box vocabulary.
-        if box_flags or pragma.payload.options:
+        box_options = tuple(
+            (k, v) for k, v in pragma.payload.options if k in KNOWN_KEYS
+        )
+        net_options = tuple(
+            (k, v) for k, v in pragma.payload.options if k in KNOWN_NET_KEYS
+        )
+        if box_flags or box_options:
             _resolve_box(pragma, where, box_flags, decls, modules, instances, warnings)
-        if net_flags:
-            _resolve_nets(pragma, where, net_flags, decls, nets, warnings)
+        if net_flags or net_options:
+            _resolve_nets(pragma, where, net_flags, net_options, decls, nets, warnings)
 
     return HintMap(
         modules={k: v for k, v in sorted(modules.items()) if not v.is_empty},
@@ -655,15 +693,30 @@ def _resolve_nets(
     pragma: Pragma,
     where: str,
     net_flags: tuple[str, ...],
+    net_options: tuple[tuple[str, str], ...],
     decls: Sequence[_Decl],
     nets: dict[tuple[str, str], NetHints],
     warnings: list[str],
 ) -> None:
     """Apply one pragma's net vocabulary to its covered declarators."""
-    targets = _associate_nets(pragma, decls)
+    bundle: str | None = None
+    for key, value in net_options:
+        if key == "bundle":
+            if value:
+                bundle = value
+            else:
+                warnings.append(
+                    f"{where}: bundle needs a name (write bundle=…); ignored"
+                )
+    # A bundle is a statement about a group, so its standalone form
+    # covers the contiguous declaration run — and the other net words
+    # on the same pragma ride along: the author grouped those
+    # declarations deliberately.
+    targets = _associate_nets(pragma, decls, run=bundle is not None)
     if not targets:
+        spelled = ", ".join(net_flags + tuple(f"{k}=…" for k, _ in net_options))
         warnings.append(
-            f"{where}: net pragma ({', '.join(net_flags)}) matched no net "
+            f"{where}: net pragma ({spelled}) matched no net "
             f"or port declaration ("
             + (
                 "a trailing net pragma binds to the declarators starting "
@@ -694,18 +747,20 @@ def _resolve_nets(
         )
     elif emphases:
         emphasis = cast(Emphasis, emphases[0])
-    if classification is None and emphasis is None:
+    if classification is None and emphasis is None and bundle is None:
         return
 
     for decl in targets:
         assert decl.net is not None
-        key = (decl.module, decl.net)
-        current = nets.get(key, NetHints())
+        net_key = (decl.module, decl.net)
+        current = nets.get(net_key, NetHints())
         if classification is not None:
             current = replace(current, classification=classification)
         if emphasis is not None:
             current = replace(current, emphasis=emphasis)
-        nets[key] = current
+        if bundle is not None:
+            current = replace(current, bundle=bundle)
+        nets[net_key] = current
 
 
 def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
@@ -748,6 +803,7 @@ def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
             emphasis=(
                 current_n.emphasis if net_hints.emphasis is None else net_hints.emphasis
             ),
+            bundle=(current_n.bundle if net_hints.bundle is None else net_hints.bundle),
         )
     return HintMap(
         modules=dict(sorted(modules.items())),
@@ -890,6 +946,12 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
                         f"{', '.join(sorted(EMPHASIS_FLAGS))}; got {text!r}"
                     )
                 net_hints = replace(net_hints, emphasis=cast(Emphasis, text))
+            elif name == "bundle":
+                # ``""`` is legal here and only here: the sidecar's
+                # explicit revoke of an in-source bundle membership.
+                net_hints = replace(
+                    net_hints, bundle=_require_str(value, where=where, key=name)
+                )
             else:
                 warnings.append(f"{where}: {_unknown_word_warning(name)}")
         if not net_hints.is_empty:

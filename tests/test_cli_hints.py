@@ -288,3 +288,45 @@ def test_net_hints_leave_the_hierarchy_formats_untouched() -> None:
     )
     assert with_hints.returncode == 0 and without.returncode == 0
     assert with_hints.stdout == without.stdout
+
+
+# --- phase 3: bundles end to end --------------------------------------------
+
+BUNDLE_FIXTURES = Path(__file__).parent / "fixtures" / "bundle_demo"
+BUNDLE_FILELIST = BUNDLE_FIXTURES / "files.f"
+
+
+def _render_bundle(*args: str) -> subprocess.CompletedProcess[str]:
+    return _run(
+        "--top",
+        "bd_top",
+        "--filelist",
+        str(BUNDLE_FILELIST),
+        "--format",
+        "dot",
+        "--block-diagram",
+        *args,
+    )
+
+
+def test_bundle_renders_one_named_thick_edge_in_the_data_direction() -> None:
+    result = _render_bundle()
+    assert result.returncode == 0, result.stderr
+    dot = result.stdout
+    line = _edge_line(dot, "cmd_bus")
+    assert '"bd_top.u_prod" -> "bd_top.u_cons"' in line
+    assert "penwidth=1.6" in line
+    # The member nets vanish from the label, and the folded return
+    # path leaves no reverse edge behind.
+    assert 'xlabel="cmd_valid' not in dot
+    assert 'xlabel="cmd_ready' not in dot
+    assert '"bd_top.u_cons" -> "bd_top.u_prod"' not in dot
+    assert "hints:" not in result.stderr
+
+
+def test_no_pragmas_restores_the_unbundled_handshake() -> None:
+    result = _render_bundle("--no-pragmas")
+    assert result.returncode == 0, result.stderr
+    dot = result.stdout
+    assert "cmd_bus" not in dot
+    assert '"bd_top.u_cons" -> "bd_top.u_prod"' in dot

@@ -619,11 +619,16 @@ def _write_block_edge(
     headport = "e" if dst_id.startswith("_in_") else "w"
     # ``rbsch`` emphasis (epic #159 phase 2): the main datapath gets
     # weight, side wiring thins and grays so the money path pops.
-    # Unhinted edges keep the exact phase-1 attributes.
+    # A named bundle (phase 3) is thick by default — one interface,
+    # one visually solid wire — but an explicit per-net emphasis word
+    # is the more specific statement and wins. Unhinted edges keep
+    # the exact phase-1 attributes.
     if edge.emphasis == "main":
         edge_color, penwidth, arrowsize = _BLOCK_EDGE_COLOR, "2.2", "0.9"
     elif edge.emphasis == "side":
         edge_color, penwidth, arrowsize = _SIDE_EDGE_COLOR, "0.6", "0.6"
+    elif edge.bundle is not None:
+        edge_color, penwidth, arrowsize = _BLOCK_EDGE_COLOR, "1.6", "0.8"
     else:
         edge_color, penwidth, arrowsize = _BLOCK_EDGE_COLOR, "1.0", "0.7"
     attrs = [
@@ -633,7 +638,14 @@ def _write_block_edge(
         f"tailport={tailport}",
         f"headport={headport}",
     ]
-    label = _format_net_label(edge.nets)
+    # A bundle renders under its author-given name — that name is the
+    # whole point: one edge labeled ``cmd_bus`` instead of an N-net
+    # list. The member nets stay in the JSON/ELK payloads.
+    label = (
+        _escape(edge.bundle) + r"\l"
+        if edge.bundle is not None
+        else _format_net_label(edge.nets)
+    )
     if label:
         # ``xlabel`` rather than ``label``: under ``splines="ortho"``
         # Graphviz cannot place an edge label on the spline and warns

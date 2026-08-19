@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+import dataclasses
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 
@@ -175,6 +176,16 @@ class NetEdge:
     of it the money path; thinning the whole edge would hide that).
     ``None`` — the default, and the only value when no hints are
     supplied — leaves every consumer unchanged.
+
+    ``bundle`` (phase 3) is the author's name for this wire group,
+    set when **every** net on the edge carries the same ``bundle=``
+    hint — all-or-nothing, because naming an edge that also carries
+    unrelated nets would claim more than the author said. A named
+    return path folds into the data direction (see
+    ``_fold_bundle_returns``), so a valid/ready pair reads as one
+    thick edge; ``bits`` keeps describing the kept direction's nets
+    only — the slash on a bus is its payload width, not payload plus
+    handshake.
     """
 
     src: Endpoint
@@ -185,6 +196,7 @@ class NetEdge:
     bits: int | None = None
     bits_expr: str | None = None
     emphasis: Literal["main", "side"] | None = None
+    bundle: str | None = None
 
 
 def root_identifiers(expr_text: str) -> tuple[str, ...]:
@@ -396,8 +408,10 @@ def scope_connectivity(
     called, and one classified ``"data"`` (or carrying any
     ``emphasis``) keeps its group in the dataflow even when every
     name in it looks like a clock. An ``emphasis`` lands on the
-    resulting edge's :attr:`NetEdge.emphasis`. ``None`` (the
-    default) is byte-identical to before the parameter existed.
+    resulting edge's :attr:`NetEdge.emphasis`, and a ``bundle`` names
+    the edge when every net on it agrees (with an opposite-direction
+    edge of the same name folded into the data direction). ``None``
+    (the default) is byte-identical to before the parameter existed.
 
     Returned edges are bundled per endpoint pair and sorted by
     ``(src, dst)``. Each carries the formal pin names it attaches to
@@ -443,7 +457,7 @@ def scope_connectivity(
             slot[1].update(src_pins)
             slot[2].update(dst_pins)
 
-    return tuple(
+    edges = [
         NetEdge(
             src=src,
             dst=dst,
@@ -453,9 +467,13 @@ def scope_connectivity(
             bits=_bundle_bits(nets, widths),
             bits_expr=_bundle_bits_expr(nets, widths, exprs),
             emphasis=_bundle_emphasis(nets, net_hints),
+            bundle=_bundle_name(nets, net_hints),
         )
         for (src, dst), (nets, src_pins, dst_pins) in sorted(bundled.items())
-    )
+    ]
+    if net_hints and any(h.bundle for h in net_hints.values()):
+        edges = _fold_bundle_returns(edges)
+    return tuple(edges)
 
 
 # --- internals ---------------------------------------------------------------
@@ -991,3 +1009,85 @@ def _bundle_emphasis(
     if "side" in found:
         return "side"
     return None
+
+
+def _bundle_name(
+    nets: set[str], net_hints: Mapping[str, NetHints] | None
+) -> str | None:
+    """The bundle an edge belongs to — all member nets, or nothing.
+
+    An edge naming a bundle that also carries unrelated nets would
+    claim more than the author said, so a mixed edge keeps its plain
+    net-list identity. The sidecar's ``""`` revoke is falsy, so a
+    revoked membership breaks the unanimity exactly like an unhinted
+    net does.
+    """
+    if not net_hints or not nets:
+        return None
+    names = {net_hints[n].bundle if n in net_hints else None for n in nets}
+    if len(names) != 1:
+        return None
+    (name,) = names
+    return name or None
+
+
+def _fold_bundle_returns(edges: list[NetEdge]) -> list[NetEdge]:
+    """Fold a bundle's return path into its data direction.
+
+    A valid/ready pair flows both ways between the same two
+    endpoints; the author's ``bundle=`` says it is *one* interface,
+    so the diagram should show one edge, pointing the way the data
+    goes. For each endpoint pair with same-named bundle edges in both
+    directions, the direction carrying more payload wins — compared
+    in bits when both widths are known, in net count otherwise — and
+    the loser's nets and pins merge into it (pins swap sides: the
+    return path's source pins sit on the kept edge's destination).
+    A tie abstains and keeps both edges: guessing the data direction
+    would point an arrow the wrong way on exactly the symmetric
+    interfaces where the reader can't tell either.
+
+    ``bits`` / ``bits_expr`` / ``emphasis`` stay the kept
+    direction's: the slash describes payload, not payload plus
+    handshake, and an emphasis word on the data nets already speaks
+    for the interface.
+    """
+    by_pair = {(e.src, e.dst): e for e in edges}
+    dropped: set[tuple[Endpoint, Endpoint]] = set()
+    merged: dict[tuple[Endpoint, Endpoint], NetEdge] = {}
+    for edge in edges:
+        pair = (edge.src, edge.dst)
+        if edge.bundle is None or pair in dropped or pair in merged:
+            continue
+        reverse = by_pair.get((edge.dst, edge.src))
+        if reverse is None or reverse.bundle != edge.bundle:
+            continue
+        keep, fold = _data_direction(edge, reverse)
+        if keep is None or fold is None:
+            continue
+        merged[(keep.src, keep.dst)] = dataclasses.replace(
+            keep,
+            nets=tuple(sorted({*keep.nets, *fold.nets})),
+            src_pins=tuple(sorted({*keep.src_pins, *fold.dst_pins})),
+            dst_pins=tuple(sorted({*keep.dst_pins, *fold.src_pins})),
+        )
+        dropped.add((fold.src, fold.dst))
+    return [
+        merged.get((e.src, e.dst), e) for e in edges if (e.src, e.dst) not in dropped
+    ]
+
+
+def _data_direction(
+    a: NetEdge, b: NetEdge
+) -> tuple[NetEdge, NetEdge] | tuple[None, None]:
+    """Order two opposite bundle edges as (data direction, return path)."""
+    if a.bits is not None and b.bits is not None:
+        if a.bits > b.bits:
+            return a, b
+        if b.bits > a.bits:
+            return b, a
+        return None, None
+    if len(a.nets) > len(b.nets):
+        return a, b
+    if len(b.nets) > len(a.nets):
+        return b, a
+    return None, None

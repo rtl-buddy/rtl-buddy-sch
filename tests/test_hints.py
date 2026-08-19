@@ -829,3 +829,94 @@ def test_merge_sidecar_overrides_net_fields_independently() -> None:
     assert merged.nets[("m", "w")] == hints_mod.NetHints(
         classification="data", emphasis="main"
     )
+
+
+# --- phase 3: bundles -------------------------------------------------------
+
+
+def test_parse_bundle_key() -> None:
+    payload = parse_pragma_payload("bundle=cmd_bus")
+    assert payload.options == (("bundle", "cmd_bus"),)
+    assert payload.warnings == ()
+
+
+def test_parse_bare_bundle_warns() -> None:
+    assert "needs a value" in parse_pragma_payload("bundle").warnings[0]
+
+
+def test_standalone_bundle_covers_the_contiguous_run() -> None:
+    """One comment above the group names the whole visually grouped
+    block — and stops at the first gap."""
+    table = _table(
+        _net_module(
+            "m",
+            1,
+            nets=(
+                _net_decl("cmd_valid", 5),
+                _net_decl("cmd_data", 6),
+                _net_decl("cmd_ready", 7),
+                _net_decl("plain", 9),  # after a blank line — not covered
+            ),
+        )
+    )
+    text = "\n" * 3 + "// rbsch: bundle=cmd_bus\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets[("m", "cmd_valid")].bundle == "cmd_bus"
+    assert hints.nets[("m", "cmd_data")].bundle == "cmd_bus"
+    assert hints.nets[("m", "cmd_ready")].bundle == "cmd_bus"
+    assert ("m", "plain") not in hints.nets
+
+
+def test_other_net_words_ride_the_bundle_run() -> None:
+    table = _table(_net_module("m", 1, nets=(_net_decl("a", 5), _net_decl("b", 6))))
+    text = "\n" * 3 + "// rbsch: bundle=cmd_bus main\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets[("m", "b")] == hints_mod.NetHints(
+        emphasis="main", bundle="cmd_bus"
+    )
+
+
+def test_trailing_bundle_covers_its_line_only() -> None:
+    table = _table(_net_module("m", 1, nets=(_net_decl("a", 5), _net_decl("b", 6))))
+    text = "\n" * 4 + "logic a;  // rbsch: bundle=x\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets[("m", "a")].bundle == "x"
+    assert ("m", "b") not in hints.nets
+
+
+def test_classification_run_is_still_one_line_without_bundle() -> None:
+    """The run rule belongs to ``bundle=`` alone."""
+    table = _table(_net_module("m", 1, nets=(_net_decl("a", 5), _net_decl("b", 6))))
+    text = "\n" * 3 + "// rbsch: clock\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert ("m", "b") not in hints.nets
+
+
+def test_empty_bundle_name_warns_and_is_ignored() -> None:
+    table = _table(_net_module("m", 1, nets=(_net_decl("a", 4),)))
+    text = "\n" * 2 + "// rbsch: bundle=\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.nets == {}
+    assert any("bundle needs a name" in w for w in hints.warnings)
+
+
+def test_sidecar_parses_and_revokes_bundle() -> None:
+    hints = parse_hint_sidecar(
+        {
+            "schema_version": "1.1",
+            "nets": {
+                "m.a": {"bundle": "cmd_bus"},
+                "m.b": {"bundle": ""},
+            },
+        },
+        source="hints.json",
+    )
+    assert hints.nets[("m", "a")].bundle == "cmd_bus"
+    assert hints.nets[("m", "b")].bundle == ""
+
+
+def test_merge_sidecar_empty_bundle_revokes_in_source_membership() -> None:
+    base = HintMap(nets={("m", "a"): hints_mod.NetHints(bundle="cmd_bus")})
+    override = HintMap(nets={("m", "a"): hints_mod.NetHints(bundle="")})
+    merged = merge_hint_maps(base, override)
+    assert merged.nets[("m", "a")].bundle == ""

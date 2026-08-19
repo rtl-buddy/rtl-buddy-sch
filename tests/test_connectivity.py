@@ -1347,12 +1347,17 @@ def _hints(**by_name: object):
     return out
 
 
-def _net_hint(classification: str | None = None, emphasis: str | None = None):
+def _net_hint(
+    classification: str | None = None,
+    emphasis: str | None = None,
+    bundle: str | None = None,
+):
     from rtl_buddy_view.hints import NetHints
 
     return NetHints(
         classification=classification,  # type: ignore[arg-type]
         emphasis=emphasis,  # type: ignore[arg-type]
+        bundle=bundle,
     )
 
 
@@ -1439,3 +1444,142 @@ def test_empty_net_hints_are_byte_identical_to_none() -> None:
     assert scope_connectivity(top, table) == scope_connectivity(
         top, table, net_hints={}
     )
+
+
+# --- rbsch bundles (epic #159 phase 3) --------------------------------------
+
+
+_HS_SRC = _module(
+    "hs_src",
+    ports=(
+        _port("valid", "output", "logic"),
+        _port("data", "output", "logic [15:0]"),
+        _port("ready", "input", "logic"),
+    ),
+)
+_HS_SINK = _module(
+    "hs_sink",
+    ports=(
+        _port("valid", "input", "logic"),
+        _port("data", "input", "logic [15:0]"),
+        _port("ready", "output", "logic"),
+    ),
+)
+
+
+def _handshake_top() -> Module:
+    return _module(
+        "top",
+        instances=(
+            _inst(
+                "u_src",
+                "hs_src",
+                _conn("valid", "cmd_valid"),
+                _conn("data", "cmd_data"),
+                _conn("ready", "cmd_ready"),
+            ),
+            _inst(
+                "u_sink",
+                "hs_sink",
+                _conn("valid", "cmd_valid"),
+                _conn("data", "cmd_data"),
+                _conn("ready", "cmd_ready"),
+            ),
+        ),
+    )
+
+
+_CMD_BUS = _hints(
+    cmd_valid=_net_hint(bundle="cmd_bus"),
+    cmd_data=_net_hint(bundle="cmd_bus"),
+    cmd_ready=_net_hint(bundle="cmd_bus"),
+)
+
+
+def test_bundle_names_the_edge_when_every_net_agrees() -> None:
+    top = _handshake_top()
+    edges = scope_connectivity(top, _table(top, _HS_SRC, _HS_SINK), net_hints=_CMD_BUS)
+    assert len(edges) == 1
+    (edge,) = edges
+    assert edge.bundle == "cmd_bus"
+
+
+def test_bundle_return_path_folds_into_the_data_direction() -> None:
+    top = _handshake_top()
+    edges = scope_connectivity(top, _table(top, _HS_SRC, _HS_SINK), net_hints=_CMD_BUS)
+    (edge,) = edges
+    assert (edge.src, edge.dst) == (("inst", "u_src"), ("inst", "u_sink"))
+    # The folded return path's nets and pins merge in, sides swapped.
+    assert edge.nets == ("cmd_data", "cmd_ready", "cmd_valid")
+    assert edge.src_pins == ("data", "ready", "valid")
+    assert edge.dst_pins == ("data", "ready", "valid")
+    # The slash keeps describing the kept direction's payload only.
+    assert edge.bits == 17
+
+
+def test_mixed_edge_keeps_its_net_list_identity() -> None:
+    """A net outside the bundle on the same endpoint pair blocks the
+    name (and therefore the fold) — all-or-nothing."""
+    top = _module(
+        "top",
+        instances=(
+            _inst(
+                "u_src",
+                "hs_src",
+                _conn("valid", "cmd_valid"),
+                _conn("data", "cmd_data"),
+                _conn("ready", "cmd_ready"),
+            ),
+            _inst(
+                "u_sink",
+                "hs_sink",
+                _conn("valid", "cmd_valid"),
+                _conn("data", "cmd_data"),
+                _conn("ready", "cmd_ready"),
+            ),
+        ),
+    )
+    partial = _hints(
+        cmd_valid=_net_hint(bundle="cmd_bus"),
+        cmd_ready=_net_hint(bundle="cmd_bus"),
+        # cmd_data deliberately unhinted.
+    )
+    edges = scope_connectivity(top, _table(top, _HS_SRC, _HS_SINK), net_hints=partial)
+    # The ready-only return edge is unanimously bundled; the forward
+    # edge is mixed, so it keeps its net-list identity — and without
+    # a named forward edge there is nothing to fold into.
+    assert sorted(e.bundle or "" for e in edges) == ["", "cmd_bus"]
+    assert len(edges) == 2
+
+
+def test_symmetric_bundle_abstains_from_folding() -> None:
+    """Equal payload both ways: guessing the data direction would
+    point an arrow the wrong way exactly when the reader can't tell."""
+    ping = _module(
+        "ping", ports=(_port("tx", "output", "logic"), _port("rx", "input", "logic"))
+    )
+    pong = _module(
+        "pong", ports=(_port("tx", "output", "logic"), _port("rx", "input", "logic"))
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_ping", "ping", _conn("tx", "p2q"), _conn("rx", "q2p")),
+            _inst("u_pong", "pong", _conn("tx", "q2p"), _conn("rx", "p2q")),
+        ),
+    )
+    both = _hints(p2q=_net_hint(bundle="link"), q2p=_net_hint(bundle="link"))
+    edges = scope_connectivity(top, _table(top, ping, pong), net_hints=both)
+    assert len(edges) == 2
+    assert {e.bundle for e in edges} == {"link"}
+
+
+def test_sidecar_empty_bundle_breaks_unanimity() -> None:
+    top = _handshake_top()
+    revoked = _hints(
+        cmd_valid=_net_hint(bundle="cmd_bus"),
+        cmd_data=_net_hint(bundle=""),
+        cmd_ready=_net_hint(bundle="cmd_bus"),
+    )
+    edges = scope_connectivity(top, _table(top, _HS_SRC, _HS_SINK), net_hints=revoked)
+    assert sorted(e.bundle or "" for e in edges) == ["", "cmd_bus"]
