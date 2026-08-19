@@ -263,12 +263,40 @@ export function isSymbolicSlash(bits, bitsExpr) {
 /** The author's bundle name when the edge has one (#180 — one edge
  *  labeled ``cmd_bus`` instead of an N-net list, matching the dot
  *  figure); otherwise the first net name plus a ``+N`` when the
- *  bundle carries more. */
-export function edgeLabelText(nets, bundle = null) {
+ *  bundle carries more.
+ *
+ *  ``pins`` is every formal the edge attaches to at either end. A
+ *  single-net wire whose net is already the name of a pin it lands
+ *  on gets **no** label: the name is printed on that pin, the label
+ *  would repeat it right on top of it, and a schematic names a net
+ *  once. (In the subsys demo this is the whole
+ *  ``result_y``/``result_zf``/… column — five labels stacked over
+ *  the five identically-named pins they land on.) A named bundle is
+ *  never suppressed: the bundle name is the one thing no pin says.
+ */
+export function edgeLabelText(nets, bundle = null, pins = null) {
   if (typeof bundle === 'string' && bundle !== '') return bundle
   if (!Array.isArray(nets) || nets.length === 0) return null
-  return nets.length > 1 ? `${nets[0]} +${nets.length - 1}` : nets[0]
+  if (nets.length === 1) {
+    if (Array.isArray(pins) && pins.includes(nets[0])) return null
+    return nets[0]
+  }
+  return `${nets[0]} +${nets.length - 1}`
 }
+
+/**
+ * The net reference worth printing beside a pin, or ``null``.
+ *
+ * Only when it says something the formal doesn't: an implicit
+ * ``.clk`` binding and an explicit ``.hwif_in(hwif_in)`` both name
+ * the net after the pin, so printing it again is noise in the
+ * routing channel — the place a schematic can least afford it.
+ */
+export function pinNetRef(net, formal) {
+  if (typeof net !== 'string' || net === '') return null
+  return net === formal ? null : net
+}
+
 
 /** Collect which of a scope's port ids are sourced / sunk by its edges. */
 function endpointRoles(node) {
@@ -416,7 +444,10 @@ function decorateNode(node, ctx, depth) {
 
 function decorateEdge(edge, ctx) {
   const rb = edge.rb || {}
-  const text = edgeLabelText(rb.nets, rb.bundle)
+  const text = edgeLabelText(rb.nets, rb.bundle, [
+    ...(rb.src_pins || []),
+    ...(rb.dst_pins || []),
+  ])
   const out = {
     id: edge.id,
     sources: [...(edge.sources || [])],
@@ -603,9 +634,54 @@ export function subtreeOf(payload, instancePath) {
  * the walk carries an accumulated origin. Everything the component
  * draws — and everything a test asserts on — comes out of here.
  */
+/**
+ * Port ids an edge set actually touches, split by how.
+ *
+ * An edge endpoint is a **port id** when the bundle resolved to one
+ * unambiguous pin; when it stands for several pins at once it
+ * degrades to the *node* id and the wire lands on the box border,
+ * with the pin names surviving only in ``rb.src_pins`` /
+ * ``rb.dst_pins`` (contract §4). Both cases mean "this pin is on a
+ * wire" — the difference is only where the wire attaches, so the
+ * second set is exactly the set of **bus taps**: pins a drawn
+ * bundle stands for without landing on them.
+ *
+ * Returns ``{ wired, tapped }``; ``tapped`` is a subset of
+ * ``wired``.
+ */
+export function wiredPortIds(node, out = { wired: new Set(), tapped: new Set() }) {
+  for (const edge of node.edges || []) {
+    const rb = edge.rb || {}
+    const ends = [
+      [(edge.sources || [])[0], rb.src_pins],
+      [(edge.targets || [])[0], rb.dst_pins],
+    ]
+    for (const [ref, formals] of ends) {
+      if (!ref) continue
+      if (ref.includes(':')) {
+        // Landed on the pin itself.
+        out.wired.add(ref)
+        continue
+      }
+      // Landed on the box: every formal it stands for is a tap.
+      for (const formal of formals || []) {
+        const id = `${ref}:${formal}`
+        out.wired.add(id)
+        out.tapped.add(id)
+      }
+    }
+  }
+  for (const child of node.children || []) wiredPortIds(child, out)
+  return out
+}
+
+
 export function toSchematic(laidOut) {
   const boxes = []
   const pins = []
+  // Filled from the laid-out tree before the walk: which pins a wire
+  // actually reaches, and which of those are bus taps.
+  let touched = { wired: new Set(), tapped: new Set() }
   const flags = []
   const wires = []
   const junctions = []
@@ -688,6 +764,7 @@ export function toSchematic(laidOut) {
         })
         continue
       }
+      const wired = touched.wired.has(port.id)
       pins.push({
         id: port.id,
         nodeId: node.id,
@@ -698,6 +775,27 @@ export function toSchematic(laidOut) {
         kind: prb.is_clock ? 'clock' : prb.is_reset ? 'reset' : 'signal',
         activeLow: !!prb.is_reset && isActiveLow(prb.name),
         connected: prb.connected !== false,
+        // A compound's own port labels are drawn in its interior —
+        // which is the wiring channel — so they need the halo a leaf
+        // block's labels don't (a leaf's interior is a filled rect
+        // no wire crosses).
+        onFrame: compound,
+        // A bound pin with no wire reaching it is the normal case
+        // for a net the parent's own procedural logic drives — the
+        // dataflow analyzer only hops continuous assigns, by design.
+        // Carrying the net name keeps such a pin traceable instead
+        // of leaving a bare stub the reader can't follow.
+        wired,
+        // Never the formal name over again: a pin bound to a
+        // same-named net (``.hwif_in(hwif_in)``, ``.src_ready``
+        // shorthand) already prints that name inside the block, and
+        // repeating it outside is the same duplication the wire
+        // labels were carrying.
+        net: pinNetRef(prb.net, prb.name),
+        // A pin a drawn bundle stands for, without the wire landing
+        // on it: the schematic bus-tap case, marked with a junction
+        // dot the way any other wire join is.
+        busTap: touched.tapped.has(port.id),
       })
     }
 
@@ -764,7 +862,10 @@ export function toSchematic(laidOut) {
   // The synthetic wrapper is not part of the drawing: start the walk
   // at its single child, the design top.
   const design = (laidOut && laidOut.children && laidOut.children[0]) || null
-  if (design) walk(design, laidOut.x || 0, laidOut.y || 0, 0)
+  if (design) {
+    touched = wiredPortIds(design)
+    walk(design, laidOut.x || 0, laidOut.y || 0, 0)
+  }
 
   return {
     width: Math.ceil((laidOut && laidOut.width) || 0),

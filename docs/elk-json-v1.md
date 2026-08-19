@@ -106,6 +106,7 @@ matching.
   "id": "demo_tiny_alu_subsys_top.u_afifo:rd_empty",
   "rb": {
     "name": "rd_empty",
+    "net": "fifo_rd_empty",
     "direction": "output",
     "is_clock": false,
     "is_reset": false,
@@ -119,11 +120,12 @@ matching.
 | Key | Type | Notes |
 | --- | ---- | ----- |
 | `name` | string | The formal port name. |
+| `net` | string \| null | The net expression bound at *this instance's* binding site — the verbatim slice (`op_q`, `~rst_n`, `cmd[7:0]`), with implicit `.name` shorthand resolved to the same-named net. `null` when the formal isn't bound; on the root, a port's net is its own name. **Why it exists**: a pin whose net no sibling *pin* drives — the parent's own `always_ff` drives it, and the dataflow analyzer only hops continuous assigns (§4) — has no edge to attach to and draws as a bare stub. This is what keeps that pin traceable, and it is read off the binding site rather than inferred. A consumer should print it only when it differs from `name`. |
 | `direction` | `"input"` \| `"output"` \| `"inout"` \| null | `null` for an interface-bundle port and for a blackbox pin. |
 | `is_clock` / `is_reset` | bool | Name-shaped, using the conservative token form (`clk`/`clock`, `rst`/`reset` as an underscore-delimited token). P2/P4 draw the chevron and bubble glyphs off these. |
 | `width` | int \| null | Declared bit width, **as this instance was parameterised** — `[WIDTH-1:0]` under `#(.WIDTH(19))` is 19. `null` when the bound doesn't resolve to an integer, the type is an aggregate, or the port is an interface bundle. See § 6.1. |
 | `width_expr` | string \| null | The width in the names the declaration uses, read **as written** (`[WIDTH-1:0]` → `"WIDTH"`). Independent of `width`: a pin may carry both (`19` *and* `"WIDTH"`). `null` for a range written in integers. See § 6.2. |
-| `connected` | bool | The port is bound at this instance's binding site. Always `true` on the root, which has no binding site. |
+| `connected` | bool | The port is bound at this instance's binding site. Always `true` on the root, which has no binding site. Note that `connected` and "has a wire in the drawing" are different questions: see `net`. |
 
 Widths are resolved **per instance path**, not per module: the same
 module instantiated twice with different overrides reports different

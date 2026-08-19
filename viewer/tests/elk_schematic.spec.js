@@ -34,6 +34,7 @@ import {
   isSymbolicSlash,
   makeCanvasMeasurer,
   nodeIdOfEndpoint,
+  pinNetRef,
   orderPorts,
   paramLines,
   polylinePath,
@@ -1103,5 +1104,48 @@ describe('rbsch presentation (#180)', () => {
     const texts = (child.labels || []).map((l) => l.text)
     expect(texts.some((t) => t.includes('CSR block (PeakRDL)'))).toBe(true)
     expect(texts.some((t) => t.includes('demo_csr'))).toBe(true)
+  })
+})
+
+describe('redundant wire labels (#184)', () => {
+  it('drops a single-net label the pin it lands on already prints', () => {
+    // u_alu:cf -> u_compute:result_cf carrying net result_cf: the
+    // label would sit right on top of the pin name.
+    expect(edgeLabelText(['result_cf'], null, ['cf', 'result_cf'])).toBeNull()
+  })
+
+  it('keeps a label that names something no pin does', () => {
+    expect(edgeLabelText(['src_sel_cclk'], null, ['q', 'src_sel'])).toBe('src_sel_cclk')
+  })
+
+  it('never suppresses a bundle name', () => {
+    expect(edgeLabelText(['cmd_bus'], 'cmd_bus', ['cmd_bus'])).toBe('cmd_bus')
+  })
+
+  it('keeps multi-net labels — the +N is not a pin name', () => {
+    expect(edgeLabelText(['a', 'b'], null, ['a', 'b'])).toBe('a +1')
+  })
+
+  it('is unchanged when no pins are supplied', () => {
+    expect(edgeLabelText(['w'])).toBe('w')
+  })
+})
+
+describe('pin net references (#184)', () => {
+  it('prints a net that differs from the formal', () => {
+    expect(pinNetRef('op_q', 'op')).toBe('op_q')
+    expect(pinNetRef('~rst_n', 'rst')).toBe('~rst_n')
+  })
+
+  it('stays silent when the net just repeats the formal', () => {
+    // `.clk` shorthand and `.hwif_in(hwif_in)` alike — the name is
+    // already printed on the pin.
+    expect(pinNetRef('clk', 'clk')).toBeNull()
+    expect(pinNetRef('hwif_in', 'hwif_in')).toBeNull()
+  })
+
+  it('treats an absent or empty binding as nothing to print', () => {
+    expect(pinNetRef(null, 'q')).toBeNull()
+    expect(pinNetRef('', 'q')).toBeNull()
   })
 })
