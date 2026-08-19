@@ -163,11 +163,28 @@ def test_assign_alias_hop_connects_renamed_nets() -> None:
     )
 
 
-def test_assign_direction_is_ignored() -> None:
-    """The alias hop is symmetric; pin directions decide the arrow.
+def test_assign_flow_carries_a_driver_downstream() -> None:
+    """``assign b = a;`` with the driver on ``a`` reaches ``b``'s sink."""
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "a")),
+            _inst("u_sink", "sink", _conn("d", "b")),
+        ),
+        assigns=(_assign("b", "a"),),
+    )
+    edges = scope_connectivity(top, _table(top, _SRC, _SINK))
+    assert edges == (
+        NetEdge(src=("inst", "u_src"), dst=("inst", "u_sink"), nets=("b",)),
+    )
 
-    Here the ``assign`` runs "backwards" relative to the dataflow —
-    the edge must still point driver → sink.
+
+def test_no_edge_against_the_assign_direction() -> None:
+    """A pin driving an assign's *LHS* drives nothing downstream of it.
+
+    ``assign b = a;`` already drives ``b``; a child output on ``b`` is
+    a second driver, not a path back out to ``a``'s readers. The old
+    undirected alias model emitted ``u_src -> u_sink`` here.
     """
     top = _module(
         "top",
@@ -177,8 +194,71 @@ def test_assign_direction_is_ignored() -> None:
         ),
         assigns=(_assign("b", "a"),),
     )
+    assert scope_connectivity(top, _table(top, _SRC, _SINK)) == ()
+
+
+def test_assign_flow_composes_over_multiple_hops() -> None:
+    """``assign c = b; assign b = a;`` is one transitive path a → c."""
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "a")),
+            _inst("u_sink", "sink", _conn("d", "c")),
+        ),
+        assigns=(_assign("c", "b"), _assign("b", "a")),
+    )
     edges = scope_connectivity(top, _table(top, _SRC, _SINK))
-    assert [(e.src, e.dst) for e in edges] == [(("inst", "u_src"), ("inst", "u_sink"))]
+    assert edges == (
+        NetEdge(src=("inst", "u_src"), dst=("inst", "u_sink"), nets=("c",)),
+    )
+
+
+def test_mixing_assign_does_not_alias_two_drivers() -> None:
+    """The demo-design regression: ``assign wr_en = hwif.push & ~full;``.
+
+    One assign mixes a CSR data source with a FIFO status net. Under
+    the old undirected grouping both drivers landed in one group, so
+    ``u_afifo`` inherited every sink ``u_csr`` feeds — a wrong edge
+    the rendered block diagram showed as ``u_afifo -> u_cmd``. Under
+    directed flow ``fifo_wr_full`` only runs *into* ``fifo_wr_en``.
+    """
+    csr = _module("csr", ports=(_port("hwif_out", "output"),))
+    afifo = _module(
+        "afifo",
+        ports=(
+            _port("wr_full", "output"),
+            _port("wr_en", "input"),
+            _port("wr_data", "input"),
+        ),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_csr", "csr", _conn("hwif_out", "hwif_out")),
+            _inst(
+                "u_afifo",
+                "afifo",
+                _conn("wr_full", "fifo_wr_full"),
+                _conn("wr_en", "fifo_wr_en"),
+                _conn("wr_data", "hwif_out.fifo_data.value"),
+            ),
+            _inst("u_cmd", "sink", _conn("d", "hwif_out.cmd.value")),
+        ),
+        assigns=(
+            _assign("fifo_wr_en", "hwif_out.fifo_push.PUSH.value & ~fifo_wr_full"),
+        ),
+    )
+    edges = scope_connectivity(top, _table(top, csr, afifo, _SINK))
+    # u_csr keeps both of its real edges; u_afifo acquires none of
+    # them, and its own status net feeding back in is not a self-edge.
+    assert edges == (
+        NetEdge(
+            src=("inst", "u_csr"),
+            dst=("inst", "u_afifo"),
+            nets=("fifo_wr_en", "hwif_out"),
+        ),
+        NetEdge(src=("inst", "u_csr"), dst=("inst", "u_cmd"), nets=("hwif_out",)),
+    )
 
 
 def test_top_ports_are_endpoints() -> None:

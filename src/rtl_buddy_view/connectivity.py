@@ -15,23 +15,40 @@ The algorithm is deliberately structural rather than semantic:
    the expression it is bound to — ``hwif_out.ctrl.SRC.value`` and
    ``hwif_out.op.OP.value`` both reduce to ``hwif_out``, and
    ``cmd_data[18:16]`` reduces to ``cmd_data``.
-2. Continuous assignments union their left- and right-hand roots into
-   **alias groups** (union-find), so a net that only reaches a sibling
-   through ``assign b = f(a);`` still lands in one group. Assign
-   *direction* is ignored on purpose — pin directions are the
-   authority on which way an edge points, and an ``assign`` is just as
-   likely to be a rename as a real one-way function.
-3. Within each group, pins with a known ``output`` / ``inout``
-   direction are drivers and ``input`` pins are sinks; the enclosing
-   module's own ports join the same groups from the outside
-   (``input`` port = driver, ``output`` / ``inout`` port = sink).
-4. Every (driver, sink) pair with distinct endpoints becomes an edge,
-   then edges are bundled per endpoint pair.
+2. Continuous assignments build a **directed value-flow graph** over
+   those roots: ``assign lhs = rhs;`` adds one edge ``rhs_root ->
+   lhs_root`` per root pair, because value flows out of the RHS and
+   into the LHS. Chains compose, so ``assign c = b; assign b = a;``
+   makes ``c`` reachable from ``a`` but not the other way round.
+3. Pins with a known ``output`` / ``inout`` direction are drivers and
+   ``input`` pins are sinks; the enclosing module's own ports join in
+   from the outside (``input`` port = driver, ``output`` / ``inout``
+   port = sink). A driver **sources** its roots; a sink **reads**
+   its roots.
+4. A driver reaches a sink when one of its sourced roots reaches one
+   of the sink's read roots under reflexive-transitive closure of the
+   flow graph. Those pairs become edges (labelled with the reached
+   sink-side roots), which are then bundled per endpoint pair.
 
-The cost of step 2's direction-blindness is occasional over-connection
-(``assign en = go & ~full;`` merges the ``full`` group into the ``go``
-group, so ``full``'s driver also appears to reach ``go``'s sinks).
-That is the accepted trade for not needing an elaborator.
+Direction matters here, and that is the point: a single assign that
+mixes a data source with a status net —
+``assign wr_en = hwif_out.push.value & ~wr_full;`` — would, under an
+undirected alias model, merge ``wr_full``'s driver into ``hwif_out``'s
+group and make the FIFO look like a driver of everything the CSR block
+feeds. Directed reachability keeps ``wr_full`` flowing only *into*
+``wr_en``.
+
+Remaining limits, all downstream of not running an elaborator:
+
+* Roots are recovered by a textual regex, so a net named inside a
+  macro body or built by generate-scope mangling is invisible.
+* Index expressions count as reads (``mem[addr]`` yields both), and
+  bit ranges are ignored — two disjoint slices of one vector alias.
+* Procedural assignments (``always`` blocks) contribute no flow edges;
+  only continuous ``assign`` statements do.
+* Clock/reset filtering is name-shaped, applied to the **weakly**
+  connected components of the flow graph (see
+  :func:`_is_clock_or_reset_group`).
 """
 
 from __future__ import annotations
@@ -154,31 +171,37 @@ def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...
       genuinely carries traffic in both directions. With neither it
       defaults to a driver (an unconsumed bundle still reads as an
       input to the block).
+    * A driver only reaches a sink whose root is reachable from the
+      driver's root along the assign flow graph (reflexively, so a
+      shared net needs no assign at all). A pin driving the *left*
+      side of an assign is therefore not a driver of anything the RHS
+      feeds — that direction would be a second driver on the net.
     * Groups whose every net name looks like a clock or a reset are
-      dropped wholesale.
+      dropped wholesale. "Group" here is a weakly connected component
+      of the flow graph, so the filter sees exactly the net set an
+      undirected alias model would have built.
 
     Returned edges are bundled per endpoint pair and sorted by
     ``(src, dst)``.
     """
-    uf = _UnionFind()
-
-    # Pins first so their roots exist before the assign pass unions
-    # them; ``_UnionFind`` auto-creates on demand either way, but
-    # seeding here keeps the group membership readable.
+    # Pins first so their roots exist as flow-graph nodes before the
+    # assign pass wires them; isolated roots still need a component of
+    # their own for the direct same-net case.
     pins = _collect_pins(module, table)
+    flow = _FlowGraph()
     for pin in pins:
         for root in pin.roots:
-            uf.add(root)
+            flow.add(root)
     for port in module.ports:
-        uf.add(port.name)
+        flow.add(port.name)
     for assign in module.assigns:
         lhs_roots = root_identifiers(assign.lhs_text)
         rhs_roots = root_identifiers(assign.rhs_text)
         for lhs in lhs_roots:
             for rhs in rhs_roots:
-                uf.union(lhs, rhs)
+                flow.connect(rhs, lhs)
 
-    groups = _build_groups(module, pins, uf)
+    groups = _build_groups(module, pins, flow)
 
     # (src, dst) -> net names, accumulated across every group that
     # produced the pair so a bundle carries all of its signals.
@@ -186,7 +209,7 @@ def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...
     for group in groups.values():
         if _is_clock_or_reset_group(group.names):
             continue
-        for src, dst, nets in group.edges():
+        for src, dst, nets in group.edges(flow):
             bundled.setdefault((src, dst), set()).update(nets)
 
     return tuple(
@@ -207,42 +230,92 @@ class _Pin:
     roots: tuple[str, ...]
 
 
-class _UnionFind:
-    """Minimal union-find over net root names.
+class _FlowGraph:
+    """Directed value-flow graph over net root names.
 
-    Path-halving find + union by size. Small enough to inline rather
-    than reach for a dependency (AGENTS.md § no new top-level deps).
+    Built once from the scope's continuous assigns, then queried; the
+    two derived views (components, reachability) are memoised and
+    assume the edge set is frozen by the time they are first asked
+    for. Small enough to inline rather than reach for a dependency
+    (AGENTS.md § no new top-level deps).
     """
 
     def __init__(self) -> None:
-        self._parent: dict[str, str] = {}
-        self._size: dict[str, int] = {}
+        self._succ: dict[str, set[str]] = {}
+        self._pred: dict[str, set[str]] = {}
+        self._components: dict[str, str] | None = None
+        self._reachable: dict[str, frozenset[str]] = {}
 
     def add(self, name: str) -> None:
-        if name not in self._parent:
-            self._parent[name] = name
-            self._size[name] = 1
+        """Register ``name`` as a node, even if nothing flows through it."""
+        self._succ.setdefault(name, set())
+        self._pred.setdefault(name, set())
 
-    def find(self, name: str) -> str:
-        self.add(name)
-        root = name
-        while self._parent[root] != root:
-            self._parent[root] = self._parent[self._parent[root]]
-            root = self._parent[root]
-        return root
-
-    def union(self, a: str, b: str) -> None:
-        ra, rb = self.find(a), self.find(b)
-        if ra == rb:
+    def connect(self, src: str, dst: str) -> None:
+        """Record that a value flows from ``src`` into ``dst``."""
+        self.add(src)
+        self.add(dst)
+        if src == dst:
             return
-        if self._size[ra] < self._size[rb]:
-            ra, rb = rb, ra
-        self._parent[rb] = ra
-        self._size[ra] += self._size[rb]
+        self._succ[src].add(dst)
+        self._pred[dst].add(src)
+
+    def component_of(self, name: str) -> str:
+        """Return the representative of ``name``'s weakly connected component.
+
+        Weak (direction-ignoring) connectivity is exactly the alias
+        grouping an undirected model would produce — which is what the
+        clock/reset filter and the interface/blackbox role resolution
+        are calibrated against. The representative is the component's
+        lexicographic minimum, so grouping never depends on set order.
+        """
+        if self._components is None:
+            self._components = self._compute_components()
+        return self._components.get(name, name)
+
+    def reachable_from(self, name: str) -> frozenset[str]:
+        """Return ``name`` plus everything downstream of it.
+
+        Reflexive (a net always reaches itself, assign or not) and
+        transitive; cycles terminate because the search is per-source
+        with its own visited set.
+        """
+        cached = self._reachable.get(name)
+        if cached is not None:
+            return cached
+        seen = {name}
+        stack = [name]
+        while stack:
+            current = stack.pop()
+            for nxt in self._succ.get(current, ()):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        result = frozenset(seen)
+        self._reachable[name] = result
+        return result
+
+    def _compute_components(self) -> dict[str, str]:
+        representative: dict[str, str] = {}
+        # Sorted starts make the seed of each component its
+        # lexicographic minimum: every member is unvisited when the
+        # smallest of them comes up.
+        for start in sorted(self._succ):
+            if start in representative:
+                continue
+            representative[start] = start
+            stack = [start]
+            while stack:
+                current = stack.pop()
+                for neighbour in self._succ[current] | self._pred[current]:
+                    if neighbour not in representative:
+                        representative[neighbour] = start
+                        stack.append(neighbour)
+        return representative
 
 
 class _Group:
-    """One alias group: the endpoints touching it and their roles."""
+    """One weakly connected component: its endpoints and their roles."""
 
     def __init__(self) -> None:
         self.names: set[str] = set()
@@ -260,10 +333,12 @@ class _Group:
         bucket.setdefault(endpoint, set()).update(nets)
         self.names.update(nets)
 
-    def edges(self) -> list[tuple[Endpoint, Endpoint, set[str]]]:
+    def edges(self, flow: _FlowGraph) -> list[tuple[Endpoint, Endpoint, set[str]]]:
         """Resolve roles into ``(src, dst, nets)`` triples.
 
-        ``nets`` is taken from the *sink* side: the net a receiver is
+        A pair is emitted only when something the driver sources
+        reaches something the sink reads in ``flow``. ``nets`` is the
+        reached subset of the *sink* side: the net a receiver is
         actually bound to is the one worth labelling the edge with.
         """
         drivers = dict(self.drivers)
@@ -279,11 +354,16 @@ class _Group:
             for endpoint, nets in self.unknown.items():
                 sinks.setdefault(endpoint, set()).update(nets)
         out: list[tuple[Endpoint, Endpoint, set[str]]] = []
-        for src in drivers:
-            for dst, nets in sinks.items():
+        for src, src_nets in drivers.items():
+            downstream: set[str] = set()
+            for root in src_nets:
+                downstream |= flow.reachable_from(root)
+            for dst, dst_nets in sinks.items():
                 if src == dst:
                     continue
-                out.append((src, dst, nets))
+                reached = dst_nets & downstream
+                if reached:
+                    out.append((src, dst, reached))
         return out
 
 
@@ -320,13 +400,13 @@ def _collect_pins(module: Module, table: ModuleTable) -> tuple[_Pin, ...]:
 
 
 def _build_groups(
-    module: Module, pins: tuple[_Pin, ...], uf: _UnionFind
+    module: Module, pins: tuple[_Pin, ...], flow: _FlowGraph
 ) -> dict[str, _Group]:
-    """Bucket pins and module ports into their alias groups."""
+    """Bucket pins and module ports into their flow components."""
     groups: dict[str, _Group] = {}
 
     def group_for(root: str) -> _Group:
-        return groups.setdefault(uf.find(root), _Group())
+        return groups.setdefault(flow.component_of(root), _Group())
 
     for pin in pins:
         for root in pin.roots:
@@ -354,7 +434,7 @@ def _build_groups(
 
 
 def _is_clock_or_reset_group(names: set[str]) -> bool:
-    """True when every net name in the group looks like a clock/reset.
+    """True when every net name in the component looks like a clock/reset.
 
     A group with even one data-looking name is kept: an
     ``assign en = go & ~clk_locked;`` style alias should not take the
