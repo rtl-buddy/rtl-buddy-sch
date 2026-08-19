@@ -45,7 +45,8 @@ Remaining limits, all downstream of not running an elaborator:
 * Index expressions count as reads (``mem[addr]`` yields both), and
   bit ranges are ignored — two disjoint slices of one vector alias.
 * Procedural assignments (``always`` blocks) contribute no flow edges;
-  only continuous ``assign`` statements do.
+  only continuous assignments do — both the ``assign`` statement and
+  the ``wire w = expr;`` declaration form.
 * Clock/reset filtering is name-shaped, applied to the **weakly**
   connected components of the flow graph (see
   :func:`_is_clock_or_reset_group`).
@@ -126,10 +127,12 @@ class NetEdge:
     net actually reaches the sink, a sink pin actually reached.
 
     ``bits`` is the bundle's total width — the sum over ``nets`` of
-    each net's width, taken from the *driving* pin's declared port
-    type (see :func:`port_width`). ``None`` when any net in the bundle
-    has an unknown width, because a partial sum would read as a real
-    number to a consumer drawing bus slashes.
+    each net's width, resolved in the ranked order documented on
+    :func:`_net_widths` (driving pin → the scope's own net
+    declaration → the scope's own port declaration), always parsed by
+    :func:`port_width`. ``None`` when any net in the bundle has an
+    unknown width, because a partial sum would read as a real number
+    to a consumer drawing bus slashes.
 
     All three are additive with defaults: the block-diagram renderer
     predates them and its output is unchanged.
@@ -248,7 +251,10 @@ def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...
     (``src_pins`` / ``dst_pins``) and, when every net's width is
     knowable, the bundle's total ``bits`` — both captured here, where
     the binding site is still in hand, rather than re-derived by a
-    renderer intersecting net names after the fact.
+    renderer intersecting net names after the fact. Widths come from
+    the ranked sources :func:`_net_widths` documents, so a net that
+    only an ``assign`` drives is still measured, from its own
+    declaration.
     """
     # Pins first so their roots exist as flow-graph nodes before the
     # assign pass wires them; isolated roots still need a component of
@@ -526,52 +532,100 @@ def _collect_pins(module: Module, table: ModuleTable) -> tuple[_Pin, ...]:
 
 
 def _net_widths(module: Module, pins: tuple[_Pin, ...]) -> dict[str, int]:
-    """Width of each net root, taken from the pin that *drives* it.
+    """Width of each net root, resolved through three ranked sources.
 
-    A net is as wide as its driver declares itself, so the lookup runs
-    from the driving side: a child ``output`` / ``inout`` pin, or —
-    for a net arriving from outside this scope — the enclosing
-    module's own ``input`` port.
+    In precedence order, first tier that yields an unambiguous number
+    wins:
 
-    Three cases deliberately yield no entry (the caller reads a
-    missing key as "unknown"):
+    1. **The driving pin.** A net is as wide as whatever drives it
+       declares itself to be, so the lookup runs from the driving
+       side: a child ``output`` / ``inout`` pin, or — for a net
+       arriving from outside this scope — the enclosing module's own
+       ``input`` port.
+    2. **The scope's own net declaration.** ``assign payload = {…};``
+       has no driving pin at all, but ``logic [18:0] payload;`` sits
+       right there in the module body. This is what makes an
+       assign-driven bundle drawable.
+    3. **The scope's own port declaration**, in any direction. Tier 1
+       already covers ``input``; this adds the case of a net that
+       *is* an ``output`` / ``inout`` port of the scope and is driven
+       by an assign rather than by a pin.
 
-    * a driver whose declared type has a parameterised bound, an
+    A tier abstains (falls through to the next) when it saw the name
+    but could not pin one number to it:
+
+    * a source whose declared type has a parameterised bound, an
       interface kind, or no type at all;
     * a driver bound to a multi-root expression (``.q({a, b})``),
       where the port's width belongs to no single net;
-    * a net with two drivers disagreeing on width — under a structural
-      model that is more likely a slice binding than a real conflict,
-      and either way not a number worth printing on a wire.
+    * two sources in the same tier disagreeing — two drivers on one
+      net, or one name declared at two widths in two generate scopes.
+      Under a structural model that is more likely a slice binding or
+      a shadow than a real conflict, and either way not a number
+      worth printing on a wire.
+
+    A tier never overrides a lower-numbered one, so this is purely
+    additive: a bundle that had a width keeps exactly the width it
+    had.
 
     A slice binding (``.q(w[3:0])``) reports the *port's* width as the
     net's, which over-states a wide net driven piecewise. That is the
     same trade the rest of this module makes: bit ranges are ignored.
     """
-    candidates: dict[str, set[int | None]] = {}
+    resolved: dict[str, int] = {}
+    for tier in (
+        _driver_widths(module, pins),
+        _decl_widths(module),
+        _port_widths(module),
+    ):
+        for root, width in tier.items():
+            resolved.setdefault(root, width)
+    return resolved
 
-    def observe(root: str, width: int | None) -> None:
-        candidates.setdefault(root, set()).add(width)
 
-    for pin in pins:
-        if pin.direction not in ("output", "inout"):
-            continue
-        if len(pin.roots) != 1:
-            for root in pin.roots:
-                observe(root, None)
-            continue
-        observe(pin.roots[0], port_width(pin.type_text))
-    for port in module.ports:
-        if port.direction != "input":
-            continue
-        width = port_width(port.type_text) if port.port_kind == "wire" else None
-        observe(port.name, width)
-
+def _resolve(candidates: dict[str, set[int | None]]) -> dict[str, int]:
+    """Keep only the names one tier pinned to exactly one known width."""
     return {
         root: next(iter(widths))  # type: ignore[misc]
         for root, widths in candidates.items()
         if len(widths) == 1 and None not in widths
     }
+
+
+def _driver_widths(module: Module, pins: tuple[_Pin, ...]) -> dict[str, int]:
+    """Tier 1 — widths declared by whatever drives the net."""
+    candidates: dict[str, set[int | None]] = {}
+    for pin in pins:
+        if pin.direction not in ("output", "inout"):
+            continue
+        if len(pin.roots) != 1:
+            for root in pin.roots:
+                candidates.setdefault(root, set()).add(None)
+            continue
+        candidates.setdefault(pin.roots[0], set()).add(port_width(pin.type_text))
+    for port in module.ports:
+        if port.direction != "input":
+            continue
+        width = port_width(port.type_text) if port.port_kind == "wire" else None
+        candidates.setdefault(port.name, set()).add(width)
+    return _resolve(candidates)
+
+
+def _decl_widths(module: Module) -> dict[str, int]:
+    """Tier 2 — widths from the scope's own net/variable declarations."""
+    candidates: dict[str, set[int | None]] = {}
+    for decl in module.net_decls:
+        candidates.setdefault(decl.name, set()).add(port_width(decl.type_text))
+    return _resolve(candidates)
+
+
+def _port_widths(module: Module) -> dict[str, int]:
+    """Tier 3 — widths from the scope's own port declarations."""
+    candidates: dict[str, set[int | None]] = {}
+    for port in module.ports:
+        width = port_width(port.type_text) if port.port_kind == "wire" else None
+        candidates.setdefault(port.name, set()).add(width)
+    return _resolve(candidates)
 
 
 def _bundle_bits(nets: set[str], widths: dict[str, int]) -> int | None:

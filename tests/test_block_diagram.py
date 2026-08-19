@@ -64,6 +64,25 @@ def test_modules_without_assigns_default_to_empty() -> None:
     assert table.modules_by_name["blk_leaf"].assigns == ()
 
 
+# --- extractor: net declarations --------------------------------------------
+
+
+def test_frontend_captures_module_body_net_declarations() -> None:
+    table = _table()
+    top = table.modules_by_name["blk_top"]
+    assert [(d.name, d.type_text) for d in top.net_decls] == [
+        ("prod_valid", "logic"),
+        ("prod_payload", "logic [7:0]"),
+        ("prod_payload_q", "logic [7:0]"),
+    ]
+    assert table.modules_by_name["blk_producer"].net_decls[0].name == "stage"
+
+
+def test_modules_without_declarations_default_to_empty() -> None:
+    table = _table()
+    assert table.modules_by_name["blk_leaf"].net_decls == ()
+
+
 # --- analyzer ---------------------------------------------------------------
 
 
@@ -88,6 +107,37 @@ def test_scope_connectivity_traces_the_fixture_dataflow() -> None:
         ),
         (("port", "cmd_in"), ("inst", "u_prod"), ("cmd_in",)),
     ]
+
+
+def test_every_bundle_in_the_fixture_has_a_width() -> None:
+    """The nets the fixture routes over assigns are all measurable now.
+
+    ``prod_payload_q`` is produced by ``assign prod_payload_q =
+    prod_payload;`` and so has no driving *pin* — before the scope's
+    own ``logic [7:0]`` declaration was consulted, the whole
+    ``u_prod`` → ``u_cons`` bundle reported ``bits = None`` and the
+    canvas drew no bus slash on it.
+    """
+    table = _table()
+    edges = scope_connectivity(table.modules_by_name["blk_top"], table)
+    assert [(e.nets, e.bits) for e in edges] == [
+        (("result_out",), 8),
+        (("prod_payload_q", "prod_valid"), 9),
+        (("cmd_in",), 16),
+    ]
+
+
+def test_an_assign_driven_output_port_gets_its_own_declared_width() -> None:
+    """``assign payload = stage;`` drives ``blk_producer``'s own port.
+
+    Nothing pins ``payload`` from the inside, so the width has to come
+    from the scope's port declaration — the last resolution tier.
+    """
+    table = _table()
+    edges = scope_connectivity(table.modules_by_name["blk_producer"], table)
+    by_net = {e.nets: e.bits for e in edges}
+    assert by_net[("payload",)] == 8
+    assert by_net[("valid",)] == 1
 
 
 def test_scope_connectivity_inside_a_nested_scope() -> None:

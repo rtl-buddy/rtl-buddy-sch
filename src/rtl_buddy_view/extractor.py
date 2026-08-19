@@ -165,6 +165,38 @@ class Assign:
 
 
 @dataclass(frozen=True)
+class NetDecl:
+    """One net or variable declared in a module body.
+
+    ``logic [18:0] cmd_payload_apb;`` and ``wire [2:0] sel;`` both
+    land here — one record per *declarator*, so
+    ``logic [7:0] a, b;`` yields two entries sharing a
+    ``type_text``.
+
+    ``type_text`` is the verbatim source slice of the declared type
+    including its packed dimensions (``"logic [18:0]"``,
+    ``"wire signed [7:0]"``, ``"wire"``) — same "don't parse type
+    expressions in the frontend" rationale as :attr:`Port.type_text`,
+    and the same consumer:
+    :func:`rtl_buddy_view.connectivity.port_width`.
+
+    Module **ports** are deliberately *not* repeated here — they are
+    already :attr:`Module.ports`, and a name declared as both (the
+    redundant ``wire [3:0] a;`` a non-ANSI header allows) is recorded
+    once, as the port.
+
+    Why the extractor cares: a net driven only by a continuous assign
+    has no driving *pin*, so its width is knowable only from its own
+    declaration. Without these records a schematic draws no bus slash
+    on exactly the bundles worth labelling.
+    """
+
+    name: str
+    type_text: str | None
+    location: SourceLocation | None
+
+
+@dataclass(frozen=True)
 class Module:
     name: str
     ports: tuple[Port, ...]
@@ -190,6 +222,13 @@ class Module:
     # JSON renderer deliberately does NOT emit these (JSON_CONTRACT
     # stays untouched).
     assigns: tuple[Assign, ...] = ()
+    # Net/variable declarations in the module body (``logic [18:0]
+    # payload;``). Additive with a default for the same reason
+    # ``assigns`` is. Consumed by
+    # :func:`rtl_buddy_view.connectivity.scope_connectivity` to width
+    # nets that no pin drives; no renderer emits them, so the JSON /
+    # graph / ELK contracts stay untouched.
+    net_decls: tuple[NetDecl, ...] = ()
 
 
 @dataclass(frozen=True)

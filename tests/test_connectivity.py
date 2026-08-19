@@ -19,6 +19,7 @@ from rtl_buddy_view.extractor import (
     Instance,
     Module,
     ModuleTable,
+    NetDecl,
     Port,
     PortConnection,
 )
@@ -59,6 +60,7 @@ def _module(
     ports: tuple[Port, ...] = (),
     instances: tuple[Instance, ...] = (),
     assigns: tuple[Assign, ...] = (),
+    net_decls: tuple[NetDecl, ...] = (),
 ) -> Module:
     return Module(
         name=name,
@@ -67,11 +69,16 @@ def _module(
         instances=instances,
         location=None,
         assigns=assigns,
+        net_decls=net_decls,
     )
 
 
 def _assign(lhs: str, rhs: str) -> Assign:
     return Assign(lhs_text=lhs, rhs_text=rhs, location=None)
+
+
+def _decl(name: str, type_text: str | None) -> NetDecl:
+    return NetDecl(name=name, type_text=type_text, location=None)
 
 
 def _table(*modules: Module) -> ModuleTable:
@@ -835,3 +842,163 @@ def test_bits_are_unknown_when_two_drivers_disagree() -> None:
     )
     edges = scope_connectivity(top, _table(top, a, b, _SINK))
     assert [e.bits for e in edges] == [None, None]
+
+
+# --- bit widths: net declarations -------------------------------------------
+
+
+def _assign_driven_top(*, net_decls: tuple[NetDecl, ...]) -> Module:
+    """The demo's shape: a CSR block feeding a handshake over an assign.
+
+    ``u_csr``'s only output is an untyped struct bundle, so the
+    payload nets it feeds have **no driving pin** to take a width
+    from. Their declarations in the scope body are the only source
+    there is.
+    """
+    return _module(
+        "top",
+        instances=(
+            _inst("u_csr", "csr", _conn("hwif_out", "hwif_out")),
+            _inst(
+                "u_hs",
+                "hs",
+                _conn("src_data", "cmd_payload"),
+                _conn("src_valid", "cmd_valid"),
+            ),
+        ),
+        assigns=(
+            _assign("cmd_payload", "hwif_out.op.value"),
+            _assign("cmd_valid", "hwif_out.ctrl.GO.value"),
+        ),
+        net_decls=net_decls,
+    )
+
+
+_CSR = _module("csr", ports=(_port("hwif_out", "output", None),))
+_HS = _module(
+    "hs",
+    ports=(
+        _port("src_data", "input", "logic [18:0]"),
+        _port("src_valid", "input", "logic"),
+    ),
+)
+
+
+def test_bits_of_an_assign_driven_bundle_come_from_the_declarations() -> None:
+    """19 + 1, from ``logic [18:0]`` / ``logic`` in the scope body."""
+    top = _assign_driven_top(
+        net_decls=(
+            _decl("cmd_payload", "logic [18:0]"),
+            _decl("cmd_valid", "logic"),
+        )
+    )
+    (edge,) = scope_connectivity(top, _table(top, _CSR, _HS))
+    assert (edge.nets, edge.bits) == (("cmd_payload", "cmd_valid"), 20)
+
+
+def test_an_assign_driven_bundle_without_declarations_stays_unknown() -> None:
+    """The before picture — no driving pin, no declaration, no width."""
+    top = _assign_driven_top(net_decls=())
+    (edge,) = scope_connectivity(top, _table(top, _CSR, _HS))
+    assert edge.bits is None
+
+
+def test_a_driving_pin_beats_a_net_declaration() -> None:
+    """The driver is the authority; the declaration is the fallback."""
+    wide = _module("wide", ports=(_port("q", "output", "logic [15:0]"),))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("q", "w")),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+        net_decls=(_decl("w", "logic [3:0]"),),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, _SINK))
+    assert edge.bits == 16
+
+
+def test_a_declaration_rescues_a_parameterised_driving_pin() -> None:
+    """``logic [W-1:0]`` on the pin is unknown; the net's own decl isn't.
+
+    A tier that saw the name but couldn't pin a number to it abstains
+    rather than poisoning the result.
+    """
+    wide = _module("wide", ports=(_port("q", "output", "logic [W-1:0]"),))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("q", "w")),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+        net_decls=(_decl("w", "logic [7:0]"),),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, _SINK))
+    assert edge.bits == 8
+
+
+def test_two_declarations_of_one_name_at_different_widths_are_unknown() -> None:
+    """Generate-scope shadowing degrades rather than picks a side."""
+    top = _assign_driven_top(
+        net_decls=(
+            _decl("cmd_payload", "logic [18:0]"),
+            _decl("cmd_payload", "logic [7:0]"),
+            _decl("cmd_valid", "logic"),
+        )
+    )
+    (edge,) = scope_connectivity(top, _table(top, _CSR, _HS))
+    assert edge.bits is None
+
+
+def test_a_parameterised_declaration_is_unknown() -> None:
+    top = _assign_driven_top(
+        net_decls=(
+            _decl("cmd_payload", "logic [WIDTH-1:0]"),
+            _decl("cmd_valid", "logic"),
+        )
+    )
+    (edge,) = scope_connectivity(top, _table(top, _CSR, _HS))
+    assert edge.bits is None
+
+
+# --- bit widths: the scope's own ports ---------------------------------------
+
+
+def test_bits_of_an_assign_driven_output_port() -> None:
+    """No pin drives ``dout``; the scope's own port declares it."""
+    top = _module(
+        "top",
+        ports=(_port("din", "input", "logic [7:0]"), _port("dout", "output", "logic")),
+        instances=(_inst("u_sink", "sink", _conn("d", "din")),),
+        assigns=(_assign("dout", "din"),),
+    )
+    edges = scope_connectivity(top, _table(top, _SINK))
+    (to_port,) = [e for e in edges if e.dst == ("port", "dout")]
+    assert to_port.bits == 1
+
+
+def test_a_driving_pin_beats_the_scopes_own_port_declaration() -> None:
+    """A wide pin bound straight to a narrower-declared port wins.
+
+    Port declarations are the last tier precisely so they can never
+    change a width an actual driver already gave.
+    """
+    wide = _module("wide", ports=(_port("q", "output", "logic [15:0]"),))
+    top = _module(
+        "top",
+        ports=(_port("dout", "output", "logic [7:0]"),),
+        instances=(_inst("u_wide", "wide", _conn("q", "dout")),),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide))
+    assert edge.bits == 16
+
+
+def test_an_interface_port_has_no_width_to_lend() -> None:
+    """A bundle is not a vector — its range-less slice is not 1 bit."""
+    top = _module(
+        "top",
+        ports=(_port("apb", None, "apb_intf", port_kind="interface"),),
+        instances=(_inst("u_sink", "sink", _conn("d", "apb.pwdata")),),
+    )
+    (edge,) = scope_connectivity(top, _table(top, _SINK))
+    assert edge.bits is None

@@ -233,19 +233,58 @@ because bundling collapses each ordered endpoint pair to one edge.
 ## 6. Known limits
 
 Inherited from the structural (non-elaborating) model — see
-`connectivity.py` for the full list:
+`connectivity.py` for the full list.
 
-- A net driven only by a continuous assign from a struct/interface
-  field (`assign cmd_payload_apb = {hwif_out…}`) has no driving *pin*,
-  so `rb.bits` is `null` even when the RTL declares the net's width
-  locally. Module-internal net declarations aren't captured by the
-  extractor yet; capturing them is the fix, not guessing from the
-  sink side.
-- A parameterised port (`logic [WIDTH-1:0]`) has an unknown width by
-  design: rtl-buddy-view does not evaluate parameter expressions, and
+### 6.1 Bit widths
+
+`rb.bits` resolves a net's width from three ranked sources — first
+one to pin a single number wins, and a source that saw the name but
+couldn't pin a number to it abstains rather than poisoning the
+result:
+
+1. the **driving pin**'s declared port type (a child `output` /
+   `inout` pin, or the scope's own `input` port);
+2. the scope's own **net declaration** (`logic [18:0]
+   cmd_payload_apb;`) — this is what widths a net that only a
+   continuous assign drives;
+3. the scope's own **port declaration**, for a net that *is* an
+   `output` / `inout` port fed by an assign.
+
+Anything still unresolved leaves `rb.bits` `null` for the whole
+bundle: a partial sum would read as a real bus width to whoever draws
+the slash. What stays unresolved:
+
+- A **parameterised** bound (`logic [WIDTH-1:0]`, `logic [PTR_W-1:0]`,
+  `logic [$clog2(DEPTH)-1:0]`) — on a port or on a net declaration
+  alike. rtl-buddy-view does not evaluate parameter expressions, and
   a wrong bus width is worse than an unlabelled wire.
+- A declaration the preprocessor **hides inside a macro body**: the
+  extractor reads Verible's CST of the source as written, so a net
+  declared by a `` `DECLARE_BUS(x) `` expansion is not there to read.
+- A **user-defined type** (`my_bus_t sig;`) is read as a scalar — the
+  type name carries no packed range and nothing resolves it. Same for
+  a `struct` / `union` field bundle.
+- An **unpacked array** (`logic [3:0] mem [0:7];`) reports the
+  element width, and a **packed array** (`logic [3:0][7:0]`) reports
+  the first dimension. Both are documented under-reports rather than
+  silent wrong totals.
+- **Procedural temporaries** — a `logic` declared inside a `function`,
+  `task` or `always` block — are deliberately not captured: they are
+  not module nets, and letting one shadow a real net of the same name
+  would put a wrong number on a wire.
+- A name declared at **two different widths** in two generate scopes
+  degrades to unknown rather than picking a side.
+- Two **drivers disagreeing** on width, and a driver bound to a
+  concatenation (`.q({a, b})`) where the port's width belongs to no
+  single net.
+### 6.2 Dataflow
+
 - Positional port connections contribute no dataflow (the child's
   port order isn't authoritative enough), though they do mark a port
   `connected`.
-- Procedural (`always`) logic contributes no edges; only continuous
-  assigns hop net aliases.
+- Procedural (`always`) logic contributes no edges. Only continuous
+  assignments hop net aliases — both the standalone `assign`
+  statement and the declaration form (`wire w = expr;`), which is a
+  continuous assignment too. A *variable* initializer
+  (`logic w = expr;`) is a one-time static init, not a driver, and
+  deliberately contributes nothing.
