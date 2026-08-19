@@ -9,6 +9,18 @@ name: Viewer
 # vitest unit suite. The Playwright snapshot test that exercises
 # real fixture goldens lands in a follow-up subtask.
 
+
+# One live run per workflow per branch: a force-push (routine in this
+# repo's stacked-PR flow) supersedes the previous head, and without a
+# concurrency group the superseded run keeps a runner until it
+# finishes — or, as on rtl-buddy-sch#182, until a wedged step is
+# noticed an hour later. head_ref covers pull_request events (where
+# github.ref is the synthetic merge ref); bare ref covers push.
+# release.yml manages its own group and is deliberately untouched.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main]
