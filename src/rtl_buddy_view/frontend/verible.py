@@ -35,6 +35,7 @@ from rtl_buddy_view.extractor import (
     Module,
     Modport,
     ModuleTable,
+    NetDecl,
     Parameter,
     ParameterOverride,
     Port,
@@ -173,6 +174,13 @@ def _walk_modules(
             node, file=file, offsets=offsets, source=source
         )
         assigns = _extract_assigns(node, file=file, offsets=offsets, source=source)
+        net_decls = _extract_net_decls(
+            node,
+            file=file,
+            offsets=offsets,
+            source=source,
+            port_names={p.name for p in ports},
+        )
         out.append(
             Module(
                 name=name,
@@ -182,6 +190,7 @@ def _walk_modules(
                 location=loc,
                 dpi_functions=dpi_functions,
                 assigns=assigns,
+                net_decls=net_decls,
             )
         )
     return out
@@ -912,9 +921,14 @@ def _extract_assigns(
     generate blocks alias nets exactly like flat ones do, and the
     connectivity analyzer only ever uses them as alias hints, so
     over-capturing is strictly better than dropping them. Net
-    *declaration* assignments (``wire w = x;``) are a different CST
-    shape and are deliberately not captured — see
-    :class:`rtl_buddy_view.extractor.Assign`.
+    A *net* declaration with an initializer (``wire w = x;``) is a
+    continuous assignment too — LRM 1800 § 6.7.1 — and Verible gives
+    it its own shape (``kNetDeclarationAssignment``), so it is
+    captured in a second pass. A *variable* initializer
+    (``logic w = x;``, ``kTrailingAssign`` under
+    ``kRegisterVariable``) is **not**: that is a one-time static
+    initialisation, not a driver, and treating it as one would invent
+    dataflow.
     """
     out: list[Assign] = []
     for stmt in _iter_nodes_with_tag(module_node, "kContinuousAssignmentStatement"):
@@ -934,7 +948,168 @@ def _extract_assigns(
                 else _location(file, offsets, span[0], span[1])
             )
             out.append(Assign(lhs_text=lhs_text, rhs_text=rhs_text, location=loc))
+    for nda in _iter_nodes_with_tag(module_node, "kNetDeclarationAssignment"):
+        sym = _first_child_with_tag(nda, "SymbolIdentifier")
+        expr = _first_child_with_tag(nda, "kExpression")
+        if sym is None or "text" not in sym or expr is None:
+            continue
+        rhs_text = _source_slice(expr, source)
+        if rhs_text is None:
+            continue
+        span = _node_span(nda)
+        loc = (
+            SourceLocation(file=file)
+            if span is None
+            else _location(file, offsets, span[0], span[1])
+        )
+        out.append(Assign(lhs_text=sym["text"], rhs_text=rhs_text, location=loc))
     return tuple(out)
+
+
+#: Tags whose *direct* children are module-body items. Restricting the
+#: net-declaration walk to these keeps procedural temporaries out: a
+#: ``logic`` declared inside a function, task or ``always`` block
+#: hangs off ``kBlockItemStatementList``, which is not in this set.
+_ITEM_LIST_TAGS = ("kModuleItemList", "kGenerateItemList")
+
+
+def _extract_net_decls(
+    module_node: dict,
+    *,
+    file: str,
+    offsets: OffsetIndex,
+    source: bytes,
+    port_names: set[str],
+) -> tuple[NetDecl, ...]:
+    """Extract module-body net/variable declarations.
+
+    Two CST shapes, confirmed against ``verible-verilog-syntax
+    --printtree``.
+
+    Variable style (``logic``/``reg``/``bit``/``int``/a typedef'd
+    name) reuses the ``kDataDeclaration`` node that also carries
+    module instantiations::
+
+        kDataDeclaration
+          kInstantiationBase
+            kInstantiationType
+              kDataType                 <- "logic [18:0]"  (type_text)
+            kGateInstanceRegisterVariableList
+              kRegisterVariable         <- one per declarator
+                SymbolIdentifier
+                kTrailingAssign?        <- ``logic [7:0] f = 8'h5;``
+
+    An instantiation puts ``kGateInstance`` in that same list rather
+    than ``kRegisterVariable``, which is exactly what separates the
+    two — no name heuristics needed.
+
+    Net style (``wire``/``tri``/…) has its own tag, and hangs the
+    packed range off a *second* type node::
+
+        kNetDeclaration
+          kDataType                     <- "wire"
+          kDataTypeImplicitIdDimensions <- "signed [7:0]", absent when unranged
+          kNetVariableDeclarationAssign
+            kNetVariable                <- one per declarator, no initializer
+              SymbolIdentifier
+            kNetDeclarationAssignment   <- one per declarator, with initializer
+              SymbolIdentifier
+
+    ``type_text`` is the contiguous source slice spanning both type
+    nodes, so it reads back verbatim (``"wire signed [7:0]"``).
+
+    Declarations inside generate bodies are captured too — the
+    connectivity analyzer already treats generate-scoped assigns as
+    flat, and it resolves a name declared at two widths as *unknown*,
+    so a shadowing declaration degrades rather than lies.
+
+    ``port_names`` drops the redundant re-declaration of a port a
+    non-ANSI header allows (``module m(a); input [3:0] a; wire [3:0]
+    a;``): the port is already :attr:`Module.ports`, and one name
+    should not be two records.
+    """
+    out: list[NetDecl] = []
+    for item_list in _iter_nodes_with_tags(module_node, _ITEM_LIST_TAGS):
+        for item in item_list.get("children", ()) or ():
+            if not isinstance(item, dict):
+                continue
+            tag = item.get("tag")
+            if tag == "kDataDeclaration":
+                out.extend(_var_decls(item, file=file, offsets=offsets, source=source))
+            elif tag == "kNetDeclaration":
+                out.extend(_net_decls(item, file=file, offsets=offsets, source=source))
+    return tuple(decl for decl in out if decl.name not in port_names)
+
+
+def _var_decls(
+    decl: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> list[NetDecl]:
+    """Variable-style declarators under one ``kDataDeclaration``."""
+    base = _first_child_with_tag(decl, "kInstantiationBase")
+    if base is None:
+        return []
+    inst_type = _first_child_with_tag(base, "kInstantiationType")
+    var_list = _first_child_with_tag(base, "kGateInstanceRegisterVariableList")
+    if inst_type is None or var_list is None:
+        return []
+    dtype = _first_child_with_tag(inst_type, "kDataType")
+    type_text = _source_slice(dtype, source) if dtype is not None else None
+    out: list[NetDecl] = []
+    for var in var_list.get("children", ()) or ():
+        if not isinstance(var, dict) or var.get("tag") != "kRegisterVariable":
+            continue
+        entry = _net_decl_from_declarator(
+            var, type_text=type_text, file=file, offsets=offsets
+        )
+        if entry is not None:
+            out.append(entry)
+    return out
+
+
+def _net_decls(
+    decl: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> list[NetDecl]:
+    """Net-style declarators under one ``kNetDeclaration``."""
+    dtype = _first_child_with_tag(decl, "kDataType")
+    type_text = None
+    if dtype is not None:
+        span = _node_span(dtype)
+        implicit = _first_child_with_tag(decl, "kDataTypeImplicitIdDimensions")
+        dims_span = _node_span(implicit) if implicit is not None else None
+        if span is not None:
+            end = dims_span[1] if dims_span is not None else span[1]
+            type_text = source[span[0] : end].decode("utf-8", errors="replace")
+    var_list = _first_child_with_tag(decl, "kNetVariableDeclarationAssign")
+    if var_list is None:
+        return []
+    out: list[NetDecl] = []
+    for var in var_list.get("children", ()) or ():
+        if not isinstance(var, dict):
+            continue
+        if var.get("tag") not in ("kNetVariable", "kNetDeclarationAssignment"):
+            continue
+        entry = _net_decl_from_declarator(
+            var, type_text=type_text, file=file, offsets=offsets
+        )
+        if entry is not None:
+            out.append(entry)
+    return out
+
+
+def _net_decl_from_declarator(
+    var: dict, *, type_text: str | None, file: str, offsets: OffsetIndex
+) -> NetDecl | None:
+    """Build one :class:`NetDecl` from a declarator node, or ``None``."""
+    sym = _first_child_with_tag(var, "SymbolIdentifier")
+    if sym is None or "text" not in sym:
+        return None
+    span = _node_span(sym)
+    loc = (
+        SourceLocation(file=file)
+        if span is None
+        else _location(file, offsets, span[0], span[1])
+    )
+    return NetDecl(name=sym["text"], type_text=type_text, location=loc)
 
 
 def _extract_dpi_functions(
@@ -1154,6 +1329,22 @@ def _iter_nodes_with_tag(node: dict | None, tag: str):
             yield node
         for child in node.get("children", ()) or ():
             yield from _iter_nodes_with_tag(child, tag)
+
+
+def _iter_nodes_with_tags(node: dict | None, tags: tuple[str, ...]):
+    """:func:`_iter_nodes_with_tag` over a set of tags, in document order.
+
+    Pre-order, so an outer ``kModuleItemList`` is visited before the
+    ``kGenerateItemList`` nested inside it — deterministic output
+    without a sort (AGENTS.md § Development rules).
+    """
+    if node is None:
+        return
+    if isinstance(node, dict):
+        if node.get("tag") in tags:
+            yield node
+        for child in node.get("children", ()) or ():
+            yield from _iter_nodes_with_tags(child, tags)
 
 
 def _first_child_with_tag(node: dict, tag: str) -> dict | None:
