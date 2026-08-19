@@ -1286,3 +1286,52 @@ describe('viewer store — disambiguation picker (rtl-buddy-view#55)', () => {
     }
   })
 })
+
+describe('viewer store — schematic collapse state (#163 P3)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('folds and unfolds a block by instance path', () => {
+    const store = useViewerStore()
+    store.toggleSchCollapsed('top.u_a')
+    expect(store.schCollapsed.has('top.u_a')).toBe(true)
+    store.toggleSchCollapsed('top.u_a')
+    expect(store.schCollapsed.has('top.u_a')).toBe(false)
+  })
+
+  it('replaces the Set rather than mutating it', () => {
+    // Pinia tracks the property, not the collection's internals: a
+    // silent ``add`` leaves the canvas drawing the previous picture.
+    const store = useViewerStore()
+    const before = store.schCollapsed
+    store.toggleSchCollapsed('top.u_a')
+    expect(store.schCollapsed).not.toBe(before)
+  })
+
+  it('sets an explicit state and expands everything', () => {
+    const store = useViewerStore()
+    store.setSchCollapsed('top.u_a', true)
+    store.setSchCollapsed('top.u_b', true)
+    store.setSchCollapsed('top.u_a', true)
+    expect(store.schCollapsed.size).toBe(2)
+    store.expandAllSch()
+    expect(store.schCollapsed.size).toBe(0)
+  })
+
+  it('ignores an empty path', () => {
+    const store = useViewerStore()
+    store.toggleSchCollapsed('')
+    store.toggleSchCollapsed(null)
+    expect(store.schCollapsed.size).toBe(0)
+  })
+
+  it('resets on a graph load, like every other per-graph scope', () => {
+    const store = useViewerStore()
+    store.toggleSchCollapsed('top.u_a')
+    store.loadFromText(JSON.stringify(minimalPayload()))
+    // An instance path from the previous design either doesn't exist
+    // here or — worse — exists and names something else.
+    expect(store.schCollapsed.size).toBe(0)
+  })
+})

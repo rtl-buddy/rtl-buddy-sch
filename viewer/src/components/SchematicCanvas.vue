@@ -24,7 +24,29 @@
       <button type="button" @click="panZoom.zoomOut">−</button>
       <button type="button" @click="panZoom.fit">Fit</button>
       <button type="button" @click="panZoom.reset">Reset</button>
+      <button
+        type="button"
+        v-if="collapsedCount > 0"
+        @click="store.expandAllSch()"
+        :title="`Expand all ${collapsedCount} collapsed block(s)`"
+      >Expand all</button>
+      <button
+        type="button"
+        class="sch-export"
+        @click="exportSvg"
+        title="Download this sheet as a standalone SVG"
+      >SVG</button>
+      <button
+        type="button"
+        class="sch-export"
+        @click="exportPng"
+        :disabled="exporting"
+        title="Download this sheet as a 2x PNG"
+      >PNG</button>
     </div>
+    <p v-if="exportError" class="sch-export-error" role="alert">
+      Export failed: {{ exportError }}
+    </p>
 
     <!-- Degraded producer: the payload this canvas lays out simply
          isn't in the file. Same explain-shape the other empty states
@@ -52,15 +74,43 @@
       @click="onClick"
       @dblclick="onDoubleClick"
       @contextmenu="onContextMenu"
+      @mouseover="onHover"
+      @mouseleave="hover = null"
     >
       <svg
         class="sch-svg"
         ref="svgEl"
         xmlns="http://www.w3.org/2000/svg"
-        :width="model.width"
-        :height="model.height"
+        :width="sheet.frame.width"
+        :height="sheet.frame.height"
+        :data-layout-ms="layoutMs === null ? null : String(layoutMs)"
       >
         <g ref="rootG">
+          <!-- Sheet frame + title block. Part of the SVG, not a CSS
+               decoration, because it has to be in the exported file. -->
+          <g class="sch-sheet-frame">
+            <rect
+              :x="sheet.frame.x"
+              :y="sheet.frame.y"
+              :width="sheet.frame.width"
+              :height="sheet.frame.height"
+            />
+            <rect
+              class="sch-title-block"
+              :x="sheet.title.x"
+              :y="sheet.title.y"
+              :width="sheet.title.width"
+              :height="sheet.title.height"
+            />
+            <text
+              v-for="(row, i) in sheet.title.rows"
+              :key="'t-' + row.label"
+              class="sch-title-row"
+              :x="sheet.title.x + TITLE_BLOCK_PAD"
+              :y="sheet.title.y + TITLE_BLOCK_PAD + 11 + i * TITLE_ROW_HEIGHT"
+            ><tspan class="sch-title-label">{{ row.label }}</tspan> {{ row.value }}</text>
+          </g>
+
           <!-- Containment frames (design sheet + compound blocks)
                first, so leaf blocks and wires paint over them. -->
           <g
@@ -79,13 +129,17 @@
             />
           </g>
 
-          <!-- Leaf blocks: sharp rectangles, schematic line weight. -->
+          <!-- Leaf blocks: sharp rectangles, schematic line weight.
+               A folded compound is here too — same box, plus the
+               ``collapsed`` marker its affordance keys on. -->
           <g
             v-for="box in blocks"
             :key="'b-' + box.id"
             class="sch-block"
-            :class="{ blackbox: box.blackbox }"
+            :class="{ blackbox: box.blackbox, collapsed: box.collapsed }"
             :data-node-id="box.id"
+            :data-collapsed="box.collapsed ? 'true' : null"
+            :data-clock="plateFill(box) ? box.clock : null"
             :data-rb-selected="box.id === store.selection ? 'true' : null"
           >
             <rect
@@ -93,19 +147,29 @@
               :y="box.y"
               :width="box.width"
               :height="box.height"
+              :style="plateFill(box) ? { fill: plateFill(box) } : null"
             />
           </g>
 
-          <!-- Wires. Buses get the heavier stroke plus a /N slash. -->
+          <!-- Wires. Buses get the heavier stroke plus a /N slash;
+               a clock-domain crossing is dashed in the error colour
+               when the clock overlay is on. -->
           <g
             v-for="(wire, i) in model.wires"
             :key="'w-' + i"
             class="sch-wire"
-            :class="{ bus: wire.bus }"
+            :class="{
+              bus: wire.bus,
+              cdc: cdcEdgeIds.has(wire.id),
+              hot: highlight.edges.has(wire.id),
+            }"
             :data-edge-id="wire.id"
             :data-edge-source="wire.sourceId"
             :data-edge-target="wire.targetId"
+            :data-cdc="cdcEdgeIds.has(wire.id) ? 'true' : null"
           >
+            <!-- Invisible fat stroke so a 1px wire is hoverable. -->
+            <path class="sch-hit" :d="pathOf(wire)" />
             <path :d="pathOf(wire)" />
             <polygon :points="arrowOf(wire)" class="sch-arrow" />
             <template v-if="wire.slash">
@@ -138,7 +202,10 @@
             v-for="pin in model.pins"
             :key="'p-' + pin.id"
             class="sch-pin"
-            :class="[pin.kind, { unconnected: !pin.connected }]"
+            :class="[
+              pin.kind,
+              { unconnected: !pin.connected, hot: highlight.pins.has(pin.id) },
+            ]"
             :data-node-id="pin.nodeId"
             :data-port-id="pin.id"
           >
@@ -174,7 +241,12 @@
             v-for="flag in flagBoxes"
             :key="'g-' + flag.id"
             class="sch-flag"
-            :class="{ out: flag.out, clock: flag.isClock, reset: flag.isReset }"
+            :class="{
+              out: flag.out,
+              clock: flag.isClock,
+              reset: flag.isReset,
+              hot: highlight.pins.has(flag.id),
+            }"
             :data-node-id="flag.nodeId"
             :data-port-id="flag.id"
           >
@@ -206,6 +278,16 @@
                 : 'middle'"
               :class="{ param: label.role === 'type' && li > 0 }"
             >{{ line }}</text>
+            <!-- ▾/▸ beside the refdes: the affordance that says this
+                 block has an inside. Placed after the measured refdes
+                 width so it can never sit on the frame border. -->
+            <text
+              v-if="label.role === 'refdes' && collapsible.has(label.nodeId)"
+              class="sch-toggle"
+              :data-collapse-toggle="label.nodeId"
+              :x="label.x + label.width + 5"
+              :y="label.y + 9"
+            >{{ store.schCollapsed.has(label.nodeId) ? '▸' : '▾' }}</text>
           </g>
         </g>
       </svg>
@@ -241,20 +323,34 @@ import { useViewerStore } from '../store.js'
 import { useHub } from '../composables/useHub.js'
 import { usePanZoom } from '../composables/usePanZoom.js'
 import { registerSvgProvider, unregisterSvgProvider } from '../capture.js'
-import { token } from '../theme.js'
+import { token, themeVersion } from '../theme.js'
+import { buildClockPalette } from '../palette.js'
 import { RENDER_FOR_SCHEMATIC_HINT } from '../cliHints.js'
 import {
   FLAG_HEIGHT,
+  NO_HIGHLIGHT,
   PARAM_LINE_HEIGHT,
   PIN_LABEL_GAP,
   PIN_STUB,
+  TITLE_BLOCK_PAD,
+  TITLE_ROW_HEIGHT,
   buildElkGraph,
+  collapsibleIds,
   flagPath,
+  highlightFor,
+  nodeIdOfEndpoint,
   polylinePath,
   resolveMeasure,
+  sheetFrame,
   subtreeOf,
+  titleBlockRows,
   toSchematic,
 } from '../layout/elkSchematic.js'
+import {
+  exportFileName,
+  exportSchematicPng,
+  exportSchematicSvg,
+} from '../schExport.js'
 import SelectionCandidates from './SelectionCandidates.vue'
 
 const store = useViewerStore()
@@ -294,6 +390,122 @@ const hasPayload = computed(() => visiblePayload.value !== null)
 
 const frames = computed(() => model.value.boxes.filter((b) => b.compound))
 const blocks = computed(() => model.value.boxes.filter((b) => !b.compound))
+
+// --- collapse (#163 P3) -----------------------------------------------------
+
+// Every compound block in the payload, folded or not. Derived from
+// the UNCOLLAPSED payload: a folded block has no children left to
+// prove it is compound, and the toggle that unfolds it has to be
+// drawn on the folded box.
+const collapsible = computed(() => collapsibleIds(visiblePayload.value))
+const collapsedCount = computed(() => {
+  let n = 0
+  for (const id of store.schCollapsed) if (collapsible.value.has(id)) n++
+  return n
+})
+
+// --- hover highlighting (#163 P3) -------------------------------------------
+
+// ``{edgeId}`` or ``{pinId}`` for whatever the cursor is on, or null.
+const hover = ref(null)
+const highlight = computed(() =>
+  hover.value ? highlightFor(model.value, hover.value) : NO_HIGHLIGHT,
+)
+
+// --- clock-domain shading (#163 P4) -----------------------------------------
+
+// The same ``buildClockPalette`` the clock overlay and the DOT builder
+// use, over the same graph — so a block is the same colour on this tab
+// as it is on Hierarchy. Reading ``themeVersion`` makes a theme flip
+// re-resolve the pastels (they are tokens, and this path holds
+// concrete values because SVG ``fill`` here is an overlay decision,
+// not a static style).
+const clockPalette = computed(() => {
+  void themeVersion.value
+  if (!store.graph || !store.enabledOverlays.has('clock')) return null
+  const palette = buildClockPalette(store.graph)
+  return palette.size > 0 ? palette : null
+})
+
+/**
+ * The per-domain tint for a block's plate, or null.
+ *
+ * Leaf (and folded) blocks only. Tinting a containment frame fills the
+ * whole subtree's area and drowns the per-leaf colours nested inside
+ * it — the same rule ``overlays/clock.js`` applies when it skips
+ * clusters.
+ */
+function plateFill(box) {
+  if (!clockPalette.value || !box || !box.clock) return null
+  return clockPalette.value.get(box.clock) || null
+}
+
+// Instance path → the source clocks crossing into it, from the
+// producer's per-edge ``overlays.clock`` block (view.json v1). That is
+// the only place the CDC verdict lives: it comes from the domain map's
+// ``async_per_sdc`` crossings, which a clock-name comparison cannot
+// reproduce (two names can be the same domain, and an SDC false path
+// can make one crossing benign).
+const cdcSourcesByTarget = computed(() => {
+  const out = new Map()
+  for (const edge of store.graph?.edges || []) {
+    const ov = edge.overlays && edge.overlays.clock
+    if (!ov || !ov.crossing) continue
+    const set = out.get(edge.to) || new Set()
+    for (const pair of ov.pairs || []) {
+      if (pair && typeof pair.src_clock === 'string') set.add(pair.src_clock)
+    }
+    out.set(edge.to, set)
+  }
+  return out
+})
+
+// Edge ids whose wire is a crossing, resolved once per model rather
+// than per wire segment.
+const cdcEdgeIds = computed(() => {
+  const ids = new Set()
+  if (!clockPalette.value || cdcSourcesByTarget.value.size === 0) return ids
+  const clockOf = new Map(model.value.boxes.map((b) => [b.id, b.clock]))
+  // A folded block swallows its children, so a crossing that lands on
+  // a descendant now lands on the box: match the target prefix, not
+  // just the id.
+  const sourcesFor = (nodeId) => {
+    const out = new Set()
+    for (const [target, clocks] of cdcSourcesByTarget.value) {
+      if (target === nodeId || target.startsWith(nodeId + '.')) {
+        for (const c of clocks) out.add(c)
+      }
+    }
+    return out
+  }
+  for (const wire of model.value.wires) {
+    const target = nodeIdOfEndpoint(wire.targetId)
+    const source = nodeIdOfEndpoint(wire.sourceId)
+    if (!target) continue
+    const clocks = sourcesFor(target)
+    if (clocks.size === 0) continue
+    const srcClock = source ? clockOf.get(source) : null
+    // No source clock to check against (a top-level flag, or a block
+    // the overlay never bound) — the crossing into the target is the
+    // evidence we have, so mark it.
+    if (!srcClock || clocks.has(srcClock)) ids.add(wire.id)
+  }
+  return ids
+})
+
+// --- sheet frame + title block (#163 P4) ------------------------------------
+
+const sheet = computed(() =>
+  sheetFrame(
+    model.value,
+    titleBlockRows({
+      top: store.graph ? store.graph.top : null,
+      toolVersion: store.graph && store.graph.tool ? store.graph.tool.version : null,
+      scope: store.rootInstancePath,
+      model: store.activeModel,
+    }),
+  ),
+)
 
 // Flag geometry is derived, not laid out: ELK gives us the port's
 // point on the sheet border and the pentagon hangs off it.
@@ -359,6 +571,12 @@ function wedge(pin) {
   ].join(' ')
 }
 
+function now() {
+  return typeof performance !== 'undefined' && performance.now
+    ? performance.now()
+    : Date.now()
+}
+
 let _elk = null
 async function elkEngine() {
   if (_elk === null) {
@@ -368,6 +586,16 @@ async function elkEngine() {
   return _elk
 }
 
+// Wall-clock ms of the last elkjs run, mirrored onto the SVG as
+// ``data-layout-ms``. Not decoration: the collapse feature re-runs the
+// whole layout on every toggle, and whether that is acceptable on the
+// main thread is a measurement, not an opinion. elkjs ships a worker
+// build, but the SPA is also shipped as ONE self-contained HTML file
+// (embed.py inlines every ``<script src>``), and a worker resolved at
+// runtime is exactly the chunk that inlining would miss — so the bar
+// for moving off the main thread is "the measurement says we must".
+const layoutMs = ref(null)
+
 let _relayoutToken = 0
 async function relayout() {
   const payload = visiblePayload.value
@@ -376,8 +604,12 @@ async function relayout() {
     return
   }
   const mine = ++_relayoutToken
-  const graph = buildElkGraph(payload, { measure: measurer() })
+  const graph = buildElkGraph(payload, {
+    collapsed: store.schCollapsed,
+    measure: measurer(),
+  })
   let laid
+  const started = now()
   try {
     const elk = await elkEngine()
     laid = await elk.layout(graph)
@@ -385,6 +617,7 @@ async function relayout() {
     store.$patch({ status: 'error', error: `elkjs layout failed: ${e.message}` })
     return
   }
+  layoutMs.value = Math.round((now() - started) * 10) / 10
   // A newer relayout finished first (model switch mid-flight) — drop
   // this result rather than painting a stale picture over it.
   if (mine !== _relayoutToken) return
@@ -398,12 +631,10 @@ async function relayout() {
 const panZoom = usePanZoom({
   hostEl: svgHostEl,
   getRoot: () => rootG.value,
-  getContentBox: () => ({
-    x: 0,
-    y: 0,
-    width: model.value.width,
-    height: model.value.height,
-  }),
+  // The sheet frame, not the laid-out extent: the border and title
+  // block sit outside the content in negative / overflowing
+  // coordinates, and fitting to the content alone crops them.
+  getContentBox: () => ({ ...sheet.value.frame }),
 })
 
 function boxFor(nodeId) {
@@ -428,6 +659,14 @@ function nodeFromEvent(e) {
 }
 
 function onClick(e) {
+  // The ▾/▸ affordance is a control, not part of the block: it folds
+  // without touching selection or scope.
+  const toggle = e.target.closest('[data-collapse-toggle]')
+  if (toggle) {
+    e.stopPropagation()
+    store.toggleSchCollapsed(toggle.getAttribute('data-collapse-toggle'))
+    return
+  }
   const hit = nodeFromEvent(e)
   if (hit) {
     store.select(hit.id)
@@ -438,12 +677,86 @@ function onClick(e) {
   store.clearSelection()
 }
 
+/**
+ * Double-click: fold a compound block, descend into anything else.
+ *
+ * This is the one interaction that deliberately diverges from
+ * GraphCanvas. On a canvas that can only show one level at a time,
+ * double-click *has* to mean "go in". Here the compound block is
+ * already drawn as a containment frame with its children inside it, so
+ * "go in" is a no-op you can see — and the useful gesture on a block
+ * that is showing its guts is to close it. Descending is still one
+ * double-click away on any leaf, and the breadcrumb / hierarchy tree
+ * still scope the sheet.
+ */
 function onDoubleClick(e) {
   const hit = nodeFromEvent(e)
   if (!hit) return
   e.preventDefault()
   store.select(hit.id)
+  if (collapsible.value.has(hit.id)) {
+    store.toggleSchCollapsed(hit.id)
+    return
+  }
   store.descend(hit.id)
+}
+
+function onHover(e) {
+  // A pin wins over the wire that lands on it: the pointer is on the
+  // more specific thing, and pin-hover is the stricter query.
+  const pin = e.target.closest('[data-port-id]')
+  if (pin) {
+    hover.value = { pinId: pin.getAttribute('data-port-id') }
+    return
+  }
+  const wire = e.target.closest('[data-edge-id]')
+  if (wire) {
+    hover.value = { edgeId: wire.getAttribute('data-edge-id') }
+    return
+  }
+  hover.value = null
+}
+
+// --- static export (#163 P5) ------------------------------------------------
+
+const exporting = ref(false)
+const exportError = ref(null)
+
+function exportBox() {
+  return { ...sheet.value.frame }
+}
+
+function exportSvg() {
+  if (!svgEl.value) return
+  exportError.value = null
+  try {
+    exportSchematicSvg(svgEl.value, {
+      viewBox: exportBox(),
+      fileName: exportFileName(store.rootInstancePath || store.graph?.top, 'svg'),
+    })
+  } catch (err) {
+    exportError.value = err && err.message ? err.message : String(err)
+  }
+}
+
+async function exportPng() {
+  if (!svgEl.value || exporting.value) return
+  exporting.value = true
+  try {
+    exportError.value = null
+    await exportSchematicPng(svgEl.value, {
+      viewBox: exportBox(),
+      fileName: exportFileName(store.rootInstancePath || store.graph?.top, 'png'),
+    })
+  } catch (err) {
+    // Local, not ``status: 'error'``: a failed download must not
+    // replace the drawing with an error screen — the canvas is still
+    // perfectly good, only the rasteriser gave up (capture.js bounds
+    // it at 5s precisely because that pipeline can wedge).
+    exportError.value = err && err.message ? err.message : String(err)
+  } finally {
+    exporting.value = false
+  }
 }
 
 function onContextMenu(e) {
@@ -483,6 +796,15 @@ watch(visiblePayload, async (payload, before) => {
   }
   relayout()
 })
+// Every collapse toggle re-runs the whole layout. Incremental
+// re-layout is not a thing elkjs offers, and it would not help here:
+// folding a block changes the layer assignment of everything
+// downstream of it, so the "unchanged" part of the picture is not
+// unchanged. See ``layoutMs`` for why the main thread is fine.
+watch(
+  () => store.schCollapsed,
+  () => relayout(),
+)
 watch(
   () => store.selection,
   (id) => bringSelectionIntoView(id),
@@ -554,6 +876,24 @@ onBeforeUnmount(() => {
   cursor: pointer;
   border-radius: var(--radius-2);
 }
+.graph-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.sch-export-error {
+  position: absolute;
+  top: 2.4rem;
+  right: 0.5rem;
+  z-index: 10;
+  margin: 0;
+  max-width: 40ch;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.78rem;
+  color: var(--fg);
+  background: var(--err-bg);
+  border: 1px solid var(--err);
+  border-radius: var(--radius-2);
+}
 .svg-host {
   width: 100%;
   height: 100%;
@@ -601,6 +941,30 @@ onBeforeUnmount(() => {
 }
 .sch-wire.bus path {
   stroke-width: 2.5;
+}
+/* Hover target. A 1px wire is unhittable with a mouse, so every wire
+   carries a fat transparent twin underneath it. ``stroke`` catches the
+   pointer even when the paint is transparent. */
+.sch-wire .sch-hit {
+  stroke: transparent;
+  stroke-width: 12;
+  pointer-events: stroke;
+}
+.sch-wire {
+  cursor: crosshair;
+}
+/* ⚠CDC: dashed, in the error colour — the same vocabulary the clock
+   overlay paints crossings with on the hier canvas. */
+.sch-wire.cdc path {
+  stroke: var(--err);
+  stroke-dasharray: 5 3;
+}
+.sch-wire.cdc .sch-arrow {
+  fill: var(--err);
+}
+.sch-wire.cdc .sch-hit {
+  stroke: transparent;
+  stroke-dasharray: none;
 }
 .sch-wire line {
   stroke: var(--fg);
@@ -665,6 +1029,84 @@ onBeforeUnmount(() => {
 .sch-label text.param {
   fill: var(--fg-muted);
   font-size: 9px;
+}
+
+/* -- sheet frame + title block --------------------------------------- */
+/* Drawn as SVG, not as a CSS border on the host, because it has to be
+   in the exported file. */
+.sch-sheet-frame rect {
+  fill: none;
+  stroke: var(--fg-muted);
+  stroke-width: 1.2;
+}
+.sch-sheet-frame rect.sch-title-block {
+  fill: var(--panel);
+  stroke: var(--fg-muted);
+  stroke-width: 1.2;
+}
+.sch-title-row {
+  fill: var(--fg);
+  font-size: 9.5px;
+}
+.sch-title-label {
+  fill: var(--fg-faint);
+  letter-spacing: 0.06em;
+}
+
+/* -- collapse affordance --------------------------------------------- */
+.sch-toggle {
+  fill: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.sch-toggle:hover {
+  fill: var(--accent);
+}
+/* A folded compound is a leaf-shaped box that isn't a leaf. The
+   heavier border is the datasheet convention for a hierarchical
+   block, and unlike a shadow it survives the export (which inlines
+   stroke properties, not filters). */
+.sch-block.collapsed rect {
+  stroke-width: 2.4;
+}
+
+/* -- net hover highlighting (P3) --------------------------------------
+   Same halo vocabulary as the selection mark below — accent stroke
+   plus a two-stop accent glow — so "the thing under the cursor" and
+   "the thing you picked" read as one family, distinguished by weight
+   rather than by hue. */
+.sch-wire.hot path {
+  stroke: var(--accent);
+  stroke-width: 2.2;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 60%, transparent));
+}
+.sch-wire.hot.bus path {
+  stroke-width: 3.4;
+}
+.sch-wire.hot .sch-hit {
+  stroke: transparent;
+  filter: none;
+}
+.sch-wire.hot .sch-arrow {
+  fill: var(--accent);
+}
+.sch-wire.hot text {
+  fill: var(--accent);
+}
+.sch-pin.hot line {
+  stroke: var(--accent);
+  stroke-width: 2.2;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 60%, transparent));
+}
+.sch-pin.hot text {
+  fill: var(--accent);
+  font-weight: 600;
+}
+.sch-flag.hot path {
+  stroke: var(--accent);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 60%, transparent));
 }
 
 /* Selected-node accent — the same vocabulary GraphCanvas paints:

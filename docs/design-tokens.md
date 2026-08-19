@@ -136,6 +136,31 @@ is baked light and only *looks* dark-safe on screen thanks to the
 rasteriser serialises. The SVG format is emitted as-is, with no
 backdrop, exactly as before.
 
+**The schematic's export button inverts the schematic's exemption.**
+`SchematicCanvas` is the one canvas whose colours are pure `var(--…)`
+(above) — which is exactly why its `.svg`/`.png` export cannot simply
+serialise the live element: document CSS does not travel with
+`cloneNode` + `XMLSerializer`, so every `var()` in the file would
+resolve to SVG's defaults and the sheet would arrive as black fills on
+black. `src/schExport.js` therefore walks the live tree and the clone in
+lockstep, inlining a short list of computed presentation properties
+(`INLINE_STYLE_PROPS`) as literals.
+
+Two decisions inside that:
+
+* **The whole serialisation runs under a pinned light theme**
+  (`withLightTheme`), restoring the previous `data-theme` — *including
+  its absence*, which is how `system` is spelled — afterwards. Computed
+  style follows the active theme, so exporting from dark mode would
+  otherwise inline pale strokes onto a white page. One synchronous
+  task, so nothing repaints in between.
+* **The plate is `--panel`, not `--bg`.** A schematic goes into a
+  document, and a document's page is white; `--bg` is the app's canvas,
+  which is faintly blue.
+
+`filter` is deliberately *not* inlined: the selection halo is viewer
+state, not part of the drawing.
+
 ## Hub chrome contract
 
 Every hub app implements the same two strips, so moving between them

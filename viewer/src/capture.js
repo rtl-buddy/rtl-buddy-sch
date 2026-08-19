@@ -149,7 +149,16 @@ function svgDimensions(svg) {
   return { width: w, height: h }
 }
 
-function renderSvgToPng(
+/**
+ * SVG XML → a ``data:image/png;base64,…`` URL, via Image + canvas.
+ *
+ * Exported because the schematic canvas's export button (#163 P5)
+ * rasterises the same way and the interesting parts are the failure
+ * modes, not the happy path: the bounded timeout below is the only
+ * thing standing between a wedged Image pipeline and a UI that never
+ * answers. A second copy would be a second place to forget that.
+ */
+export function renderSvgToPng(
   svgXml,
   width,
   height,
