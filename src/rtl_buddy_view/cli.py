@@ -597,6 +597,7 @@ def _render(
             module_table=module_table,
             dut_top=dut_top,
             tb_top=tb_top,
+            hints=hints,
         )
     else:  # pragma: no cover
         raise ValueError(f"Unknown format: {fmt}")

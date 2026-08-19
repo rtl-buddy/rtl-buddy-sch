@@ -86,6 +86,7 @@ Per **node**:
 
 | Key | Type | Notes |
 | --- | ---- | ----- |
+| `display_label` | string \| null | The author's `rbsch: label=` for this box (#180). A consumer's box title is `display_label \|\| instance_name`; the module name stays the subtitle. `null` without a hint. |
 | `instance_name` | string \| null | The refdes (`u_afifo`). `null` on the root, which is not instantiated. |
 | `module_name` | string | The type name, drawn centred inside the box. |
 | `is_blackbox` | bool | The module was never declared in the parsed sources. |
@@ -97,11 +98,6 @@ Node `id` is the **instance path** (`top.u_afifo.u_sync_wptr`) — the
 same identity `view.json` uses for `nodes[].id` and the hub resolver
 keys on, so cross-artifact joins are id equality rather than name
 matching.
-
-> **Coming in #162.** The `rbsch:` pragma work adds a
-> `display_label` to `HierNode`. When it lands it surfaces here as
-> `rb.display_label`, and a consumer's box title becomes
-> `rb.display_label || rb.instance_name`.
 
 ## 3. Ports are the whole pinout
 
@@ -177,6 +173,8 @@ ordered endpoint pair.
 | `rb.bits` | int \| null | Total width: the sum of each net's width, taken from that net's **driving** pin. **Integers only.** `null` when any net in the bundle is of unknown width — a partial sum would read as a real bus width. |
 | `rb.bits_expr` | string \| null | The bundle's width in the names the declarations use (`"PTR_W"`, `"WIDTH+1"`). Independent of `bits` — both may be set. `null` when no net contributes a name, when one is unknown both ways, or when the sum wouldn't be clean. See § 6.2. |
 | `rb.src_pins` / `rb.dst_pins` | array of string | The formal pins the bundle attaches to at each end, sorted. Populated even when the endpoint degrades to a node id, so the label is never lost. |
+| `rb.emphasis` | `"main"` \| `"side"` \| null | The author's `rbsch` emphasis (#180): `main` is the primary datapath, `side` is CSR/status wiring. Presentation semantics only — the consumer picks the strokes. |
+| `rb.bundle` | string \| null | The author's `rbsch: bundle=` name (#180). When set, the whole edge is one named interface: label it by this name instead of `rb.nets`, and note that a same-named return path (valid/ready style) has **already been folded** into this edge upstream — its nets and pins are merged in, while `bits` keeps describing the data direction only. |
 
 Why the degradation: one edge may stand for two pins at once
 (`wr_en` *and* `wr_data` from the same driver). There is no single

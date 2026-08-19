@@ -52,6 +52,7 @@ from rtl_buddy_view.extractor import (
     flatten_interface_ports,
 )
 from rtl_buddy_view.graph import HierNode
+from rtl_buddy_view.hints import HintMap
 from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 from rtl_buddy_view.wave_annotations import WaveMap
@@ -75,6 +76,7 @@ def render(
     module_table: ModuleTable | None = None,
     dut_top: str | None = None,
     tb_top: str | None = None,
+    hints: HintMap | None = None,
 ) -> None:
     """Render ``node`` and its subtree as ``view.json`` v1.
 
@@ -131,6 +133,7 @@ def render(
         module_table=module_table,
         dut_top=dut_top,
         tb_top=tb_top,
+        hints=hints,
     )
     json.dump(payload, out, indent=2, sort_keys=False)
     out.write("\n")
@@ -151,6 +154,7 @@ def _build_payload(
     module_table: ModuleTable | None = None,
     dut_top: str | None = None,
     tb_top: str | None = None,
+    hints: HintMap | None = None,
 ) -> dict:
     nodes = sorted(
         (
@@ -214,6 +218,7 @@ def _build_payload(
             reset_map=reset_map,
             with_legend=with_legend,
             module_table=module_table,
+            hints=hints,
         )
     return payload
 
@@ -256,6 +261,7 @@ def _layout_block(
     reset_map: ResetDomainMap | None,
     with_legend: bool,
     module_table: ModuleTable | None = None,
+    hints: HintMap | None = None,
 ) -> dict:
     """Build the ``layout`` block by reusing the dot renderer.
 
@@ -297,7 +303,14 @@ def _layout_block(
     # parent-arrow-child tree. The standalone ``--format dot``
     # output keeps the original shape — see ``dot.render``'s
     # docstring for the rationale.
-    dot_render.render(node, buf, as_cluster_tree=True, module_table=module_table)
+    # ``hints`` (#180): the embedded cluster tree honours the layout
+    # vocabulary (``rank=`` / ``group=``) exactly like ``--format
+    # dot`` does, and the embedded ELK payload gets the same
+    # classification / bundle / pin-direction effects as ``--format
+    # elk`` — the SPA is a first-class consumer, not a stale copy.
+    dot_render.render(
+        node, buf, as_cluster_tree=True, module_table=module_table, hints=hints
+    )
     # Reverse-map: Graphviz emits the cluster's ``<title>`` as the
     # sanitized DOT identifier (``cluster_<sanitized-instance-path>``),
     # not the instance path itself. The SPA needs the original
@@ -316,7 +329,11 @@ def _layout_block(
     }
     if module_table is not None:
         block["elk"] = elk_export.export_elk(
-            node, module_table, domain_map=domain_map, tool_version=_version()
+            node,
+            module_table,
+            domain_map=domain_map,
+            tool_version=_version(),
+            hints=hints,
         )
     return block
 
