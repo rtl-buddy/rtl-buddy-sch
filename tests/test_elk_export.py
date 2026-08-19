@@ -20,6 +20,7 @@ from rtl_buddy_view import elk_export
 from rtl_buddy_view.annotations import Clock, DomainMap, FlopDomain
 from rtl_buddy_view.cli import app
 from rtl_buddy_view.extractor import (
+    Assign,
     Instance,
     Interface,
     Module,
@@ -755,3 +756,111 @@ def test_bits_stays_numeric_only_across_the_whole_payload(
                 assert expr is None or isinstance(expr, str)
     # And the coexistence is real, not merely permitted.
     assert both_seen
+
+
+# --- nested self-port feed-throughs -----------------------------------------
+
+
+def _feedthrough_table() -> ModuleTable:
+    """``top.u_mid`` whose input reaches its output through an assign.
+
+    Inside ``mid`` the only port-to-port dataflow is
+    ``assign dout = din;`` — a pure feed-through with no instance to
+    land a wire on. ``mid`` also instantiates a leaf so it is a
+    compound whose scope edges actually get emitted.
+    """
+    leaf = Module(
+        name="leaf",
+        ports=(_port("p", "input", "logic"),),
+        parameters=(),
+        instances=(),
+        location=None,
+    )
+    mid = Module(
+        name="mid",
+        ports=(
+            _port("din", "input", "logic"),
+            _port("dout", "output", "logic"),
+        ),
+        parameters=(),
+        instances=(
+            Instance(
+                name="u_leaf",
+                module_name="leaf",
+                param_overrides=(),
+                port_connections=(_conn("p", "din"),),
+                location=None,
+            ),
+        ),
+        location=None,
+        assigns=(Assign(lhs_text="dout", rhs_text="din", location=None),),
+    )
+    top = Module(
+        name="top",
+        ports=(_port("ti", "input", "logic"), _port("to", "output", "logic")),
+        parameters=(),
+        instances=(
+            Instance(
+                name="u_mid",
+                module_name="mid",
+                param_overrides=(),
+                port_connections=(_conn("din", "ti"), _conn("dout", "to")),
+                location=None,
+            ),
+        ),
+        location=None,
+    )
+    return ModuleTable(modules_by_name={"top": top, "mid": mid, "leaf": leaf})
+
+
+def test_nested_self_port_feedthrough_edges_are_dropped() -> None:
+    """ELK cannot route an edge whose both ends are the laid-out
+    node's own ports — elkjs emits null coordinates, which drew stray
+    lines outside the sheet. The exporter keeps them out."""
+    table = _feedthrough_table()
+    root = build_hierarchy(table, "top")
+    payload = elk_export.export_elk(root, table)
+    mid = payload["children"][0]
+    own_port = mid["id"] + ":"
+    for edge in mid["edges"]:
+        assert not (
+            edge["sources"][0].startswith(own_port)
+            and edge["targets"][0].startswith(own_port)
+        ), f"self-port edge leaked: {edge['id']}"
+    # The child edge (din -> u_leaf:p) survives — only the pure
+    # port-to-port feed-through is undrawable.
+    assert any("u_leaf" in e["targets"][0] for e in mid["edges"])
+
+
+def test_root_port_to_port_edges_are_kept() -> None:
+    """At the root the consumer re-points port endpoints at off-page
+    flag nodes, which routes fine — a top-level passthrough is a
+    legitimate wire between two flags."""
+    leaf = Module(
+        name="leaf",
+        ports=(_port("p", "input", "logic"),),
+        parameters=(),
+        instances=(),
+        location=None,
+    )
+    top = Module(
+        name="top",
+        ports=(_port("ti", "input", "logic"), _port("to", "output", "logic")),
+        parameters=(),
+        instances=(
+            Instance(
+                name="u_leaf",
+                module_name="leaf",
+                param_overrides=(),
+                port_connections=(_conn("p", "ti"),),
+                location=None,
+            ),
+        ),
+        location=None,
+        assigns=(Assign(lhs_text="to", rhs_text="ti", location=None),),
+    )
+    table = ModuleTable(modules_by_name={"top": top, "leaf": leaf})
+    root = build_hierarchy(table, "top")
+    payload = elk_export.export_elk(root, table)
+    pairs = [(e["sources"][0], e["targets"][0]) for e in payload["edges"]]
+    assert ("top:ti", "top:to") in pairs

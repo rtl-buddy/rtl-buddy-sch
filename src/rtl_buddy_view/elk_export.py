@@ -228,7 +228,7 @@ def export_elk(
     ``rb.clock`` null.
     """
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
-    payload = _node(root, table, active_map)
+    payload = _node(root, table, active_map, is_root=True)
     payload["rb"]["export"] = {
         "schema_version": SCHEMA_VERSION,
         "generator": {
@@ -247,6 +247,8 @@ def _node(
     hier: HierNode,
     table: ModuleTable,
     domain_map: DomainMap | None,
+    *,
+    is_root: bool = False,
 ) -> dict[str, Any]:
     """One ELK node, recursively.
 
@@ -289,7 +291,7 @@ def _node(
         },
         "ports": ports,
         "children": children,
-        "edges": _edges(hier, table, port_ids, params),
+        "edges": _edges(hier, table, port_ids, params, allow_port_to_port=is_root),
     }
 
 
@@ -454,7 +456,12 @@ def _connected_formals(instance: Instance | None, module: Module | None) -> set[
 
 
 def _edges(
-    hier: HierNode, table: ModuleTable, port_ids: set[str], params: dict[str, str]
+    hier: HierNode,
+    table: ModuleTable,
+    port_ids: set[str],
+    params: dict[str, str],
+    *,
+    allow_port_to_port: bool = False,
 ) -> list[dict[str, Any]]:
     """This scope's sibling dataflow, as ELK edges.
 
@@ -476,6 +483,19 @@ def _edges(
     }
     edges: list[dict[str, Any]] = []
     for edge in scope_connectivity(module, table, params=params):
+        if not allow_port_to_port and edge.src[0] == "port" and edge.dst[0] == "port":
+            # A pure input→output feed-through inside a compound —
+            # ``assign busy = pending | ~empty`` reaching from one of
+            # this module's ports to another with no instance in
+            # between. There is no box to land a wire on, and ELK
+            # cannot route an edge whose both ends are ports of the
+            # very node being laid out: elkjs emits null coordinates,
+            # which the canvas used to draw as stray lines escaping
+            # the sheet. At the ROOT scope the consumer re-points
+            # port endpoints at off-page flag nodes, which routes
+            # fine — hence the flag. A feed-through glyph inside the
+            # box is a follow-up, not an edge.
+            continue
         source = _endpoint_ref(
             edge.src, edge.src_pins, hier.instance_path, child_paths, port_ids
         )
