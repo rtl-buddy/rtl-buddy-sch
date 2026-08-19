@@ -621,3 +621,16 @@ Consumers extract the version with `r"rtl-buddy-view\s+(\d+\.\d+(?:\.\d+)?)"` (t
 ## License
 
 BSD 3-Clause. See `LICENSE`.
+
+### Third-party notices
+
+The wheel ships the compiled Vue SPA, and the Vite build inlines its
+runtime npm dependencies into it — so an install of `rtl-buddy-sch`
+redistributes third-party code. Most of it is MIT (Vue, Pinia,
+Chart.js, `vue-chartjs`), but `@viz-js/viz` is an MIT wrapper around
+**Graphviz compiled to WebAssembly**, and Graphviz is **EPL-2.0**.
+
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) lists every
+redistributed component with its version, license and upstream, spells
+out the two-layer viz.js case, and carries the full EPL text. It is
+packaged into the wheel's `.dist-info/licenses/` next to `LICENSE`.

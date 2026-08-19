@@ -69,6 +69,9 @@ tests/
 .github/workflows/
 ├── lint.yml               # ruff check + ruff format --check + mypy
 └── test.yml               # pytest with Verible-cache step
+
+THIRD-PARTY-NOTICES.md     # what the wheel redistributes + their licenses
+                           # (packaged via pyproject `license-files`)
 ```
 
 ## Development rules
@@ -344,6 +347,46 @@ a byte-compare guard in its `tests/test_hub_protocol.py`. Consequences:
 - A new pane gets its own origin, never a second `view` — the hub
   allows one client per origin, so sharing a slot makes two panes
   evict each other.
+
+## Third-party notices — the viewer bundle is a redistribution
+
+`THIRD-PARTY-NOTICES.md` at the repo root documents every third-party
+component that ships **inside the wheel**, and `pyproject.toml`'s
+`license-files` packages it into `.dist-info/licenses/` next to
+`LICENSE`. The reason it exists at all: Vite inlines `viewer/`'s
+**runtime** npm dependencies into `_viewer_bundle/assets/*.js`, so
+publishing a wheel is redistributing them in object form — and one of
+them, `@viz-js/viz`, is an MIT wrapper whose `lib/backend.js` is
+**Graphviz compiled to WebAssembly under EPL-2.0**. A reciprocal
+license in the artefact is not a documentation nicety.
+
+Rules:
+
+- **Adding or bumping a runtime dependency in `viewer/package.json`
+  means adding or updating its entry in `THIRD-PARTY-NOTICES.md` in
+  the same change set.** `devDependencies` (vite, vitest, playwright,
+  eslint, …) never reach `viewer/dist/` and stay out of the file.
+  Worked example: elkjs (**EPL-2.0**, landed with #163 P2) has its
+  entry in §7, referencing the EPL-2.0 text already in Appendix A
+  rather than duplicating it.
+- **Copyleft entries carry the full license text and a source-availability
+  statement**; permissive ones may reference the canonical text as long
+  as the copyright lines are reproduced.
+- **The file is strictly factual about what ships today.** Don't write
+  it as a plan. Anything not in the wheel — the Python deps pip
+  resolves, the Verible binary `_verible_install.py` downloads into the
+  gitignored `vendor/`, the whole dev toolchain — belongs in its
+  "out of scope" list, not in the component table.
+- Ground-truth the component list from the build, not from
+  `package.json`: `viewer/dist/assets/*.js.map`'s `sources` array names
+  every module actually emitted into the bundle (the recipe is in the
+  notices file's "Keeping this file correct" section). That is how the
+  Vue *runtime* packages get listed while the compiler halves, which
+  only run inside Vite, correctly do not.
+- Never patch a bundled EPL component in place. Consuming elkjs or
+  viz.js unmodified through its public API keeps them Separate Modules
+  under EPL §1 and keeps this project BSD-3; a local fork of one would
+  pull its own reciprocal terms onto the patched code.
 
 ## Commit / branch / release conventions
 
