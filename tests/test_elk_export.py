@@ -380,6 +380,8 @@ def test_a_single_pin_edge_references_port_ids(payload: dict) -> None:
         "bits_expr": None,
         "src_pins": ["q"],
         "dst_pins": ["a"],
+        "emphasis": None,
+        "bundle": None,
     }
 
 

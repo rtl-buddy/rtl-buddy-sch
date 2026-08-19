@@ -421,3 +421,61 @@ def test_module_level_sidecar_pins_vendor_ip_without_source_edits() -> None:
         f"hints={BB_FIXTURES / 'vendor.hints.json'}",
     ).stdout
     assert '"vb_top.u_rom" -> "vb_top.u_reg"' in dot
+
+
+# --- #180: presentation reaches the ELK payload and view.json ---------------
+
+
+def _elk_edges(node: dict) -> list[dict]:
+    out = list(node["edges"])
+    for child in node["children"]:
+        out.extend(_elk_edges(child))
+    return out
+
+
+def test_elk_edges_carry_emphasis_and_bundle() -> None:
+    result = _run(
+        "--top", "bd_top", "--filelist", str(BUNDLE_FILELIST), "--format", "elk"
+    )
+    assert result.returncode == 0, result.stderr
+    edges = _elk_edges(json.loads(result.stdout))
+    bundled = [e for e in edges if e["rb"]["bundle"] == "cmd_bus"]
+    assert len(bundled) == 1
+    # The folded return path arrives folded: all three nets, one edge.
+    assert bundled[0]["rb"]["nets"] == ["cmd_data", "cmd_ready", "cmd_valid"]
+
+
+def test_elk_nodes_carry_display_label() -> None:
+    result = _render("--format", "elk")
+    assert result.returncode == 0, result.stderr
+
+    def labels(node: dict) -> dict[str, object]:
+        out = {node["id"]: node["rb"]["display_label"]}
+        for child in node["children"]:
+            out.update(labels(child))
+        return out
+
+    by_id = labels(json.loads(result.stdout))
+    assert by_id["prg_top.u_csr"] == "CSR block"
+    assert by_id["prg_top"] is None
+
+
+def test_view_json_embedded_elk_gets_the_hints_too() -> None:
+    """The SPA loads view.json's layout.elk, not --format elk; the two
+    must not diverge."""
+    result = _run(
+        "--top",
+        "nh_top",
+        "--filelist",
+        str(NET_FILELIST),
+        "--format",
+        "json",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    edges = _elk_edges(payload["layout"]["elk"])
+    nets = [n for e in edges for n in e["rb"]["nets"]]
+    assert "tick" not in nets  # rbsch: clock — suppressed
+    assert "clk_result" in nets  # rbsch: data — rescued
+    emphases = {e["rb"]["emphasis"] for e in edges}
+    assert {"main", "side"} <= emphases

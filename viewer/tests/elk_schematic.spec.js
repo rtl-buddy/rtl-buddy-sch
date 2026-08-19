@@ -1019,3 +1019,86 @@ describe('unroutable edge sections', () => {
     expect(model.wires).toHaveLength(1)
   })
 })
+
+describe('rbsch presentation (#180)', () => {
+  const withEdge = (rb) =>
+    toSchematic({
+      children: [
+        {
+          id: 'top',
+          x: 0,
+          y: 0,
+          width: 200,
+          height: 100,
+          rb: { module_name: 'top' },
+          ports: [],
+          edges: [
+            {
+              id: 'e0',
+              sources: ['top.u_a:q'],
+              targets: ['top.u_b:d'],
+              rb,
+              sections: [
+                { startPoint: { x: 0, y: 0 }, endPoint: { x: 50, y: 0 } },
+              ],
+            },
+          ],
+          children: [],
+        },
+      ],
+    })
+
+  it('prefers the bundle name over the net list in the edge label', () => {
+    expect(edgeLabelText(['cmd_data', 'cmd_ready', 'cmd_valid'], 'cmd_bus')).toBe('cmd_bus')
+  })
+
+  it('falls back to net labels when the bundle is absent or revoked', () => {
+    expect(edgeLabelText(['a', 'b'], null)).toBe('a +1')
+    // The sidecar's "" revoke must read as no-bundle, not as a name.
+    expect(edgeLabelText(['a'], '')).toBe('a')
+  })
+
+  it('carries emphasis and bundle onto the wire model', () => {
+    const [wire] = withEdge({
+      nets: ['stage_q'],
+      emphasis: 'main',
+      bundle: 'cmd_bus',
+    }).wires
+    expect(wire.emphasis).toBe('main')
+    expect(wire.bundle).toBe('cmd_bus')
+  })
+
+  it('normalises unknown emphasis and empty bundle to null', () => {
+    // Additive-evolution contract: a payload from a newer producer
+    // must degrade to today's drawing, never to a half-styled one.
+    const [wire] = withEdge({ nets: ['w'], emphasis: 'loud', bundle: '' }).wires
+    expect(wire.emphasis).toBeNull()
+    expect(wire.bundle).toBeNull()
+  })
+
+  it('titles a box by rb.display_label with the module name demoted', () => {
+    const graph = buildElkGraph({
+      id: 'top',
+      rb: { module_name: 'top' },
+      ports: [],
+      edges: [],
+      children: [
+        {
+          id: 'top.u_csr',
+          rb: {
+            display_label: 'CSR block (PeakRDL)',
+            instance_name: 'u_csr',
+            module_name: 'demo_csr',
+          },
+          ports: [],
+          edges: [],
+          children: [],
+        },
+      ],
+    })
+    const child = graph.children[0].children[0]
+    const texts = (child.labels || []).map((l) => l.text)
+    expect(texts.some((t) => t.includes('CSR block (PeakRDL)'))).toBe(true)
+    expect(texts.some((t) => t.includes('demo_csr'))).toBe(true)
+  })
+})

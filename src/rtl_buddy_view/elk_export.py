@@ -293,10 +293,10 @@ def _node(
     return {
         "id": node_id(hier.instance_path),
         "rb": {
-            # NOTE: no ``display_label`` here — ``HierNode`` has no
-            # such attribute on this branch. The ``rbsch:`` pragma
-            # work (#162) adds it, and this is where it lands: P2's
-            # box title is ``rb.display_label or rb.instance_name``.
+            # The ``rbsch: label=`` hint (#162): a consumer's box
+            # title is ``rb.display_label || rb.instance_name``, with
+            # the module name demoted to the subtitle it already is.
+            "display_label": hier.display_label,
             "instance_name": hier.instance.name if hier.instance is not None else None,
             "module_name": hier.module_name,
             "is_blackbox": hier.is_blackbox,
@@ -540,6 +540,12 @@ def _edge_entry(edge: NetEdge, source: str, target: str) -> dict[str, Any]:
             "bits_expr": edge.bits_expr,
             "src_pins": list(edge.src_pins),
             "dst_pins": list(edge.dst_pins),
+            # ``rbsch`` presentation (#180, additive per contract
+            # §5.4): the author's emphasis and wire-group name. A
+            # bundled return path arrives already folded — the fold
+            # is structural and happened in ``scope_connectivity``.
+            "emphasis": edge.emphasis,
+            "bundle": edge.bundle,
         },
     }
 

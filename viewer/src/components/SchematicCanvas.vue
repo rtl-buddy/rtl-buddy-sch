@@ -162,11 +162,16 @@
               bus: wire.bus,
               cdc: cdcEdgeIds.has(wire.id),
               hot: highlight.edges.has(wire.id),
+              main: wire.emphasis === 'main',
+              side: wire.emphasis === 'side',
+              bundle: !!wire.bundle,
             }"
             :data-edge-id="wire.id"
             :data-edge-source="wire.sourceId"
             :data-edge-target="wire.targetId"
             :data-cdc="cdcEdgeIds.has(wire.id) ? 'true' : null"
+            :data-emphasis="wire.emphasis || null"
+            :data-bundle="wire.bundle || null"
           >
             <!-- Invisible fat stroke so a 1px wire is hoverable. -->
             <path class="sch-hit" :d="pathOf(wire)" />
@@ -943,6 +948,29 @@ onBeforeUnmount(() => {
 }
 .sch-wire.bus path {
   stroke-width: 2.5;
+}
+/* rbsch presentation (#180). Emphasis mirrors the dot figure: the
+   author's main path carries weight, side wiring recedes to the
+   faint tier so the money path pops. A named bundle without an
+   explicit emphasis sits between plain and main — one interface,
+   one visually solid wire. The explicit per-net word wins by
+   selector order (these three rules are mutually exclusive classes
+   at the model layer, so order is documentation, not a fight). */
+.sch-wire.bundle path {
+  stroke-width: 2;
+}
+.sch-wire.main path {
+  stroke-width: 2.6;
+}
+.sch-wire.side path {
+  stroke: var(--fg-faint);
+  stroke-width: 0.8;
+}
+.sch-wire.side .sch-arrow {
+  fill: var(--fg-faint);
+}
+.sch-wire.side .sch-hit {
+  stroke: transparent;
 }
 /* Hover target. A 1px wire is unhittable with a mouse, so every wire
    carries a fat transparent twin underneath it. ``stroke`` catches the
