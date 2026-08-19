@@ -581,7 +581,7 @@ def test_public_constants_document_the_vocabulary() -> None:
     """The docs table and the warning text both derive from these."""
     assert hints_mod.PRAGMA_PREFIX == "rbsch"
     assert hints_mod.KNOWN_FLAGS == ("collapse", "hide", "leaf")
-    assert hints_mod.KNOWN_KEYS == ("group", "label", "rank")
+    assert hints_mod.KNOWN_KEYS == ("group", "in", "label", "out", "rank")
     assert hints_mod.KNOWN_NET_FLAGS == ("clock", "data", "main", "reset", "side")
     assert hints_mod.KNOWN_NET_KEYS == ("bundle",)
 
@@ -985,3 +985,103 @@ def test_merge_sidecar_empty_group_revokes_membership() -> None:
     override = HintMap(instances={("m", "u_a"): InstanceHints(group="")})
     merged = merge_hint_maps(base, override)
     assert merged.instances[("m", "u_a")] == InstanceHints(group="", rank=1)
+
+
+# --- phase 5: blackbox pin directions ---------------------------------------
+
+
+def test_in_out_parse_split_strip_and_dedupe() -> None:
+    table = _table(_module("m", 1, instances=(_instance("u_pll", "vendor_pll", 3),)))
+    text = (
+        "\n" * 2
+        + 'vendor_pll u_pll ();  // rbsch: in="refclk, pd,refclk" out=clk_out\n'
+    )
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.instances[("m", "u_pll")] == InstanceHints(
+        in_pins=("pd", "refclk"), out_pins=("clk_out",)
+    )
+    assert hints.warnings == ()
+
+
+def test_pin_in_both_lists_warns_and_drops_from_both() -> None:
+    table = _table(_module("m", 1, instances=(_instance("u_x", "bb", 3),)))
+    text = "\n" * 2 + "bb u_x ();  // rbsch: in=a,b out=b,c\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.instances[("m", "u_x")] == InstanceHints(
+        in_pins=("a",), out_pins=("c",)
+    )
+    assert any("named in both in= and out=" in w for w in hints.warnings)
+
+
+def test_empty_pin_list_warns_and_is_ignored() -> None:
+    table = _table(_module("m", 1, instances=(_instance("u_x", "bb", 3),)))
+    text = "\n" * 2 + "bb u_x ();  // rbsch: in=,\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.instances == {}
+    assert any("comma-separated pin list" in w for w in hints.warnings)
+
+
+def test_in_out_are_legal_on_a_module_declaration() -> None:
+    table = _table(_module("m", 3))
+    text = "\n" * 1 + "// rbsch: out=q\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.modules["m"] == ModuleHints(out_pins=("q",))
+
+
+def test_pin_directions_for_applies_module_hints_to_every_placement() -> None:
+    scope = _module(
+        "top",
+        1,
+        instances=(
+            _instance("u_a", "vendor_rom", 3),
+            _instance("u_b", "vendor_rom", 4),
+            _instance("u_c", "other", 5),
+        ),
+    )
+    hints = HintMap(
+        modules={"vendor_rom": ModuleHints(in_pins=("addr",), out_pins=("q",))}
+    )
+    assert hints.pin_directions_for(scope) == {
+        "u_a": {"addr": "input", "q": "output"},
+        "u_b": {"addr": "input", "q": "output"},
+    }
+
+
+def test_instance_pin_hints_replace_module_hints_wholesale() -> None:
+    """One author statement per placement — never a per-pin interleave."""
+    scope = _module("top", 1, instances=(_instance("u_a", "vendor_rom", 3),))
+    hints = HintMap(
+        modules={"vendor_rom": ModuleHints(in_pins=("addr",), out_pins=("q",))},
+        instances={("top", "u_a"): InstanceHints(out_pins=("addr",))},
+    )
+    assert hints.pin_directions_for(scope) == {"u_a": {"addr": "output"}}
+
+
+def test_sidecar_parses_pin_arrays_and_empty_list_revokes() -> None:
+    hints = parse_hint_sidecar(
+        {
+            "schema_version": "1.1",
+            "modules": {"vendor_rom": {"in": ["addr"], "out": ["q"]}},
+            "instances": {"top.u_a": {"in": []}},
+        },
+        source="hints.json",
+    )
+    assert hints.modules["vendor_rom"] == ModuleHints(
+        in_pins=("addr",), out_pins=("q",)
+    )
+    assert hints.instances[("top", "u_a")] == InstanceHints(in_pins=())
+
+
+def test_sidecar_non_array_pin_list_raises() -> None:
+    with pytest.raises(HintsError, match="array of pin-name strings"):
+        parse_hint_sidecar(
+            {"schema_version": "1.1", "modules": {"bb": {"in": "addr"}}},
+            source="hints.json",
+        )
+
+
+def test_merge_sidecar_pin_lists_replace_in_source_ones() -> None:
+    base = HintMap(modules={"bb": ModuleHints(in_pins=("a",), out_pins=("q",))})
+    override = HintMap(modules={"bb": ModuleHints(out_pins=("clk_out",))})
+    merged = merge_hint_maps(base, override)
+    assert merged.modules["bb"] == ModuleHints(in_pins=("a",), out_pins=("clk_out",))

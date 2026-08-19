@@ -8,12 +8,11 @@ document. Pragmas are how the author says so, in the RTL, where the
 statement gets reviewed and refactored alongside the code it
 describes.
 
-> Phase 1 (epic
-> [#159](https://github.com/rtl-buddy/rtl-buddy-sch/issues/159))
-> ships abstraction control and semantic labels; phase 2 adds net
-> classification; phase 3 adds named bundles; phase 4 adds layout
-> hints. Blackbox pin pinning is phase 5 of the same epic; this
-> document grows with it.
+> Epic [#159](https://github.com/rtl-buddy/rtl-buddy-sch/issues/159)
+> ships this vocabulary in five phases: abstraction control and
+> semantic labels (1), net classification (2), named bundles (3),
+> layout hints (4) and blackbox pin pinning (5) — all documented
+> below.
 
 ## The `rb` prefix convention
 
@@ -270,6 +269,42 @@ better how the figure should *read*:
   `true` is rejected) and `"group"` (a string, `""` being the
   explicit revoke of an in-source membership).
 
+## Phase 5 vocabulary — blackbox pin directions
+
+A child the module table cannot resolve — vendor IP, an encrypted
+netlist, a macro cell — has unknown pin directions. The analyzer
+deliberately under-draws there: an unknown pin joins a wire group as
+a *sink* when the group already has a known driver, and is dropped
+otherwise, because a fabricated direction is worse than a missing
+edge. `in=` / `out=` recover what the author knows:
+
+| pragma | valid on | effect |
+|---|---|---|
+| `in="pin_a,pin_b"` / `out="pin_c"` | instance or module declaration | pin the named formals' directions, recovering dataflow edges for pins of unresolved modules |
+
+```systemverilog
+  vendor_rom u_rom (  // rbsch: in=addr out=q
+      .addr(addr_in),
+      .q(rom_q)
+  );
+```
+
+- Values are comma-separated formal pin names; whitespace around
+  names is ignored. A pin spelled on both sides warns and drops from
+  both — a contradiction is not a direction.
+- Hints are consulted **only where resolution came up empty**: a
+  resolved module's own declaration always wins, so a stale hint can
+  never flip a real direction.
+- The sidecar is the natural home for vendor IP (its source can't
+  carry a comment): key the **module** entry by the blackbox's name
+  and every placement inherits the pins. Instance-level pin hints,
+  when any are present, replace the module-level ones wholesale —
+  one author statement per placement.
+- Sidecar spelling is a JSON array per key (`"in": ["addr"]`,
+  `"out": ["q"]`); `[]` is the explicit revoke of an in-source list.
+- Deliberately no `inout`: the hint exists to recover a *dataflow*
+  direction, and a bidirectional claim recovers nothing.
+
 ## Sidecar JSON
 
 Vendor and generated IP can't take a comment. The same vocabulary
@@ -286,7 +321,8 @@ rtl-buddy-view --top demo_tiny_alu_subsys_top \
   "schema_version": "1.1",
   "modules": {
     "ip_cdc_sync": { "leaf": true },
-    "demo_tiny_alu_subsys_csr": { "label": "CSR block (PeakRDL)" }
+    "demo_tiny_alu_subsys_csr": { "label": "CSR block (PeakRDL)" },
+    "vendor_rom": { "in": ["addr"], "out": ["q"] }
   },
   "instances": {
     "demo_tiny_alu_subsys_top.u_afifo": { "collapse": true },

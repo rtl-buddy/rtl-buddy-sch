@@ -377,3 +377,47 @@ def test_no_pragmas_drops_the_layout_scaffolding() -> None:
     dot = _render_layout("--no-pragmas").stdout
     assert "cluster_grp_" not in dot
     assert "[style=invis, weight=8]" not in dot
+
+
+# --- phase 5: blackbox pin directions end to end ----------------------------
+
+BB_FIXTURES = Path(__file__).parent / "fixtures" / "blackbox_demo"
+BB_FILELIST = BB_FIXTURES / "files.f"
+
+
+def _render_bb(*args: str) -> subprocess.CompletedProcess[str]:
+    return _run(
+        "--top",
+        "vb_top",
+        "--filelist",
+        str(BB_FILELIST),
+        "--format",
+        "dot",
+        "--block-diagram",
+        *args,
+    )
+
+
+def test_pin_hint_recovers_the_blackbox_output_edge() -> None:
+    result = _render_bb()
+    assert result.returncode == 0, result.stderr
+    assert '"vb_top.u_rom" -> "vb_top.u_reg"' in result.stdout
+    assert "hints:" not in result.stderr
+
+
+def test_without_the_hint_the_unknowable_edge_stays_undrawn() -> None:
+    """Better an under-drawn edge than a fabricated direction — the
+    pre-hint behavior is the safe baseline the pragma opts out of."""
+    dot = _render_bb("--no-pragmas").stdout
+    assert '"vb_top.u_rom" -> "vb_top.u_reg"' not in dot
+
+
+def test_module_level_sidecar_pins_vendor_ip_without_source_edits() -> None:
+    """The sidecar's natural phase-5 spelling: key the blackbox by
+    module name — its source can't carry a comment."""
+    dot = _render_bb(
+        "--no-pragmas",
+        "--overlay",
+        f"hints={BB_FIXTURES / 'vendor.hints.json'}",
+    ).stdout
+    assert '"vb_top.u_rom" -> "vb_top.u_reg"' in dot

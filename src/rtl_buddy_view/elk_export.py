@@ -500,7 +500,10 @@ def _edges(
     }
     edges: list[dict[str, Any]] = []
     net_hints = hints.nets_for_module(module.name) if hints is not None else None
-    for edge in scope_connectivity(module, table, params=params, net_hints=net_hints):
+    pin_hints = hints.pin_directions_for(module) if hints is not None else None
+    for edge in scope_connectivity(
+        module, table, params=params, net_hints=net_hints, pin_hints=pin_hints
+    ):
         if not allow_port_to_port and edge.src[0] == "port" and edge.dst[0] == "port":
             # A pure input→output feed-through inside a compound —
             # ``assign busy = pending | ~empty`` reaching from one of
