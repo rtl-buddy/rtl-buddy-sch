@@ -9,6 +9,18 @@ name: Viewer
 # vitest unit suite. The Playwright snapshot test that exercises
 # real fixture goldens lands in a follow-up subtask.
 
+
+# One live run per workflow per branch: a force-push (routine in this
+# repo's stacked-PR flow) supersedes the previous head, and without a
+# concurrency group the superseded run keeps a runner until it
+# finishes — or, as on rtl-buddy-sch#182, until a wedged step is
+# noticed an hour later. head_ref covers pull_request events (where
+# github.ref is the synthetic merge ref); bare ref covers push.
+# release.yml manages its own group and is deliberately untouched.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main]
@@ -28,6 +40,11 @@ defaults:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    # The whole job takes ~4 minutes green. Without a limit, a wedged
+    # step squats on a runner for the 6-hour default — 2026-08-19 the
+    # Playwright browser install hung on every attempt across two
+    # branches, an hour-plus each before anyone noticed.
+    timeout-minutes: 20
     strategy:
       matrix:
         node-version: [20.x, 22.x]
@@ -65,8 +82,33 @@ jobs:
       # Phase 1-3 fixtures. The fixture JSONs in viewer/e2e/fixtures/
       # are checked into the repo so this step doesn't require a
       # Python re-render — Playwright loads them via addInitScript.
+      #
+      # The browser bundle is cached keyed on the resolved Playwright
+      # version, so a warm run never touches the download CDN — the
+      # half of ``install`` that wedged repeatedly on 2026-08-19. On
+      # a hit only the apt OS deps step runs; on a miss the full
+      # install runs and seeds the cache.
+      - name: Resolve Playwright version
+        id: pw
+        run: >-
+          echo "version=$(node -p
+          "require('@playwright/test/package.json').version")"
+          >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
       - name: Install Playwright browsers
+        if: steps.pw-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright OS deps
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
 
       - name: Playwright e2e
         run: npm run test:e2e
