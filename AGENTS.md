@@ -366,9 +366,9 @@ Rules:
   means adding or updating its entry in `THIRD-PARTY-NOTICES.md` in
   the same change set.** `devDependencies` (vite, vitest, playwright,
   eslint, …) never reach `viewer/dist/` and stay out of the file.
-  Known incoming case: elkjs is **EPL-2.0** and lands with #163 P2 —
-  it needs an entry, and it can reference the EPL-2.0 text already in
-  Appendix A rather than duplicating it.
+  Worked example: elkjs (**EPL-2.0**, landed with #163 P2) has its
+  entry in §7, referencing the EPL-2.0 text already in Appendix A
+  rather than duplicating it.
 - **Copyleft entries carry the full license text and a source-availability
   statement**; permissive ones may reference the canonical text as long
   as the copyright lines are reproduced.

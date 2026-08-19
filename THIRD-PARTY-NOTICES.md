@@ -53,6 +53,7 @@ dependency set.
 | ├─ Graphviz (compiled to WebAssembly) | 14.1.5 | **EPL-2.0** | <https://gitlab.com/graphviz/graphviz> |
 | ├─ Expat (XML parser, linked into the WASM build) | 2.8.1 | MIT | <https://github.com/libexpat/libexpat> |
 | └─ Emscripten runtime support + musl-derived libc | emsdk 5.0.5 | MIT | <https://github.com/emscripten-core/emscripten> |
+| `elkjs` | 0.12.0 | **EPL-2.0** | <https://github.com/kieler/elkjs> |
 | Vue | 3.5.34 | MIT | <https://github.com/vuejs/core> |
 | Pinia | 2.3.1 | MIT | <https://github.com/vuejs/pinia> |
 | Chart.js | 4.5.1 | MIT | <https://github.com/chartjs/Chart.js> |
@@ -243,6 +244,42 @@ Copyright (c) 2016 Jakub Juszczak
 MIT License, text as in §1a with this copyright line. Full text:
 <https://github.com/apertureless/vue-chartjs/blob/main/LICENSE>.
 
+## 7. `elkjs` — EPL-2.0
+
+`elkjs@0.12.0` is the **Eclipse Layout Kernel (ELK)** — Java code
+maintained at <https://github.com/eclipse-elk/elk> — transpiled to
+JavaScript with GWT and published from
+<https://github.com/kieler/elkjs>. It computes the layered layout
+behind the SPA's schematic canvas (`viewer/src/layout/elkSchematic.js`).
+Its source headers carry notices of the form:
+
+```
+Copyright (c) 2017 Kiel University and others.
+```
+
+Its `package.json` declares `EPL-2.0 OR GPL-3.0-or-later` — that is
+EPL-2.0 with GPL-3.0-or-later offered as a Secondary License under
+EPL-2.0 §3.2. This project receives and redistributes elkjs under
+**EPL-2.0**; the GPL option is not exercised. The license text is the
+same EPL-2.0 already reproduced in
+[Appendix A](#appendix-a--eclipse-public-license--v-20) for Graphviz.
+
+**Source availability (EPL-2.0 §3.2).** elkjs is redistributed inside
+the viewer bundle in unmodified form. Its Source Code — the
+transpilation project and the upstream Java it is generated from — is
+available at the two repositories above, and the exact artifact at
+<https://registry.npmjs.org/elkjs/-/elkjs-0.12.0.tgz>. We hold no
+elkjs modifications; nothing in `rtl-buddy-sch` patches elkjs or its
+build.
+
+**Relationship to this project's BSD-3 license.** As with Graphviz
+(§1b), `rtl-buddy-sch` consumes elkjs only through its published
+JavaScript API (`new ELK().layout(...)`), so the surrounding code is a
+Separate Module under EPL-2.0 §1. The EPL's reciprocal obligations
+attach to the ELK Contribution itself, not to this project; shipping
+both in one wheel is a permitted distribution provided these notices
+and the license text travel with it.
+
 ---
 
 ## Keeping this file correct
@@ -287,7 +324,8 @@ before writing the entry.
 
 ## Appendix A — Eclipse Public License — v 2.0
 
-Applies to the Graphviz code embedded in `@viz-js/viz` (§1b).
+Applies to the Graphviz code embedded in `@viz-js/viz` (§1b) and to
+`elkjs` (§7).
 Reproduced verbatim from the `LICENSE` file of the Graphviz 14.1.5
 source release named in the provenance attestation above.
 
