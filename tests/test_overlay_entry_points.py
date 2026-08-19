@@ -175,6 +175,7 @@ def test_no_externals_no_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
         "clock",
         "clock-tb",
         "coverage",
+        "hints",
         "reset",
         "wave",
     )

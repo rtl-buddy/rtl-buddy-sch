@@ -1,0 +1,584 @@
+"""Unit tests for the ``rbsch`` pragma layer (epic #159, phase 1).
+
+Everything here is Verible-free: the payload parser takes a string,
+the scanner takes text, and association takes a hand-built
+:class:`ModuleTable`. The end-to-end proof that ``location.file``
+really matches the scanner's key lives in ``test_cli_hints.py``,
+which is Verible-gated.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from rtl_buddy_view import hints as hints_mod
+from rtl_buddy_view.extractor import Instance, Module, ModuleTable, SourceLocation
+from rtl_buddy_view.graph import HierNode
+from rtl_buddy_view.hints import (
+    HintMap,
+    HintsError,
+    InstanceHints,
+    ModuleHints,
+    apply_hints,
+    load_hint_sidecar,
+    merge_hint_maps,
+    parse_hint_sidecar,
+    parse_pragma_payload,
+    resolve_hints,
+    scan_pragmas,
+)
+
+FILE = "/design/top.sv"
+
+
+def _instance(name: str, module_name: str, line: int) -> Instance:
+    return Instance(
+        name=name,
+        module_name=module_name,
+        param_overrides=(),
+        port_connections=(),
+        location=SourceLocation(file=FILE, start_line=line),
+    )
+
+
+def _module(
+    name: str, line: int, instances: tuple[Instance, ...] = (), file: str = FILE
+) -> Module:
+    return Module(
+        name=name,
+        ports=(),
+        parameters=(),
+        instances=instances,
+        location=SourceLocation(file=file, start_line=line),
+    )
+
+
+def _table(*modules: Module) -> ModuleTable:
+    return ModuleTable(modules_by_name={m.name: m for m in modules})
+
+
+def _node(
+    instance_path: str,
+    module_name: str,
+    *,
+    instance: Instance | None = None,
+    children: tuple[HierNode, ...] = (),
+) -> HierNode:
+    return HierNode(
+        instance_path=instance_path,
+        module_name=module_name,
+        instance=instance,
+        module=None,
+        is_blackbox=False,
+        children=children,
+    )
+
+
+# --- payload parsing --------------------------------------------------------
+
+
+def test_parse_bare_flags() -> None:
+    payload = parse_pragma_payload(" collapse hide ")
+    assert payload.flags == ("collapse", "hide")
+    assert payload.options == ()
+    assert payload.warnings == ()
+
+
+def test_parse_quoted_value_keeps_spaces() -> None:
+    payload = parse_pragma_payload(' label="CSR block (PeakRDL)" leaf')
+    assert payload.flags == ("leaf",)
+    assert payload.option("label") == "CSR block (PeakRDL)"
+
+
+def test_parse_single_quotes_and_bare_value() -> None:
+    assert parse_pragma_payload("label='CSR block'").option("label") == "CSR block"
+    assert parse_pragma_payload("label=csr").option("label") == "csr"
+
+
+def test_parse_flags_are_sorted_and_deduplicated() -> None:
+    """Two spellings of the same intent must compare equal."""
+    assert parse_pragma_payload("hide collapse hide").flags == ("collapse", "hide")
+
+
+def test_parse_unknown_key_warns_with_known_set() -> None:
+    payload = parse_pragma_payload("collpase")
+    assert payload.flags == ()
+    assert len(payload.warnings) == 1
+    warning = payload.warnings[0]
+    assert "collpase" in warning
+    assert "collapse, hide, leaf" in warning
+    assert "label=…" in warning
+
+
+def test_parse_unknown_valued_key_warns() -> None:
+    payload = parse_pragma_payload('titel="x"')
+    assert payload.options == ()
+    assert "titel" in payload.warnings[0]
+
+
+def test_parse_flag_with_value_warns() -> None:
+    payload = parse_pragma_payload("leaf=true")
+    assert payload.flags == ()
+    assert "takes no value" in payload.warnings[0]
+
+
+def test_parse_key_without_value_warns() -> None:
+    payload = parse_pragma_payload("label")
+    assert "needs a value" in payload.warnings[0]
+
+
+def test_parse_value_without_a_key_warns() -> None:
+    payload = parse_pragma_payload("=orphan")
+    assert payload.is_empty
+    assert "no key before" in payload.warnings[0]
+
+
+def test_parse_empty_payload_warns() -> None:
+    assert "empty rbsch pragma" in parse_pragma_payload("   ").warnings[0]
+
+
+def test_parse_unterminated_quote_warns_instead_of_raising() -> None:
+    payload = parse_pragma_payload('label="unclosed')
+    assert payload.is_empty
+    assert "malformed" in payload.warnings[0]
+
+
+# --- scanning ---------------------------------------------------------------
+
+
+def test_scan_finds_own_line_and_trailing_pragmas() -> None:
+    sources = {
+        FILE: (
+            "module top;\n"
+            '  // rbsch: label="CSR"\n'
+            "  sub u_sub ();  // rbsch: collapse\n"
+            "endmodule\n"
+        )
+    }
+    pragmas = scan_pragmas(sources)
+    assert [(p.line, p.own_line) for p in pragmas] == [(2, True), (3, False)]
+    assert pragmas[0].option("label") == "CSR"
+    assert pragmas[1].flags == ("collapse",)
+
+
+def test_scan_ignores_non_rbsch_comments() -> None:
+    sources = {FILE: "// rbcdc: leaf\n// plain comment\n/* rbsch: leaf */\n"}
+    assert scan_pragmas(sources) == ()
+
+
+def test_scan_is_sorted_by_file_then_line() -> None:
+    """Warning order must not depend on the caller's mapping order."""
+    sources = {
+        "/b.sv": "// rbsch: leaf\n",
+        "/a.sv": "\n// rbsch: hide\n",
+    }
+    assert [(p.file, p.line) for p in scan_pragmas(sources)] == [
+        ("/a.sv", 2),
+        ("/b.sv", 1),
+    ]
+
+
+# --- association ------------------------------------------------------------
+
+
+def test_same_line_pragma_binds_to_that_instance() -> None:
+    table = _table(_module("top", 1, (_instance("u_sub", "sub", 5),)))
+    sources = {FILE: "\n" * 4 + "  sub u_sub ();  // rbsch: collapse\n"}
+    hints = resolve_hints(scan_pragmas(sources), table)
+    assert hints.for_instance("top", "u_sub") == InstanceHints(collapse=True)
+    assert hints.warnings == ()
+
+
+def test_own_line_pragma_binds_to_the_next_declaration() -> None:
+    table = _table(
+        _module("top", 3, (_instance("u_a", "sub", 5), _instance("u_b", "sub", 9)))
+    )
+    sources = {FILE: "\n" * 3 + "// rbsch: hide\n" + "\n" * 10}
+    hints = resolve_hints(scan_pragmas(sources), table)
+    # Line 4's pragma reaches u_a (line 5), not u_b (line 9).
+    assert hints.for_instance("top", "u_a") == InstanceHints(hide=True)
+    assert hints.for_instance("top", "u_b") is None
+
+
+def test_own_line_pragma_binds_to_a_following_module_declaration() -> None:
+    table = _table(_module("sub", 4))
+    sources = {FILE: "\n" * 2 + "// rbsch: leaf\n" + "\n" * 5}
+    hints = resolve_hints(scan_pragmas(sources), table)
+    assert hints.for_module("sub") == ModuleHints(leaf=True)
+
+
+def test_trailing_pragma_on_a_non_declaration_line_warns() -> None:
+    """Falling through would let a stray comment reshape a distant block."""
+    table = _table(_module("top", 1, (_instance("u_sub", "sub", 9),)))
+    sources = {FILE: "\n" * 4 + "  logic x;  // rbsch: hide\n"}
+    hints = resolve_hints(scan_pragmas(sources), table)
+    assert hints.is_empty
+    assert "matched no module or instance declaration" in hints.warnings[0]
+    assert "same line" in hints.warnings[0]
+
+
+def test_own_line_pragma_with_nothing_below_warns() -> None:
+    table = _table(_module("top", 1, (_instance("u_sub", "sub", 2),)))
+    sources = {FILE: "\n" * 20 + "// rbsch: hide\n"}
+    hints = resolve_hints(scan_pragmas(sources), table)
+    assert hints.is_empty
+    assert "next declaration below it" in hints.warnings[0]
+
+
+def test_leaf_on_an_instance_warns_and_is_dropped() -> None:
+    table = _table(_module("top", 1, (_instance("u_sub", "sub", 5),)))
+    sources = {FILE: "\n" * 4 + '  sub u_sub ();  // rbsch: leaf label="S"\n'}
+    hints = resolve_hints(scan_pragmas(sources), table)
+    assert hints.for_instance("top", "u_sub") == InstanceHints(label="S")
+    assert "'leaf' applies to a module definition" in hints.warnings[0]
+
+
+def test_collapse_on_a_module_warns_and_is_dropped() -> None:
+    table = _table(_module("sub", 4))
+    sources = {FILE: "\n" * 2 + '// rbsch: collapse label="S"\n'}
+    hints = resolve_hints(scan_pragmas(sources), table)
+    assert hints.for_module("sub") == ModuleHints(label="S")
+    assert "'collapse' applies to an instance" in hints.warnings[0]
+
+
+def test_payload_warnings_are_prefixed_with_file_and_line() -> None:
+    table = _table(_module("sub", 4))
+    sources = {FILE: "\n" * 2 + "// rbsch: nonsense\n"}
+    hints = resolve_hints(scan_pragmas(sources), table)
+    assert hints.warnings[0].startswith(f"{FILE}:3: ")
+
+
+def test_two_pragmas_on_one_target_merge() -> None:
+    table = _table(_module("top", 1, (_instance("u_sub", "sub", 6),)))
+    sources = {FILE: "\n" * 3 + '// rbsch: hide\n// rbsch: label="S"\n'}
+    hints = resolve_hints(scan_pragmas(sources), table)
+    assert hints.for_instance("top", "u_sub") == InstanceHints(hide=True, label="S")
+
+
+def test_instances_from_different_parents_do_not_collide() -> None:
+    table = _table(
+        _module("top", 1, (_instance("u_sub", "sub", 3),)),
+        _module("other", 10, (_instance("u_sub", "sub", 11),)),
+    )
+    sources = {FILE: "\n" * 10 + "  sub u_sub ();  // rbsch: hide\n"}
+    hints = resolve_hints(scan_pragmas(sources), table)
+    assert hints.for_instance("other", "u_sub") == InstanceHints(hide=True)
+    assert hints.for_instance("top", "u_sub") is None
+
+
+def test_declarations_without_locations_are_skipped() -> None:
+    module = Module(
+        name="top",
+        ports=(),
+        parameters=(),
+        instances=(
+            Instance(
+                name="u_sub",
+                module_name="sub",
+                param_overrides=(),
+                port_connections=(),
+                location=None,
+            ),
+        ),
+        location=None,
+    )
+    hints = resolve_hints(scan_pragmas({FILE: "// rbsch: hide\n"}), _table(module))
+    assert hints.is_empty
+
+
+# --- apply_hints ------------------------------------------------------------
+
+
+def _demo_tree() -> HierNode:
+    return _node(
+        "top",
+        "top",
+        children=(
+            _node(
+                "top.u_csr",
+                "csr",
+                instance=_instance("u_csr", "csr", 5),
+                children=(
+                    _node(
+                        "top.u_csr.u_sync",
+                        "sync",
+                        instance=_instance("u_sync", "sync", 7),
+                        children=(
+                            _node(
+                                "top.u_csr.u_sync.u_ff",
+                                "ff",
+                                instance=_instance("u_ff", "ff", 9),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            _node(
+                "top.u_tie",
+                "tie",
+                instance=_instance("u_tie", "tie", 11),
+            ),
+        ),
+    )
+
+
+def _paths(node: HierNode) -> list[str]:
+    out = [node.instance_path]
+    for child in node.children:
+        out.extend(_paths(child))
+    return out
+
+
+def test_empty_map_returns_the_same_object() -> None:
+    """Graceful degradation: no hints must cost nothing and change nothing."""
+    root = _demo_tree()
+    assert apply_hints(root, HintMap()) is root
+
+
+def test_hide_removes_the_node_and_its_subtree() -> None:
+    root = _demo_tree()
+    hints = HintMap(instances={("top", "u_csr"): InstanceHints(hide=True)})
+    assert _paths(apply_hints(root, hints)) == ["top", "top.u_tie"]
+
+
+def test_collapse_drops_children_but_keeps_the_node() -> None:
+    root = _demo_tree()
+    hints = HintMap(instances={("csr", "u_sync"): InstanceHints(collapse=True)})
+    assert _paths(apply_hints(root, hints)) == [
+        "top",
+        "top.u_csr",
+        "top.u_csr.u_sync",
+        "top.u_tie",
+    ]
+
+
+def test_module_leaf_drops_children_of_every_instance() -> None:
+    root = _demo_tree()
+    hints = HintMap(modules={"sync": ModuleHints(leaf=True)})
+    result = apply_hints(root, hints)
+    assert "top.u_csr.u_sync.u_ff" not in _paths(result)
+    assert "top.u_csr.u_sync" in _paths(result)
+
+
+def test_label_lands_on_display_label_and_instance_beats_module() -> None:
+    root = _demo_tree()
+    hints = HintMap(
+        modules={"csr": ModuleHints(label="module label")},
+        instances={("top", "u_csr"): InstanceHints(label="instance label")},
+    )
+    result = apply_hints(root, hints)
+    assert result.children[0].display_label == "instance label"
+
+
+def test_module_label_applies_when_the_instance_says_nothing() -> None:
+    root = _demo_tree()
+    hints = HintMap(modules={"tie": ModuleHints(label="tie-off")})
+    assert apply_hints(root, hints).children[1].display_label == "tie-off"
+
+
+def test_label_on_the_top_module_applies() -> None:
+    root = _demo_tree()
+    hints = HintMap(modules={"top": ModuleHints(label="subsystem")})
+    assert apply_hints(root, hints).display_label == "subsystem"
+
+
+def test_leaf_on_the_top_module_is_refused_with_a_warning() -> None:
+    """An empty figure is never what the author meant."""
+    root = _demo_tree()
+    warnings: list[str] = []
+    result = apply_hints(
+        root, HintMap(modules={"top": ModuleHints(leaf=True)}), warnings=warnings
+    )
+    assert result.children  # the whole design survives
+    assert "would empty the diagram" in warnings[0]
+
+
+def test_apply_hints_accepts_no_warning_sink() -> None:
+    root = _demo_tree()
+    result = apply_hints(root, HintMap(modules={"top": ModuleHints(leaf=True)}))
+    assert result.children
+
+
+def test_untouched_subtrees_are_returned_by_identity() -> None:
+    root = _demo_tree()
+    hints = HintMap(instances={("top", "u_tie"): InstanceHints(label="tie")})
+    result = apply_hints(root, hints)
+    assert result.children[0] is root.children[0]
+
+
+def test_apply_hints_is_deterministic_and_preserves_order() -> None:
+    root = _demo_tree()
+    hints = HintMap(
+        modules={"sync": ModuleHints(leaf=True, label="sync")},
+        instances={("top", "u_tie"): InstanceHints(hide=True)},
+    )
+    first = apply_hints(root, hints)
+    second = apply_hints(root, hints)
+    assert _paths(first) == _paths(second) == ["top", "top.u_csr", "top.u_csr.u_sync"]
+
+
+# --- sidecar ----------------------------------------------------------------
+
+
+def _sidecar(**payload: object) -> dict[str, object]:
+    return {"schema_version": "1.0", **payload}
+
+
+def test_sidecar_parses_modules_and_instances() -> None:
+    hints = parse_hint_sidecar(
+        _sidecar(
+            modules={"sync": {"leaf": True, "label": "CDC sync"}},
+            instances={"top.u_tie": {"hide": True, "collapse": False}},
+        ),
+        source="sidecar.json",
+    )
+    assert hints.for_module("sync") == ModuleHints(leaf=True, label="CDC sync")
+    assert hints.for_instance("top", "u_tie") == InstanceHints(
+        hide=True, collapse=False
+    )
+
+
+def test_sidecar_unknown_field_warns_but_loads() -> None:
+    hints = parse_hint_sidecar(
+        _sidecar(modules={"sync": {"leaf": True, "colour": "red"}}),
+        source="sidecar.json",
+    )
+    assert hints.for_module("sync") == ModuleHints(leaf=True)
+    assert "colour" in hints.warnings[0]
+
+
+def test_sidecar_unknown_instance_field_warns_but_loads() -> None:
+    hints = parse_hint_sidecar(
+        _sidecar(instances={"top.u_a": {"hide": True, "rank": 3}}),
+        source="sidecar.json",
+    )
+    assert hints.for_instance("top", "u_a") == InstanceHints(hide=True)
+    assert "rank" in hints.warnings[0]
+
+
+def test_sidecar_empty_entry_is_dropped() -> None:
+    hints = parse_hint_sidecar(_sidecar(modules={"sync": {}}), source="s.json")
+    assert hints.is_empty
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        ([], "top-level must be a JSON object"),
+        ({}, "schema_version missing"),
+        ({"schema_version": 1}, "schema_version missing"),
+        ({"schema_version": "2.0"}, "is not supported"),
+        ({"schema_version": "x.0"}, "not a dotted number"),
+        (_sidecar(modules=[]), "'modules' must be a JSON object"),
+        (_sidecar(instances=[]), "'instances' must be a JSON object"),
+        (_sidecar(modules={"a": 1}), "entry must be a JSON object"),
+        (_sidecar(modules={"a": {"leaf": "yes"}}), "must be a boolean"),
+        (_sidecar(modules={"a": {"label": 3}}), "must be a string"),
+        (_sidecar(instances={"a": {"hide": True}}), "<parent_module>.<instance_name>"),
+        (_sidecar(instances={"a.b.c": {}}), "<parent_module>.<instance_name>"),
+        (_sidecar(instances={"a.b": 1}), "entry must be a JSON object"),
+        (_sidecar(instances={"a.b": {"hide": 1}}), "must be a boolean"),
+        (_sidecar(instances={"a.b": {"label": 1}}), "must be a string"),
+    ],
+)
+def test_sidecar_rejects_malformed_payloads(payload: object, message: str) -> None:
+    with pytest.raises(HintsError, match=message):
+        parse_hint_sidecar(payload, source="sidecar.json")
+
+
+def test_load_sidecar_reads_json(tmp_path) -> None:
+    path = tmp_path / "hints.json"
+    path.write_text(json.dumps(_sidecar(modules={"sync": {"leaf": True}})))
+    assert load_hint_sidecar(path).for_module("sync") == ModuleHints(leaf=True)
+
+
+def test_load_sidecar_wraps_missing_file(tmp_path) -> None:
+    with pytest.raises(HintsError, match="could not read"):
+        load_hint_sidecar(tmp_path / "absent.json")
+
+
+def test_load_sidecar_wraps_invalid_json(tmp_path) -> None:
+    path = tmp_path / "hints.json"
+    path.write_text("{not json")
+    with pytest.raises(HintsError, match="invalid JSON"):
+        load_hint_sidecar(path)
+
+
+# --- precedence -------------------------------------------------------------
+
+
+def test_sidecar_wins_field_by_field() -> None:
+    pragma = HintMap(
+        modules={"sync": ModuleHints(leaf=True, label="from pragma")},
+        instances={("top", "u_tie"): InstanceHints(hide=True)},
+    )
+    sidecar = HintMap(
+        modules={"sync": ModuleHints(label="from sidecar")},
+        instances={("top", "u_tie"): InstanceHints(collapse=True)},
+    )
+    merged = merge_hint_maps(pragma, sidecar)
+    # Overridden where the sidecar spoke, preserved where it didn't.
+    assert merged.for_module("sync") == ModuleHints(leaf=True, label="from sidecar")
+    assert merged.for_instance("top", "u_tie") == InstanceHints(
+        hide=True, collapse=True
+    )
+
+
+def test_sidecar_false_revokes_an_in_source_flag() -> None:
+    pragma = HintMap(instances={("top", "u_a"): InstanceHints(collapse=True)})
+    sidecar = HintMap(instances={("top", "u_a"): InstanceHints(collapse=False)})
+    merged = merge_hint_maps(pragma, sidecar)
+    assert merged.for_instance("top", "u_a") == InstanceHints(collapse=False)
+    assert (
+        apply_hints(
+            _node(
+                "top",
+                "top",
+                children=(
+                    _node(
+                        "top.u_a",
+                        "a",
+                        instance=_instance("u_a", "a", 3),
+                        children=(_node("top.u_a.u_b", "b"),),
+                    ),
+                ),
+            ),
+            merged,
+        )
+        .children[0]
+        .children
+    )
+
+
+def test_merge_keeps_targets_from_both_sides_and_concatenates_warnings() -> None:
+    merged = merge_hint_maps(
+        HintMap(modules={"a": ModuleHints(leaf=True)}, warnings=("one",)),
+        HintMap(modules={"b": ModuleHints(leaf=True)}, warnings=("two",)),
+    )
+    assert sorted(merged.modules) == ["a", "b"]
+    assert merged.warnings == ("one", "two")
+
+
+def test_hints_overlay_loads_a_sidecar_and_no_ops_the_other_hooks(tmp_path) -> None:
+    """The sidecar rides the standard overlay protocol; the graph
+    rewrite happens once in the CLI over the *merged* map, so join
+    and contribute are deliberately empty."""
+    from rtl_buddy_view.overlays.hints import HintsOverlay
+
+    path = tmp_path / "hints.json"
+    path.write_text(json.dumps(_sidecar(modules={"sync": {"leaf": True}})))
+    overlay = HintsOverlay()
+    assert overlay.name == "hints"
+    loaded = overlay.load(path)
+    assert loaded.for_module("sync") == ModuleHints(leaf=True)
+    assert overlay.join(_demo_tree(), loaded) is None
+    assert overlay.contribute(None) is None
+
+
+def test_public_constants_document_the_vocabulary() -> None:
+    """The docs table and the warning text both derive from these."""
+    assert hints_mod.PRAGMA_PREFIX == "rbsch"
+    assert hints_mod.KNOWN_FLAGS == ("collapse", "hide", "leaf")
+    assert hints_mod.KNOWN_KEYS == ("label",)

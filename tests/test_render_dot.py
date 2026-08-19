@@ -8,6 +8,7 @@ the existing counter / empty-module tests.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 
 from rtl_buddy_view.extractor import (
@@ -27,6 +28,7 @@ def _node(
     instance: Instance | None = None,
     is_blackbox: bool = False,
     children: tuple[HierNode, ...] = (),
+    display_label: str | None = None,
 ) -> HierNode:
     return HierNode(
         instance_path=instance_path,
@@ -35,6 +37,7 @@ def _node(
         module=None,
         is_blackbox=is_blackbox,
         children=children,
+        display_label=display_label,
     )
 
 
@@ -1057,3 +1060,79 @@ def test_signal_edge_traces_implicit_named_connections() -> None:
     dot_render.render(root, out)
     text = out.getvalue()
     assert '"_in_data_in" -> "top.u_a"' in text
+
+
+# --- display_label (rbsch pragmas, epic #159) --------------------------------
+
+
+def test_display_label_leads_the_text_label() -> None:
+    """The author's role name is the title; the names it replaces
+    demote to subtitles rather than disappearing."""
+    child = _node(
+        "top.u_csr",
+        "peakrdl_csr",
+        instance=_instance("u_csr", "peakrdl_csr"),
+        display_label="CSR block",
+    )
+    out = io.StringIO()
+    dot_render.render(_node("top", "top", children=(child,)), out)
+    assert r"CSR block\lu_csr\lpeakrdl_csr\l" in out.getvalue()
+
+
+def test_display_label_is_escaped_like_every_other_label_segment() -> None:
+    child = _node(
+        "top.u_csr",
+        "csr",
+        instance=_instance("u_csr", "csr"),
+        display_label='the "wide"  path',
+    )
+    out = io.StringIO()
+    dot_render.render(_node("top", "top", children=(child,)), out)
+    # Quotes escaped, whitespace runs collapsed — same as _escape().
+    assert r"the \"wide\" path\lu_csr" in out.getvalue()
+
+
+def test_no_display_label_leaves_the_label_untouched() -> None:
+    """Graceful degradation: a hint-free node renders byte-identically."""
+    child = _node("top.u_csr", "csr", instance=_instance("u_csr", "csr"))
+    plain = io.StringIO()
+    dot_render.render(_node("top", "top", children=(child,)), plain)
+    labelled = io.StringIO()
+    dot_render.render(
+        _node(
+            "top",
+            "top",
+            children=(dataclasses.replace(child, display_label=None),),
+        ),
+        labelled,
+    )
+    assert plain.getvalue() == labelled.getvalue()
+
+
+def test_display_label_titles_a_block_mode_cluster() -> None:
+    grand = _node("top.u_c.u_g", "grand", instance=_instance("u_g", "grand"))
+    child = _node(
+        "top.u_c",
+        "compute",
+        instance=_instance("u_c", "compute"),
+        children=(grand,),
+        display_label="ALU datapath",
+    )
+    out = io.StringIO()
+    dot_render.render(_node("top", "top", children=(child,)), out, block_diagram=True)
+    text = out.getvalue()
+    assert "<B>ALU datapath</B>" in text
+    # Instance + module rows survive underneath the title.
+    assert ">u_c<" in text
+    assert ">compute<" in text
+
+
+def test_display_label_survives_the_html_grid_label_path() -> None:
+    """The multi-crossing grid form shares ``_label_for``'s precedence."""
+    node = _node(
+        "top.u_fifo",
+        "async_fifo",
+        instance=_instance("u_fifo", "async_fifo"),
+        display_label="CDC FIFO",
+    )
+    assert dot_render._label_text_lines(node, None)[0] == "CDC FIFO"
