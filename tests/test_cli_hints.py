@@ -330,3 +330,50 @@ def test_no_pragmas_restores_the_unbundled_handshake() -> None:
     dot = result.stdout
     assert "cmd_bus" not in dot
     assert '"bd_top.u_cons" -> "bd_top.u_prod"' in dot
+
+
+# --- phase 4: layout hints end to end ---------------------------------------
+
+LAYOUT_FIXTURES = Path(__file__).parent / "fixtures" / "layout_demo"
+LAYOUT_FILELIST = LAYOUT_FIXTURES / "files.f"
+
+
+def _render_layout(*args: str) -> subprocess.CompletedProcess[str]:
+    return _run(
+        "--top",
+        "ld_top",
+        "--filelist",
+        str(LAYOUT_FILELIST),
+        "--format",
+        "dot",
+        "--block-diagram",
+        *args,
+    )
+
+
+def test_group_hint_draws_a_dashed_virtual_container() -> None:
+    result = _render_layout()
+    assert result.returncode == 0, result.stderr
+    dot = result.stdout
+    start = dot.index("subgraph cluster_grp_ld_top__frontend {")
+    body = dot[start : dot.index("\n  }", start)]
+    assert 'label="frontend"' in body
+    assert 'style="rounded,dashed"' in body
+    # Both members emit inside the container; the ungrouped stage
+    # stays outside it.
+    assert '"ld_top.u_fetch"' in body
+    assert '"ld_top.u_decode"' in body
+    assert '"ld_top.u_execute"' not in body
+    assert "hints:" not in result.stderr
+
+
+def test_rank_hints_chain_invisible_ordering_edges() -> None:
+    dot = _render_layout().stdout
+    assert '"ld_top.u_fetch" -> "ld_top.u_decode" [style=invis, weight=8];' in dot
+    assert '"ld_top.u_decode" -> "ld_top.u_execute" [style=invis, weight=8];' in dot
+
+
+def test_no_pragmas_drops_the_layout_scaffolding() -> None:
+    dot = _render_layout("--no-pragmas").stdout
+    assert "cluster_grp_" not in dot
+    assert "[style=invis, weight=8]" not in dot

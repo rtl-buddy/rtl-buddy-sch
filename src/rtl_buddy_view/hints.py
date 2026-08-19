@@ -80,8 +80,16 @@ KNOWN_FLAGS: tuple[str, ...] = ("collapse", "hide", "leaf")
 #: ``side`` set the emphasis the net's dataflow edge is drawn with.
 KNOWN_NET_FLAGS: tuple[str, ...] = ("clock", "data", "main", "reset", "side")
 
-#: ``key=value`` pragma words (box vocabulary).
-KNOWN_KEYS: tuple[str, ...] = ("label",)
+#: ``key=value`` pragma words (box vocabulary). ``label`` is valid on
+#: modules and instances; ``rank`` and ``group`` (phase 4, layout)
+#: only mean something on an instance — ``rank=<n>`` biases the
+#: column order so left→right reads as pipeline order, and
+#: ``group=<name>`` draws a dashed container around related sibling
+#: instances that aren't a hierarchy level.
+KNOWN_KEYS: tuple[str, ...] = ("group", "label", "rank")
+
+#: The box keys that only mean something on an instance.
+INSTANCE_ONLY_KEYS: tuple[str, ...] = ("group", "rank")
 
 #: ``key=value`` pragma words that target a net. ``bundle=<name>``
 #: names the wire group a net belongs to: every net sharing a bundle
@@ -321,15 +329,31 @@ class ModuleHints:
 
 @dataclass(frozen=True)
 class InstanceHints:
-    """Hints attached to one instantiation, keyed by (parent module, name)."""
+    """Hints attached to one instantiation, keyed by (parent module, name).
+
+    ``rank`` and ``group`` (phase 4) are renderer-facing layout
+    hints: ``rank`` biases the instance's column so left→right reads
+    as pipeline order, ``group`` wraps same-named siblings in a
+    dashed container. ``group=""`` — reachable only through a
+    sidecar — is the explicit revoke, treated as "no group" by every
+    consumer (the truthiness check they share with ``bundle``).
+    """
 
     collapse: bool | None = None
     hide: bool | None = None
     label: str | None = None
+    rank: int | None = None
+    group: str | None = None
 
     @property
     def is_empty(self) -> bool:
-        return self.collapse is None and self.hide is None and self.label is None
+        return (
+            self.collapse is None
+            and self.hide is None
+            and self.label is None
+            and self.rank is None
+            and self.group is None
+        )
 
 
 @dataclass(frozen=True)
@@ -672,6 +696,20 @@ def _resolve_box(
                 current = replace(current, hide=True)
         if label is not None:
             current = replace(current, label=label)
+        rank_text = pragma.option("rank")
+        if rank_text is not None:
+            try:
+                current = replace(current, rank=int(rank_text, base=10))
+            except ValueError:
+                warnings.append(
+                    f"{where}: rank must be an integer (got {rank_text!r}); ignored"
+                )
+        group = pragma.option("group")
+        if group is not None:
+            if group:
+                current = replace(current, group=group)
+            else:
+                warnings.append(f"{where}: group needs a name (write group=…); ignored")
         instances[key] = current
     else:
         current_m = modules.get(decl.module, ModuleHints())
@@ -684,6 +722,12 @@ def _resolve_box(
                 )
             elif flag == "leaf":
                 current_m = replace(current_m, leaf=True)
+        for key_name in INSTANCE_ONLY_KEYS:
+            if pragma.option(key_name) is not None:
+                warnings.append(
+                    f"{where}: {key_name!r} applies to an instance, not "
+                    f"{_describe(decl)}; move it onto the instantiation"
+                )
         if label is not None:
             current_m = replace(current_m, label=label)
         modules[decl.module] = current_m
@@ -790,6 +834,8 @@ def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
             ),
             hide=current_i.hide if inst_hints.hide is None else inst_hints.hide,
             label=current_i.label if inst_hints.label is None else inst_hints.label,
+            rank=current_i.rank if inst_hints.rank is None else inst_hints.rank,
+            group=current_i.group if inst_hints.group is None else inst_hints.group,
         )
     nets = dict(base.nets)
     for net_key, net_hints in override.nets.items():
@@ -836,6 +882,16 @@ def _require_str(value: object, *, where: str, key: str) -> str:
     if not isinstance(value, str):
         raise HintsError(
             f"{where}: {key!r} must be a string, got {type(value).__name__}"
+        )
+    return value
+
+
+def _require_int(value: object, *, where: str, key: str) -> int:
+    # ``bool`` is an ``int`` subclass; a JSON ``true`` reaching a rank
+    # is a mistake, not a column.
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise HintsError(
+            f"{where}: {key!r} must be an integer, got {type(value).__name__}"
         )
     return value
 
@@ -905,6 +961,16 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
             elif name == "label":
                 inst_hints = replace(
                     inst_hints, label=_require_str(value, where=where, key=name)
+                )
+            elif name == "rank":
+                inst_hints = replace(
+                    inst_hints, rank=_require_int(value, where=where, key=name)
+                )
+            elif name == "group":
+                # ``""`` is legal here and only here: the sidecar's
+                # explicit revoke of an in-source group membership.
+                inst_hints = replace(
+                    inst_hints, group=_require_str(value, where=where, key=name)
                 )
             else:
                 warnings.append(f"{where}: {_unknown_word_warning(name)}")

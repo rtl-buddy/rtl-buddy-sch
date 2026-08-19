@@ -451,11 +451,11 @@ def test_sidecar_unknown_field_warns_but_loads() -> None:
 
 def test_sidecar_unknown_instance_field_warns_but_loads() -> None:
     hints = parse_hint_sidecar(
-        _sidecar(instances={"top.u_a": {"hide": True, "rank": 3}}),
+        _sidecar(instances={"top.u_a": {"hide": True, "colapse": True}}),
         source="sidecar.json",
     )
     assert hints.for_instance("top", "u_a") == InstanceHints(hide=True)
-    assert "rank" in hints.warnings[0]
+    assert "colapse" in hints.warnings[0]
 
 
 def test_sidecar_empty_entry_is_dropped() -> None:
@@ -581,7 +581,9 @@ def test_public_constants_document_the_vocabulary() -> None:
     """The docs table and the warning text both derive from these."""
     assert hints_mod.PRAGMA_PREFIX == "rbsch"
     assert hints_mod.KNOWN_FLAGS == ("collapse", "hide", "leaf")
-    assert hints_mod.KNOWN_KEYS == ("label",)
+    assert hints_mod.KNOWN_KEYS == ("group", "label", "rank")
+    assert hints_mod.KNOWN_NET_FLAGS == ("clock", "data", "main", "reset", "side")
+    assert hints_mod.KNOWN_NET_KEYS == ("bundle",)
 
 
 # --- phase 2: net vocabulary ------------------------------------------------
@@ -920,3 +922,66 @@ def test_merge_sidecar_empty_bundle_revokes_in_source_membership() -> None:
     override = HintMap(nets={("m", "a"): hints_mod.NetHints(bundle="")})
     merged = merge_hint_maps(base, override)
     assert merged.nets[("m", "a")].bundle == ""
+
+
+# --- phase 4: layout hints --------------------------------------------------
+
+
+def test_rank_and_group_parse_and_land_on_the_instance() -> None:
+    table = _table(_module("m", 1, instances=(_instance("u_a", "a", 3),)))
+    text = "\n" * 2 + "a u_a ();  // rbsch: rank=2 group=frontend\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.instances[("m", "u_a")] == InstanceHints(rank=2, group="frontend")
+    assert hints.warnings == ()
+
+
+def test_non_integer_rank_warns_and_is_ignored() -> None:
+    table = _table(_module("m", 1, instances=(_instance("u_a", "a", 3),)))
+    text = "\n" * 2 + "a u_a ();  // rbsch: rank=first\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.instances == {}
+    assert any("rank must be an integer" in w for w in hints.warnings)
+
+
+def test_empty_group_name_warns_and_is_ignored() -> None:
+    table = _table(_module("m", 1, instances=(_instance("u_a", "a", 3),)))
+    text = "\n" * 2 + "a u_a ();  // rbsch: group=\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.instances == {}
+    assert any("group needs a name" in w for w in hints.warnings)
+
+
+def test_rank_on_a_module_warns() -> None:
+    table = _table(_module("m", 3))
+    text = "\n// rbsch: rank=1\n"
+    hints = resolve_hints(scan_pragmas({FILE: text}), table)
+    assert hints.modules == {}
+    assert any("'rank' applies to an instance" in w for w in hints.warnings)
+
+
+def test_sidecar_parses_rank_and_group() -> None:
+    hints = parse_hint_sidecar(
+        {
+            "schema_version": "1.1",
+            "instances": {"m.u_a": {"rank": 3, "group": "backend"}},
+        },
+        source="hints.json",
+    )
+    assert hints.instances[("m", "u_a")] == InstanceHints(rank=3, group="backend")
+
+
+def test_sidecar_boolean_rank_raises() -> None:
+    """``bool`` is an ``int`` subclass; a JSON ``true`` is a mistake,
+    not a column."""
+    with pytest.raises(HintsError, match="must be an integer"):
+        parse_hint_sidecar(
+            {"schema_version": "1.1", "instances": {"m.u_a": {"rank": True}}},
+            source="hints.json",
+        )
+
+
+def test_merge_sidecar_empty_group_revokes_membership() -> None:
+    base = HintMap(instances={("m", "u_a"): InstanceHints(group="frontend", rank=1)})
+    override = HintMap(instances={("m", "u_a"): InstanceHints(group="")})
+    merged = merge_hint_maps(base, override)
+    assert merged.instances[("m", "u_a")] == InstanceHints(group="", rank=1)

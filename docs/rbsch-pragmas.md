@@ -11,9 +11,9 @@ describes.
 > Phase 1 (epic
 > [#159](https://github.com/rtl-buddy/rtl-buddy-sch/issues/159))
 > ships abstraction control and semantic labels; phase 2 adds net
-> classification; phase 3 adds named bundles. Layout hints and
-> blackbox pin pinning are phases 4–5 of the same epic; this
-> document grows with them.
+> classification; phase 3 adds named bundles; phase 4 adds layout
+> hints. Blackbox pin pinning is phase 5 of the same epic; this
+> document grows with it.
 
 ## The `rb` prefix convention
 
@@ -46,9 +46,10 @@ every other tool.
   vocabulary shapes modules and instances (`leaf`, `collapse`,
   `hide`), the **net** vocabulary classifies wires (`clock`,
   `reset`, `data`, `main`, `side`).
-- `key=value` words carry a value: `label="CSR block (PeakRDL)"`
-  (box) and `bundle=cmd_bus` (net). Quoting follows shell rules
-  (single or double quotes), so a value with spaces must be quoted.
+- `key=value` words carry a value: `label="CSR block (PeakRDL)"`,
+  `rank=2` and `group=frontend` (box), `bundle=cmd_bus` (net).
+  Quoting follows shell rules (single or double quotes), so a value
+  with spaces must be quoted.
 - Only `//` line comments are scanned; `/* rbsch: … */`
   is not a pragma.
 - Order doesn't matter, and several words may share one comment.
@@ -226,6 +227,49 @@ what the wires do; `bundle=` lets the author say what they *mean*:
 - The member nets stay in the JSON / ELK payloads; only the label
   changes.
 
+## Phase 4 vocabulary — layout hints
+
+Graphviz lays out what the wires imply; sometimes the author knows
+better how the figure should *read*:
+
+| pragma | valid on | effect |
+|---|---|---|
+| `rank=<n>` | instance | bias the column order: lower ranks land further left, so left→right reads as pipeline order |
+| `group=<name>` | instance | draw a dashed virtual container around every sibling instance sharing the name — a grouping that isn't a hierarchy level (`cclk_domain`, `frontend`) |
+
+```systemverilog
+  ld_stage u_fetch  (  // rbsch: rank=1 group=frontend
+      …
+  );
+  ld_stage u_decode (  // rbsch: rank=2 group=frontend
+      …
+  );
+  ld_stage u_execute (  // rbsch: rank=3
+      …
+  );
+```
+
+- Both apply to the **cluster-tree dot modes** (`--block-diagram`
+  and the JSON-embedded cluster layout); tree, mermaid and JSON
+  hierarchy output are untouched.
+- `rank=` is realized as invisible ordering edges between successive
+  rank groups — a *bias*, not a guarantee: real dataflow edges still
+  participate in ranking, which is exactly right, because the author
+  is ordering the pipeline, not overruling its wiring. Ranks are
+  scoped to one parent: `rank=1` in two different scopes never
+  interact.
+- `group=` containers render dashed and neutral — an annotation,
+  never a fake module boundary. The container opens where its first
+  member lands in the largest-first emission order, so members stay
+  together while everything else keeps the established layout. The
+  group name is scoped to the parent instance; the same name in two
+  scopes yields two containers.
+- On a module declaration both warn — like `collapse`, they are
+  statements about one *placement*, and a module has many.
+- Sidecar: instance entries take `"rank"` (an integer — a JSON
+  `true` is rejected) and `"group"` (a string, `""` being the
+  explicit revoke of an in-source membership).
+
 ## Sidecar JSON
 
 Vendor and generated IP can't take a comment. The same vocabulary
@@ -247,7 +291,7 @@ rtl-buddy-view --top demo_tiny_alu_subsys_top \
   "instances": {
     "demo_tiny_alu_subsys_top.u_afifo": { "collapse": true },
     "demo_tiny_alu_subsys_top.u_dbg_tap": { "hide": true },
-    "demo_tiny_alu_subsys_top.u_compute": { "label": "ALU datapath" }
+    "demo_tiny_alu_subsys_top.u_compute": { "label": "ALU datapath", "rank": 2 }
   },
   "nets": {
     "demo_tiny_alu_subsys_top.tick": { "classification": "clock" },

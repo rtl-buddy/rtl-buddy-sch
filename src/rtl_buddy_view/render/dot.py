@@ -286,16 +286,16 @@ def _emit_top_frame(
         # Children are emitted largest-first (descendant count, then
         # source line span) so big sub-blocks land top-left within
         # the parent cluster — schematic skim convention.
-        for child in _children_sorted_by_complexity(top):
-            _emit_cluster_subtree(
-                child,
-                out,
-                domain_map,
-                reset_map=reset_map,
-                top_level=True,
-                parent_group="cluster_top",
-                compact_params=block_diagram,
-            )
+        _emit_scope_children(
+            top,
+            out,
+            domain_map,
+            reset_map=reset_map,
+            hints=hints,
+            top_level=True,
+            parent_cluster="cluster_top",
+            compact_params=block_diagram,
+        )
     else:
         # Original box-and-arrow tree: each child is a flat node and
         # parent→child edges carry the port-pair / CDC / RDC labels.
@@ -895,6 +895,7 @@ def _emit_cluster_subtree(
     top_level: bool = False,
     parent_group: str | None = None,
     compact_params: bool = False,
+    hints: HintMap | None = None,
 ) -> None:
     """Recursively emit ``node`` and its descendants.
 
@@ -1019,16 +1020,145 @@ def _emit_cluster_subtree(
         f'    "{node.instance_path}" [shape=point, style=invis,'
         f" width=0, height=0{group_attr}];\n"
     )
-    for child in _children_sorted_by_complexity(node):
-        _emit_cluster_subtree(
-            child,
-            out,
-            domain_map,
-            reset_map=reset_map,
-            parent_group=cluster_id,
-            compact_params=compact_params,
-        )
+    _emit_scope_children(
+        node,
+        out,
+        domain_map,
+        reset_map=reset_map,
+        hints=hints,
+        top_level=False,
+        parent_cluster=cluster_id,
+        compact_params=compact_params,
+    )
     out.write("  }\n")
+
+
+def _layout_hint_for(scope: HierNode, child: HierNode, hints: HintMap | None):
+    """The child instance's box hints, looked up from its parent scope."""
+    if hints is None or child.instance is None:
+        return None
+    return hints.for_instance(scope.module_name, child.instance.name)
+
+
+def _group_cluster_id(scope_path: str, name: str) -> str:
+    """Cluster id for one ``rbsch`` layout-group container.
+
+    Scoped by the parent instance path so the same group name in two
+    scopes yields two containers, and prefixed distinctly from
+    :func:`_cluster_id_for` ids so a group can never collide with a
+    real instance's cluster.
+    """
+    return (
+        "cluster_grp_"
+        + re.sub(r"[^A-Za-z0-9_]", "_", scope_path)
+        + "__"
+        + re.sub(r"[^A-Za-z0-9_]", "_", name)
+    )
+
+
+def _emit_scope_children(
+    scope: HierNode,
+    out: IO[str],
+    domain_map: DomainMap | None,
+    *,
+    reset_map: ResetDomainMap | None,
+    hints: HintMap | None,
+    top_level: bool,
+    parent_cluster: str,
+    compact_params: bool,
+) -> None:
+    """Emit one scope's children, honoring ``rbsch`` layout hints.
+
+    Children sharing a ``group=<name>`` hint emit inside one dashed
+    container subgraph — a *virtual* hierarchy level: related
+    siblings boxed together without a wrapper module existing in the
+    RTL (the epic's ``cclk_domain`` case). The container opens where
+    its first member lands in the complexity-sorted order, so group
+    members stay together while everything else keeps the
+    established largest-first layout. Members keep their own
+    Graphviz ``group=`` *column* attribute (`parent_cluster`), which
+    is an unrelated dot knob despite the name.
+
+    After the children, ``rank=`` hints become a chain of invisible
+    ordering edges (:func:`_emit_rank_chain`).
+    """
+    members: dict[str, list[HierNode]] = {}
+    for child in _children_sorted_by_complexity(scope):
+        hint = _layout_hint_for(scope, child, hints)
+        if hint is not None and hint.group:
+            members.setdefault(hint.group, []).append(child)
+
+    emitted: set[str] = set()
+    for child in _children_sorted_by_complexity(scope):
+        hint = _layout_hint_for(scope, child, hints)
+        name = hint.group if hint is not None and hint.group else None
+        if name is None:
+            _emit_cluster_subtree(
+                child,
+                out,
+                domain_map,
+                reset_map=reset_map,
+                top_level=top_level,
+                parent_group=parent_cluster,
+                compact_params=compact_params,
+                hints=hints,
+            )
+            continue
+        if name in emitted:
+            continue
+        emitted.add(name)
+        out.write(f"  subgraph {_group_cluster_id(scope.instance_path, name)} {{\n")
+        out.write(f'    label="{_escape(name)}";\n')
+        out.write('    labelloc="t";\n')
+        out.write('    labeljust="l";\n')
+        # Dashed + neutral: a virtual container must read as an
+        # annotation, never as a real module boundary.
+        out.write('    style="rounded,dashed";\n')
+        out.write('    color="#94a3b8";\n')
+        out.write("    penwidth=1;\n")
+        for member in members[name]:
+            _emit_cluster_subtree(
+                member,
+                out,
+                domain_map,
+                reset_map=reset_map,
+                top_level=top_level,
+                parent_group=parent_cluster,
+                compact_params=compact_params,
+                hints=hints,
+            )
+        out.write("  }\n")
+
+    _emit_rank_chain(scope, out, hints)
+
+
+def _emit_rank_chain(scope: HierNode, out: IO[str], hints: HintMap | None) -> None:
+    """Realize ``rank=`` hints as invisible ordering edges.
+
+    Every child (leaf box or cluster anchor) owns a node named by its
+    instance path, so an invisible edge between successive rank
+    groups biases dot's rank assignment left→right in hint order —
+    each member of rank *n* points at the first member of rank
+    *n + 1*. A bias, not a guarantee: real dataflow edges still
+    participate in ranking, which is exactly right — the author is
+    ordering the pipeline, not overruling its wiring. Same-rank
+    members share the same upstream/downstream constraints but no
+    ``rank=same`` statement is emitted: cluster members can't legally
+    share a rank statement across cluster boundaries, and the
+    acceptance bar for these figures is zero Graphviz warnings.
+    """
+    ranked: dict[int, list[str]] = {}
+    for child in scope.children:
+        hint = _layout_hint_for(scope, child, hints)
+        if hint is not None and hint.rank is not None:
+            ranked.setdefault(hint.rank, []).append(child.instance_path)
+    if len(ranked) < 2:
+        return
+    ordered = sorted(ranked.items())
+    for (_, current), (_, following) in zip(ordered, ordered[1:]):
+        target = sorted(following)[0]
+        for member in sorted(current):
+            out.write(f'    "{member}" -> "{target}" [style=invis, weight=8];\n')
 
 
 def _emit_node(
