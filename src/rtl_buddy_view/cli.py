@@ -57,6 +57,7 @@ from rtl_buddy_view.coverage_annotations import (
 )
 from rtl_buddy_view import graph_export, query
 from rtl_buddy_view.extractor import ModuleTable
+from rtl_buddy_view import elk_export
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
 from rtl_buddy_view.frontend.verible import VeribleParseError, VeribleUnavailable
 from rtl_buddy_view.graph import (
@@ -90,6 +91,7 @@ class OutputFormat(str, Enum):
     dot = "dot"
     mermaid = "mermaid"
     json = "json"
+    elk = "elk"
 
 
 class CoverageMetric(str, Enum):
@@ -166,7 +168,9 @@ def main(
         case_sensitive=False,
         help="Output format. tree = ASCII; dot = Graphviz; "
         "mermaid = markdown-embeddable flowchart; json = "
-        "machine-readable (rtl_buddy consumes this).",
+        "machine-readable (rtl_buddy consumes this); elk = "
+        "engine-neutral ELK-shaped schematic payload with ports, "
+        "pins and bus widths, for an elkjs canvas (docs/elk-json-v1.md).",
     ),
     output_path: Path | None = typer.Option(
         None,
@@ -532,6 +536,16 @@ def _render(
         )
     elif fmt is OutputFormat.mermaid:
         mermaid_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
+    elif fmt is OutputFormat.elk:
+        # The exporter reads formal pin names and declared widths off
+        # the module table, so an absent table is not a degraded
+        # payload — it is an empty one. The CLI always supplies it.
+        elk_export.render(
+            root,
+            sink,
+            module_table=module_table if module_table is not None else ModuleTable(),
+            domain_map=domain_map,
+        )
     elif fmt is OutputFormat.json:
         json_render.render(
             root,

@@ -88,6 +88,11 @@ _RESET_NAME_RE = re.compile(r"(?i)(?:^|_)(rst|reset)(?:$|_)")
 _BLOCK_EXTRA_CLOCK_RE = re.compile(r"(?i)^[^_]*(clk|clock)$")
 _BLOCK_EXTRA_RESET_RE = re.compile(r"(?i)^[^_]*(rst|reset)_?n[ib]?$")
 
+#: The leading ``[msb:lsb]`` of a packed range, integer bounds only.
+#: A parameterised bound (``[PTR_W-1:0]``) deliberately fails to
+#: match — see :func:`port_width`.
+_PACKED_RANGE_RE = re.compile(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]")
+
 #: An identifier token that is *not* a field select (not preceded by
 #: ``.``), not the base part of a sized literal (not preceded by
 #: ``'``), and not a system task/function name (not preceded by ``$``).
@@ -110,11 +115,32 @@ class NetEdge:
     — sorted and deduped, so a 19-bit payload split across three sink
     pins collapses to the single net that actually carries it. All
     edges sharing an endpoint pair are bundled into one record.
+
+    ``src_pins`` / ``dst_pins`` name the **formal ports** the bundle
+    attaches to at each end — ``("wr_en", "wr_data")`` rather than the
+    nets those pins happen to be bound to. For an ``("inst", …)``
+    endpoint they are the child module's declared port names; for a
+    ``("port", name)`` endpoint the scope's own port is the pin, so
+    the tuple is ``(name,)``. Both are deduped and sorted. A pin only
+    appears when it participates in *this* bundle: a driver pin whose
+    net actually reaches the sink, a sink pin actually reached.
+
+    ``bits`` is the bundle's total width — the sum over ``nets`` of
+    each net's width, taken from the *driving* pin's declared port
+    type (see :func:`port_width`). ``None`` when any net in the bundle
+    has an unknown width, because a partial sum would read as a real
+    number to a consumer drawing bus slashes.
+
+    All three are additive with defaults: the block-diagram renderer
+    predates them and its output is unchanged.
     """
 
     src: Endpoint
     dst: Endpoint
     nets: tuple[str, ...]
+    src_pins: tuple[str, ...] = ()
+    dst_pins: tuple[str, ...] = ()
+    bits: int | None = None
 
 
 def root_identifiers(expr_text: str) -> tuple[str, ...]:
@@ -143,6 +169,42 @@ def root_identifiers(expr_text: str) -> tuple[str, ...]:
     for match in _ROOT_IDENT_RE.finditer(expr_text):
         seen.setdefault(match.group(0), None)
     return tuple(seen)
+
+
+def port_width(type_text: str | None) -> int | None:
+    """Declared bit width of a port from its verbatim type slice.
+
+    ``logic [7:0]`` → 8, ``logic`` → 1, ``logic [PTR_W-1:0]`` → None,
+    ``None`` → None::
+
+        port_width("logic [18:0]")    == 19
+        port_width("wire")            == 1
+        port_width("logic [W-1:0]")   is None
+
+    No expression evaluation and no type resolution — a parameterised
+    bound is reported as *unknown* rather than guessed, because a
+    wrong bus width on a schematic is worse than an unlabelled wire.
+    Only the leading packed range is read: for
+    ``logic [3:0][7:0]`` (a packed array) the first dimension is
+    returned, which is the number of elements, not the bit count —
+    a documented under-report rather than a silent wrong total.
+
+    Callers holding a :class:`~rtl_buddy_view.extractor.Port` should
+    additionally treat ``port_kind != "wire"`` as unknown: an
+    interface bundle has no width, and this function would read its
+    range-less type slice as a scalar.
+    """
+    if type_text is None:
+        return None
+    if "[" in type_text:
+        match = _PACKED_RANGE_RE.search(type_text)
+        if match is None:
+            return None
+        msb, lsb = int(match.group(1)), int(match.group(2))
+        return abs(msb - lsb) + 1
+    if not type_text.strip():
+        return None
+    return 1
 
 
 def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...]:
@@ -182,7 +244,11 @@ def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...
       undirected alias model would have built.
 
     Returned edges are bundled per endpoint pair and sorted by
-    ``(src, dst)``.
+    ``(src, dst)``. Each carries the formal pin names it attaches to
+    (``src_pins`` / ``dst_pins``) and, when every net's width is
+    knowable, the bundle's total ``bits`` — both captured here, where
+    the binding site is still in hand, rather than re-derived by a
+    renderer intersecting net names after the fact.
     """
     # Pins first so their roots exist as flow-graph nodes before the
     # assign pass wires them; isolated roots still need a component of
@@ -202,19 +268,31 @@ def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...
                 flow.connect(rhs, lhs)
 
     groups = _build_groups(module, pins, flow)
+    widths = _net_widths(module, pins)
 
-    # (src, dst) -> net names, accumulated across every group that
-    # produced the pair so a bundle carries all of its signals.
-    bundled: dict[tuple[Endpoint, Endpoint], set[str]] = {}
+    # (src, dst) -> (net names, src formals, dst formals), accumulated
+    # across every group that produced the pair so a bundle carries
+    # all of its signals and all of the pins they land on.
+    bundled: dict[tuple[Endpoint, Endpoint], tuple[set[str], set[str], set[str]]] = {}
     for group in groups.values():
         if _is_clock_or_reset_group(group.names):
             continue
-        for src, dst, nets in group.edges(flow):
-            bundled.setdefault((src, dst), set()).update(nets)
+        for src, dst, nets, src_pins, dst_pins in group.edges(flow):
+            slot = bundled.setdefault((src, dst), (set(), set(), set()))
+            slot[0].update(nets)
+            slot[1].update(src_pins)
+            slot[2].update(dst_pins)
 
     return tuple(
-        NetEdge(src=src, dst=dst, nets=tuple(sorted(nets)))
-        for (src, dst), nets in sorted(bundled.items())
+        NetEdge(
+            src=src,
+            dst=dst,
+            nets=tuple(sorted(nets)),
+            src_pins=tuple(sorted(src_pins)),
+            dst_pins=tuple(sorted(dst_pins)),
+            bits=_bundle_bits(nets, widths),
+        )
+        for (src, dst), (nets, src_pins, dst_pins) in sorted(bundled.items())
     )
 
 
@@ -223,11 +301,34 @@ def scope_connectivity(module: Module, table: ModuleTable) -> tuple[NetEdge, ...
 
 @dataclass(frozen=True)
 class _Pin:
-    """One resolved child-instance pin: where it lands and which way."""
+    """One resolved child-instance pin: where it lands and which way.
+
+    ``formal`` is the child's own port name (the ``.q`` of ``.q(w)``)
+    — the schematic-facing identity that survives into
+    :attr:`NetEdge.src_pins`. ``type_text`` is that port's declared
+    type slice, kept for :func:`port_width`.
+    """
 
     endpoint: Endpoint
     direction: _Direction | None
     roots: tuple[str, ...]
+    formal: str
+    type_text: str | None = None
+
+
+#: ``endpoint -> net root -> formal pin names``. One bucket per role
+#: (driver / sink / unknown / interface) inside a :class:`_Group`.
+#: Nested by root because an edge is resolved per *reached root*, and
+#: only the pins on those roots belong on it.
+_Bucket = dict[Endpoint, dict[str, set[str]]]
+
+
+def _merge_bucket(target: _Bucket, extra: _Bucket) -> None:
+    """Fold ``extra`` into ``target`` in place (union at every level)."""
+    for endpoint, roots in extra.items():
+        slot = target.setdefault(endpoint, {})
+        for root, formals in roots.items():
+            slot.setdefault(root, set()).update(formals)
 
 
 class _FlowGraph:
@@ -319,51 +420,69 @@ class _Group:
 
     def __init__(self) -> None:
         self.names: set[str] = set()
-        self.drivers: dict[Endpoint, set[str]] = {}
-        self.sinks: dict[Endpoint, set[str]] = {}
-        self.unknown: dict[Endpoint, set[str]] = {}
-        self.interfaces: dict[Endpoint, set[str]] = {}
+        self.drivers: _Bucket = {}
+        self.sinks: _Bucket = {}
+        self.unknown: _Bucket = {}
+        self.interfaces: _Bucket = {}
 
     def add(
         self,
-        bucket: dict[Endpoint, set[str]],
+        bucket: _Bucket,
         endpoint: Endpoint,
-        nets: tuple[str, ...],
+        root: str,
+        formal: str,
     ) -> None:
-        bucket.setdefault(endpoint, set()).update(nets)
-        self.names.update(nets)
+        bucket.setdefault(endpoint, {}).setdefault(root, set()).add(formal)
+        self.names.add(root)
 
-    def edges(self, flow: _FlowGraph) -> list[tuple[Endpoint, Endpoint, set[str]]]:
-        """Resolve roles into ``(src, dst, nets)`` triples.
+    def edges(
+        self, flow: _FlowGraph
+    ) -> list[tuple[Endpoint, Endpoint, set[str], set[str], set[str]]]:
+        """Resolve roles into ``(src, dst, nets, src_pins, dst_pins)``.
 
         A pair is emitted only when something the driver sources
         reaches something the sink reads in ``flow``. ``nets`` is the
         reached subset of the *sink* side: the net a receiver is
         actually bound to is the one worth labelling the edge with.
+
+        The pin sets are filtered by the same reachability, so a
+        driver pin on a net that feeds nothing on this sink stays off
+        the edge even when the same endpoint pair is connected
+        elsewhere in the group.
         """
-        drivers = dict(self.drivers)
-        sinks = dict(self.sinks)
-        for endpoint, nets in self.interfaces.items():
+        drivers: _Bucket = {}
+        sinks: _Bucket = {}
+        _merge_bucket(drivers, self.drivers)
+        _merge_bucket(sinks, self.sinks)
+        for endpoint, roots in self.interfaces.items():
             # Bidirectional by construction — see the interface-port
             # rule in :func:`scope_connectivity`.
             if self.sinks or not self.drivers:
-                drivers.setdefault(endpoint, set()).update(nets)
+                _merge_bucket(drivers, {endpoint: roots})
             if self.drivers:
-                sinks.setdefault(endpoint, set()).update(nets)
+                _merge_bucket(sinks, {endpoint: roots})
         if drivers:
-            for endpoint, nets in self.unknown.items():
-                sinks.setdefault(endpoint, set()).update(nets)
-        out: list[tuple[Endpoint, Endpoint, set[str]]] = []
-        for src, src_nets in drivers.items():
+            _merge_bucket(sinks, self.unknown)
+        out: list[tuple[Endpoint, Endpoint, set[str], set[str], set[str]]] = []
+        for src, src_roots in drivers.items():
+            downstream_of = {root: flow.reachable_from(root) for root in src_roots}
             downstream: set[str] = set()
-            for root in src_nets:
-                downstream |= flow.reachable_from(root)
-            for dst, dst_nets in sinks.items():
+            for reach in downstream_of.values():
+                downstream |= reach
+            for dst, dst_roots in sinks.items():
                 if src == dst:
                     continue
-                reached = dst_nets & downstream
-                if reached:
-                    out.append((src, dst, reached))
+                reached = set(dst_roots) & downstream
+                if not reached:
+                    continue
+                src_pins = {
+                    formal
+                    for root, formals in src_roots.items()
+                    if downstream_of[root] & reached
+                    for formal in formals
+                }
+                dst_pins = {formal for root in reached for formal in dst_roots[root]}
+                out.append((src, dst, reached, src_pins, dst_pins))
         return out
 
 
@@ -374,6 +493,11 @@ def _collect_pins(module: Module, table: ModuleTable) -> tuple[_Pin, ...]:
         child = table.modules_by_name.get(inst.module_name)
         directions: dict[str, _Direction | None] = (
             {p.name: p.direction for p in child.ports} if child is not None else {}
+        )
+        types: dict[str, str | None] = (
+            {p.name: p.type_text for p in child.ports if p.port_kind == "wire"}
+            if child is not None
+            else {}
         )
         endpoint: Endpoint = ("inst", inst.name)
         for conn in inst.port_connections:
@@ -394,9 +518,71 @@ def _collect_pins(module: Module, table: ModuleTable) -> tuple[_Pin, ...]:
                     if child is not None
                     else None,
                     roots=roots,
+                    formal=conn.port_name,
+                    type_text=types.get(conn.port_name),
                 )
             )
     return tuple(pins)
+
+
+def _net_widths(module: Module, pins: tuple[_Pin, ...]) -> dict[str, int]:
+    """Width of each net root, taken from the pin that *drives* it.
+
+    A net is as wide as its driver declares itself, so the lookup runs
+    from the driving side: a child ``output`` / ``inout`` pin, or —
+    for a net arriving from outside this scope — the enclosing
+    module's own ``input`` port.
+
+    Three cases deliberately yield no entry (the caller reads a
+    missing key as "unknown"):
+
+    * a driver whose declared type has a parameterised bound, an
+      interface kind, or no type at all;
+    * a driver bound to a multi-root expression (``.q({a, b})``),
+      where the port's width belongs to no single net;
+    * a net with two drivers disagreeing on width — under a structural
+      model that is more likely a slice binding than a real conflict,
+      and either way not a number worth printing on a wire.
+
+    A slice binding (``.q(w[3:0])``) reports the *port's* width as the
+    net's, which over-states a wide net driven piecewise. That is the
+    same trade the rest of this module makes: bit ranges are ignored.
+    """
+    candidates: dict[str, set[int | None]] = {}
+
+    def observe(root: str, width: int | None) -> None:
+        candidates.setdefault(root, set()).add(width)
+
+    for pin in pins:
+        if pin.direction not in ("output", "inout"):
+            continue
+        if len(pin.roots) != 1:
+            for root in pin.roots:
+                observe(root, None)
+            continue
+        observe(pin.roots[0], port_width(pin.type_text))
+    for port in module.ports:
+        if port.direction != "input":
+            continue
+        width = port_width(port.type_text) if port.port_kind == "wire" else None
+        observe(port.name, width)
+
+    return {
+        root: next(iter(widths))  # type: ignore[misc]
+        for root, widths in candidates.items()
+        if len(widths) == 1 and None not in widths
+    }
+
+
+def _bundle_bits(nets: set[str], widths: dict[str, int]) -> int | None:
+    """Total width of a bundle, or ``None`` when any net is unknown."""
+    total = 0
+    for net in nets:
+        width = widths.get(net)
+        if width is None:
+            return None
+        total += width
+    return total
 
 
 def _build_groups(
@@ -417,7 +603,7 @@ def _build_groups(
                 bucket = group.drivers
             else:
                 bucket = group.unknown
-            group.add(bucket, pin.endpoint, (root,))
+            group.add(bucket, pin.endpoint, root, pin.formal)
 
     for port in module.ports:
         group = group_for(port.name)
@@ -428,7 +614,9 @@ def _build_groups(
             bucket = group.sinks
         else:
             bucket = group.interfaces
-        group.add(bucket, endpoint, (port.name,))
+        # The scope's own port *is* the pin at that endpoint, so the
+        # formal name is the port name.
+        group.add(bucket, endpoint, port.name, port.name)
 
     return groups
 

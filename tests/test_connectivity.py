@@ -8,7 +8,12 @@ The Verible-backed end-to-end coverage lives in
 
 from __future__ import annotations
 
-from rtl_buddy_view.connectivity import NetEdge, root_identifiers, scope_connectivity
+from rtl_buddy_view.connectivity import (
+    NetEdge,
+    port_width,
+    root_identifiers,
+    scope_connectivity,
+)
 from rtl_buddy_view.extractor import (
     Assign,
     Instance,
@@ -22,11 +27,13 @@ from rtl_buddy_view.extractor import (
 # --- builders ---------------------------------------------------------------
 
 
-def _port(name: str, direction: str | None, **kw: object) -> Port:
+def _port(
+    name: str, direction: str | None, type_text: str | None = None, **kw: object
+) -> Port:
     return Port(
         name=name,
         direction=direction,  # type: ignore[arg-type]
-        type_text=None,
+        type_text=type_text,
         location=None,
         **kw,  # type: ignore[arg-type]
     )
@@ -128,7 +135,13 @@ def test_direct_net_match_yields_one_edge() -> None:
     )
     edges = scope_connectivity(top, _table(top, _SRC, _SINK))
     assert edges == (
-        NetEdge(src=("inst", "u_src"), dst=("inst", "u_sink"), nets=("w",)),
+        NetEdge(
+            src=("inst", "u_src"),
+            dst=("inst", "u_sink"),
+            nets=("w",),
+            src_pins=("q",),
+            dst_pins=("d",),
+        ),
     )
 
 
@@ -143,7 +156,13 @@ def test_implicit_named_connection_binds_to_same_name() -> None:
     )
     edges = scope_connectivity(top, _table(top, _SRC, _SINK))
     assert edges == (
-        NetEdge(src=("inst", "u_src"), dst=("inst", "u_sink"), nets=("q",)),
+        NetEdge(
+            src=("inst", "u_src"),
+            dst=("inst", "u_sink"),
+            nets=("q",),
+            src_pins=("q",),
+            dst_pins=("d",),
+        ),
     )
 
 
@@ -159,7 +178,13 @@ def test_assign_alias_hop_connects_renamed_nets() -> None:
     )
     edges = scope_connectivity(top, _table(top, _SRC, _SINK))
     assert edges == (
-        NetEdge(src=("inst", "u_src"), dst=("inst", "u_sink"), nets=("b",)),
+        NetEdge(
+            src=("inst", "u_src"),
+            dst=("inst", "u_sink"),
+            nets=("b",),
+            src_pins=("q",),
+            dst_pins=("d",),
+        ),
     )
 
 
@@ -175,7 +200,13 @@ def test_assign_flow_carries_a_driver_downstream() -> None:
     )
     edges = scope_connectivity(top, _table(top, _SRC, _SINK))
     assert edges == (
-        NetEdge(src=("inst", "u_src"), dst=("inst", "u_sink"), nets=("b",)),
+        NetEdge(
+            src=("inst", "u_src"),
+            dst=("inst", "u_sink"),
+            nets=("b",),
+            src_pins=("q",),
+            dst_pins=("d",),
+        ),
     )
 
 
@@ -209,7 +240,13 @@ def test_assign_flow_composes_over_multiple_hops() -> None:
     )
     edges = scope_connectivity(top, _table(top, _SRC, _SINK))
     assert edges == (
-        NetEdge(src=("inst", "u_src"), dst=("inst", "u_sink"), nets=("c",)),
+        NetEdge(
+            src=("inst", "u_src"),
+            dst=("inst", "u_sink"),
+            nets=("c",),
+            src_pins=("q",),
+            dst_pins=("d",),
+        ),
     )
 
 
@@ -256,8 +293,16 @@ def test_mixing_assign_does_not_alias_two_drivers() -> None:
             src=("inst", "u_csr"),
             dst=("inst", "u_afifo"),
             nets=("fifo_wr_en", "hwif_out"),
+            src_pins=("hwif_out",),
+            dst_pins=("wr_data", "wr_en"),
         ),
-        NetEdge(src=("inst", "u_csr"), dst=("inst", "u_cmd"), nets=("hwif_out",)),
+        NetEdge(
+            src=("inst", "u_csr"),
+            dst=("inst", "u_cmd"),
+            nets=("hwif_out",),
+            src_pins=("hwif_out",),
+            dst_pins=("d",),
+        ),
     )
 
 
@@ -287,7 +332,13 @@ def test_interface_port_drives_when_group_has_no_driver() -> None:
     )
     edges = scope_connectivity(top, _table(top, _SINK))
     assert edges == (
-        NetEdge(src=("port", "bus"), dst=("inst", "u_sink"), nets=("bus",)),
+        NetEdge(
+            src=("port", "bus"),
+            dst=("inst", "u_sink"),
+            nets=("bus",),
+            src_pins=("bus",),
+            dst_pins=("d",),
+        ),
     )
 
 
@@ -299,7 +350,13 @@ def test_interface_port_sinks_when_group_has_a_driver() -> None:
     )
     edges = scope_connectivity(top, _table(top, _SRC))
     assert edges == (
-        NetEdge(src=("inst", "u_src"), dst=("port", "bus"), nets=("bus",)),
+        NetEdge(
+            src=("inst", "u_src"),
+            dst=("port", "bus"),
+            nets=("bus",),
+            src_pins=("q",),
+            dst_pins=("bus",),
+        ),
     )
 
 
@@ -331,7 +388,17 @@ def test_blackbox_pin_counts_as_sink_when_a_driver_exists() -> None:
         ),
     )
     edges = scope_connectivity(top, _table(top, _SRC))
-    assert edges == (NetEdge(src=("inst", "u_src"), dst=("inst", "u_bb"), nets=("w",)),)
+    assert edges == (
+        NetEdge(
+            src=("inst", "u_src"),
+            dst=("inst", "u_bb"),
+            nets=("w",),
+            src_pins=("q",),
+            # The blackbox pin has no known direction, but its formal
+            # name is right there at the binding site.
+            dst_pins=("anything",),
+        ),
+    )
 
 
 def test_blackbox_only_group_emits_nothing() -> None:
@@ -521,6 +588,8 @@ def test_edges_bundle_by_endpoint_pair_and_sort_nets() -> None:
             src=("inst", "u_wide"),
             dst=("inst", "u_dual"),
             nets=("alpha", "zeta"),
+            src_pins=("a", "b"),
+            dst_pins=("x", "y"),
         ),
     )
 
@@ -549,3 +618,220 @@ def test_output_is_deterministic_across_runs() -> None:
 def test_module_without_instances_yields_nothing() -> None:
     top = _module("top", ports=(_port("din", "input"),))
     assert scope_connectivity(top, _table(top)) == ()
+
+
+# --- port_width -------------------------------------------------------------
+
+
+def test_port_width_reads_an_integer_packed_range() -> None:
+    assert port_width("logic [18:0]") == 19
+    assert port_width("wire [7:0]") == 8
+
+
+def test_port_width_is_direction_agnostic_about_the_bounds() -> None:
+    """``[0:7]`` is a little-endian vector, still 8 bits wide."""
+    assert port_width("logic [0:7]") == 8
+
+
+def test_port_width_without_a_range_is_one_bit() -> None:
+    assert port_width("logic") == 1
+    assert port_width("wire") == 1
+
+
+def test_port_width_of_a_parameterised_bound_is_unknown() -> None:
+    """A wrong bus width is worse than an unlabelled wire."""
+    assert port_width("logic [PTR_W-1:0]") is None
+    assert port_width("logic [$clog2(DEPTH)-1:0]") is None
+
+
+def test_port_width_of_a_missing_or_empty_type_is_unknown() -> None:
+    assert port_width(None) is None
+    assert port_width("   ") is None
+
+
+# --- formal pins ------------------------------------------------------------
+
+
+def test_implicit_connection_reports_the_formal_not_the_net() -> None:
+    """``.q`` binds net ``q``; the *pin* is still ``q`` on both ends."""
+    sink = _module("sink", ports=(_port("d", "input"),))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q")),
+            _inst("u_sink", "sink", _conn("d", "q")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, _SRC, sink))
+    assert (edge.src_pins, edge.dst_pins) == (("q",), ("d",))
+
+
+def test_interface_endpoint_pins_are_the_port_name() -> None:
+    top = _module(
+        "top",
+        ports=(_port("bus", None, port_kind="interface", interface_type="apb_intf"),),
+        instances=(_inst("u_sink", "sink", _conn("d", "bus.psel")),),
+    )
+    (edge,) = scope_connectivity(top, _table(top, _SINK))
+    assert edge.src_pins == ("bus",)
+
+
+def test_blackbox_endpoint_keeps_its_formal_pin_name() -> None:
+    """Direction is unknown on a blackbox pin; the formal never is."""
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "w")),
+            _inst("u_bb", "missing_module", _conn("data_i", "w")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, _SRC))
+    assert edge.dst_pins == ("data_i",)
+
+
+def test_pins_are_deduped_and_sorted_across_a_bundle() -> None:
+    wide = _module(
+        "wide", ports=(_port("zeta_o", "output"), _port("alpha_o", "output"))
+    )
+    dual = _module("dual", ports=(_port("y_i", "input"), _port("x_i", "input")))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("zeta_o", "n1"), _conn("alpha_o", "n2")),
+            _inst("u_dual", "dual", _conn("y_i", "n1"), _conn("x_i", "n2")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, dual))
+    assert edge.src_pins == ("alpha_o", "zeta_o")
+    assert edge.dst_pins == ("x_i", "y_i")
+
+
+def test_a_driver_pin_off_this_bundle_stays_off_the_edge() -> None:
+    """``u_src`` drives two nets; only one reaches ``u_sink``.
+
+    The unrelated output pin must not be listed on the edge just
+    because the same endpoint pair is connected elsewhere.
+    """
+    wide = _module("wide", ports=(_port("used", "output"), _port("spare", "output")))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("used", "w"), _conn("spare", "unread")),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, _SINK))
+    assert edge.src_pins == ("used",)
+
+
+# --- bit widths -------------------------------------------------------------
+
+
+def test_bits_sum_the_bundle_from_the_driving_pins() -> None:
+    wide = _module(
+        "wide",
+        ports=(
+            _port("payload", "output", "logic [18:0]"),
+            _port("valid", "output", "logic"),
+        ),
+    )
+    dual = _module(
+        "dual",
+        ports=(
+            _port("data", "input", "logic [18:0]"),
+            _port("vld", "input", "logic"),
+        ),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("payload", "pay"), _conn("valid", "vld")),
+            _inst("u_dual", "dual", _conn("data", "pay"), _conn("vld", "vld")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, dual))
+    assert edge.bits == 20
+
+
+def test_bits_are_unknown_when_any_net_in_the_bundle_is() -> None:
+    """A partial sum would read as a real number to a bus-slash renderer."""
+    wide = _module(
+        "wide",
+        ports=(
+            _port("payload", "output", "logic [WIDTH-1:0]"),
+            _port("valid", "output", "logic"),
+        ),
+    )
+    dual = _module(
+        "dual",
+        ports=(_port("data", "input", None), _port("vld", "input", "logic")),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("payload", "pay"), _conn("valid", "vld")),
+            _inst("u_dual", "dual", _conn("data", "pay"), _conn("vld", "vld")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, dual))
+    assert edge.bits is None
+
+
+def test_bits_of_a_net_entering_from_a_scope_port() -> None:
+    """The scope's own ``input`` port is the driver of the net it names."""
+    sink = _module("sink", ports=(_port("d", "input", "logic [7:0]"),))
+    top = _module(
+        "top",
+        ports=(_port("din", "input", "logic [7:0]"),),
+        instances=(_inst("u_sink", "sink", _conn("d", "din")),),
+    )
+    (edge,) = scope_connectivity(top, _table(top, sink))
+    assert edge.bits == 8
+
+
+def test_bits_ignore_the_sink_side_width() -> None:
+    """Only the driver declares the net; a sink pin can be narrower."""
+    wide = _module("wide", ports=(_port("q", "output", "logic [15:0]"),))
+    sink = _module("sink", ports=(_port("d", "input", "logic [3:0]"),))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("q", "w")),
+            _inst("u_sink", "sink", _conn("d", "w[3:0]")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, sink))
+    assert edge.bits == 16
+
+
+def test_bits_are_unknown_for_a_concatenated_driver_binding() -> None:
+    """``.q({a, b})`` gives the port's width to no single net."""
+    wide = _module("wide", ports=(_port("q", "output", "logic [7:0]"),))
+    dual = _module(
+        "dual",
+        ports=(_port("x", "input", "logic [3:0]"), _port("y", "input", "logic [3:0]")),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_wide", "wide", _conn("q", "{hi, lo}")),
+            _inst("u_dual", "dual", _conn("x", "hi"), _conn("y", "lo")),
+        ),
+    )
+    (edge,) = scope_connectivity(top, _table(top, wide, dual))
+    assert edge.bits is None
+
+
+def test_bits_are_unknown_when_two_drivers_disagree() -> None:
+    a = _module("a", ports=(_port("q", "output", "logic [7:0]"),))
+    b = _module("b", ports=(_port("q", "output", "logic [3:0]"),))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_a", "a", _conn("q", "w")),
+            _inst("u_b", "b", _conn("q", "w")),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+    )
+    edges = scope_connectivity(top, _table(top, a, b, _SINK))
+    assert [e.bits for e in edges] == [None, None]
