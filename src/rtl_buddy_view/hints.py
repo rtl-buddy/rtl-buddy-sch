@@ -57,7 +57,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
 
-from rtl_buddy_view.extractor import ModuleTable
+from rtl_buddy_view.extractor import Module, ModuleTable
 from rtl_buddy_view.graph import HierNode
 
 #: Comment prefix this tool answers to. The ``rb`` stem is the
@@ -86,10 +86,19 @@ KNOWN_NET_FLAGS: tuple[str, ...] = ("clock", "data", "main", "reset", "side")
 #: column order so left→right reads as pipeline order, and
 #: ``group=<name>`` draws a dashed container around related sibling
 #: instances that aren't a hierarchy level.
-KNOWN_KEYS: tuple[str, ...] = ("group", "label", "rank")
+KNOWN_KEYS: tuple[str, ...] = ("group", "in", "label", "out", "rank")
 
 #: The box keys that only mean something on an instance.
 INSTANCE_ONLY_KEYS: tuple[str, ...] = ("group", "rank")
+
+#: Blackbox pin-direction keys (phase 5): ``in=`` / ``out=`` carry a
+#: comma-separated pin-name list and recover connectivity for pins of
+#: *unresolved* modules — vendor IP the table has no port list for.
+#: Valid on an instance (this one placement) or a module (every
+#: placement — the sidecar's natural home, since a blackbox has no
+#: source to comment). Directions of resolved modules always win;
+#: a hint on one is ignored.
+PIN_DIRECTION_KEYS: tuple[str, ...] = ("in", "out")
 
 #: ``key=value`` pragma words that target a net. ``bundle=<name>``
 #: names the wire group a net belongs to: every net sharing a bundle
@@ -116,6 +125,11 @@ Classification = Literal["clock", "data", "reset"]
 
 #: What a net's ``emphasis`` may resolve to.
 Emphasis = Literal["main", "side"]
+
+#: What a hinted blackbox pin may resolve to. Deliberately no
+#: ``inout``: a hint exists to recover a *dataflow* direction, and a
+#: bidirectional claim recovers nothing.
+PinDirection = Literal["input", "output"]
 
 
 class HintsError(ValueError):
@@ -321,10 +335,17 @@ class ModuleHints:
 
     leaf: bool | None = None
     label: str | None = None
+    in_pins: tuple[str, ...] | None = None
+    out_pins: tuple[str, ...] | None = None
 
     @property
     def is_empty(self) -> bool:
-        return self.leaf is None and self.label is None
+        return (
+            self.leaf is None
+            and self.label is None
+            and self.in_pins is None
+            and self.out_pins is None
+        )
 
 
 @dataclass(frozen=True)
@@ -344,6 +365,8 @@ class InstanceHints:
     label: str | None = None
     rank: int | None = None
     group: str | None = None
+    in_pins: tuple[str, ...] | None = None
+    out_pins: tuple[str, ...] | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -353,6 +376,8 @@ class InstanceHints:
             and self.label is None
             and self.rank is None
             and self.group is None
+            and self.in_pins is None
+            and self.out_pins is None
         )
 
 
@@ -438,6 +463,41 @@ class HintMap:
         should never see (or filter) another module's nets.
         """
         return {net: h for (mod, net), h in self.nets.items() if mod == module_name}
+
+    def pin_directions_for(self, module: Module) -> dict[str, dict[str, PinDirection]]:
+        """Resolved ``in=`` / ``out=`` directions for ``module``'s children.
+
+        Keyed by instance name, then formal pin name — the shape
+        :func:`rtl_buddy_view.connectivity.scope_connectivity`
+        consumes. Module-level hints (keyed by the child's module
+        name — the sidecar's natural spelling for vendor IP) apply to
+        every placement; instance-level pin hints, when any are
+        present, replace them wholesale — one author statement per
+        placement, rather than a per-pin interleave nobody can
+        predict from the source.
+
+        Instances with no hinted pins are absent from the result, so
+        an empty dict means "nothing to say" everywhere.
+        """
+        resolved: dict[str, dict[str, PinDirection]] = {}
+        for inst in module.instances:
+            module_h = self.modules.get(inst.module_name)
+            inst_h = self.instances.get((module.name, inst.name))
+            source: ModuleHints | InstanceHints | None = module_h
+            if inst_h is not None and (
+                inst_h.in_pins is not None or inst_h.out_pins is not None
+            ):
+                source = inst_h
+            if source is None:
+                continue
+            directions: dict[str, PinDirection] = {}
+            for pin in source.in_pins or ():
+                directions[pin] = "input"
+            for pin in source.out_pins or ():
+                directions[pin] = "output"
+            if directions:
+                resolved[inst.name] = directions
+        return resolved
 
 
 @dataclass(frozen=True)
@@ -654,6 +714,43 @@ def resolve_hints(pragmas: Sequence[Pragma], table: ModuleTable) -> HintMap:
     )
 
 
+def _parse_pin_lists(
+    pragma: Pragma, where: str, warnings: list[str]
+) -> tuple[tuple[str, ...] | None, tuple[str, ...] | None]:
+    """Parse ``in=`` / ``out=`` comma-separated pin lists.
+
+    A pin spelled on both sides is a contradiction, not a direction;
+    it warns and drops from both, leaving that pin exactly as
+    unresolved as it was.
+    """
+    lists: dict[str, tuple[str, ...] | None] = {}
+    for key in PIN_DIRECTION_KEYS:
+        raw = pragma.option(key)
+        if raw is None:
+            lists[key] = None
+            continue
+        pins = tuple(pin.strip() for pin in raw.split(",") if pin.strip())
+        if not pins:
+            warnings.append(
+                f"{where}: {key} needs a comma-separated pin list "
+                f'(write {key}="pin_a,pin_b"); ignored'
+            )
+            lists[key] = None
+            continue
+        lists[key] = tuple(sorted(set(pins)))
+    in_pins, out_pins = lists["in"], lists["out"]
+    if in_pins is not None and out_pins is not None:
+        both = sorted(set(in_pins) & set(out_pins))
+        if both:
+            warnings.append(
+                f"{where}: {', '.join(both)} named in both in= and out=; "
+                f"dropped from both"
+            )
+            in_pins = tuple(x for x in in_pins if x not in both) or None
+            out_pins = tuple(x for x in out_pins if x not in both) or None
+    return in_pins, out_pins
+
+
 def _resolve_box(
     pragma: Pragma,
     where: str,
@@ -710,6 +807,11 @@ def _resolve_box(
                 current = replace(current, group=group)
             else:
                 warnings.append(f"{where}: group needs a name (write group=…); ignored")
+        in_pins, out_pins = _parse_pin_lists(pragma, where, warnings)
+        if in_pins is not None:
+            current = replace(current, in_pins=in_pins)
+        if out_pins is not None:
+            current = replace(current, out_pins=out_pins)
         instances[key] = current
     else:
         current_m = modules.get(decl.module, ModuleHints())
@@ -730,6 +832,11 @@ def _resolve_box(
                 )
         if label is not None:
             current_m = replace(current_m, label=label)
+        in_pins, out_pins = _parse_pin_lists(pragma, where, warnings)
+        if in_pins is not None:
+            current_m = replace(current_m, in_pins=in_pins)
+        if out_pins is not None:
+            current_m = replace(current_m, out_pins=out_pins)
         modules[decl.module] = current_m
 
 
@@ -822,6 +929,8 @@ def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
         modules[name] = ModuleHints(
             leaf=current.leaf if hints.leaf is None else hints.leaf,
             label=current.label if hints.label is None else hints.label,
+            in_pins=current.in_pins if hints.in_pins is None else hints.in_pins,
+            out_pins=current.out_pins if hints.out_pins is None else hints.out_pins,
         )
     instances = dict(base.instances)
     for key, inst_hints in override.instances.items():
@@ -836,6 +945,14 @@ def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
             label=current_i.label if inst_hints.label is None else inst_hints.label,
             rank=current_i.rank if inst_hints.rank is None else inst_hints.rank,
             group=current_i.group if inst_hints.group is None else inst_hints.group,
+            in_pins=(
+                current_i.in_pins if inst_hints.in_pins is None else inst_hints.in_pins
+            ),
+            out_pins=(
+                current_i.out_pins
+                if inst_hints.out_pins is None
+                else inst_hints.out_pins
+            ),
         )
     nets = dict(base.nets)
     for net_key, net_hints in override.nets.items():
@@ -886,6 +1003,17 @@ def _require_str(value: object, *, where: str, key: str) -> str:
     return value
 
 
+def _require_pin_list(value: object, *, where: str, key: str) -> tuple[str, ...]:
+    """A JSON array of pin-name strings. ``[]`` is legal — the
+    explicit revoke of an in-source list."""
+    if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+        raise HintsError(
+            f"{where}: {key!r} must be an array of pin-name strings, "
+            f"got {type(value).__name__}"
+        )
+    return tuple(sorted({x.strip() for x in value if x.strip()}))
+
+
 def _require_int(value: object, *, where: str, key: str) -> int:
     # ``bool`` is an ``int`` subclass; a JSON ``true`` reaching a rank
     # is a mistake, not a column.
@@ -932,6 +1060,14 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
                 hints = replace(hints, leaf=_require_bool(value, where=where, key=key))
             elif key == "label":
                 hints = replace(hints, label=_require_str(value, where=where, key=key))
+            elif key == "in":
+                hints = replace(
+                    hints, in_pins=_require_pin_list(value, where=where, key=key)
+                )
+            elif key == "out":
+                hints = replace(
+                    hints, out_pins=_require_pin_list(value, where=where, key=key)
+                )
             else:
                 warnings.append(f"{where}: {_unknown_word_warning(key)}")
         if not hints.is_empty:
@@ -971,6 +1107,14 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
                 # explicit revoke of an in-source group membership.
                 inst_hints = replace(
                     inst_hints, group=_require_str(value, where=where, key=name)
+                )
+            elif name == "in":
+                inst_hints = replace(
+                    inst_hints, in_pins=_require_pin_list(value, where=where, key=name)
+                )
+            elif name == "out":
+                inst_hints = replace(
+                    inst_hints, out_pins=_require_pin_list(value, where=where, key=name)
                 )
             else:
                 warnings.append(f"{where}: {_unknown_word_warning(name)}")

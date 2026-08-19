@@ -61,7 +61,7 @@ from dataclasses import dataclass
 from typing import Literal, TypeVar
 
 from rtl_buddy_view.extractor import Module, ModuleTable, ParameterOverride
-from rtl_buddy_view.hints import NetHints
+from rtl_buddy_view.hints import NetHints, PinDirection
 from rtl_buddy_view.width_expr import (
     IDENT_RE,
     sum_width_exprs,
@@ -354,6 +354,7 @@ def scope_connectivity(
     *,
     params: Mapping[str, str] | None = None,
     net_hints: Mapping[str, NetHints] | None = None,
+    pin_hints: Mapping[str, Mapping[str, PinDirection]] | None = None,
 ) -> tuple[NetEdge, ...]:
     """Compute net-level dataflow among ``module``'s direct children.
 
@@ -413,6 +414,15 @@ def scope_connectivity(
     edge of the same name folded into the data direction). ``None``
     (the default) is byte-identical to before the parameter existed.
 
+    ``pin_hints`` (phase 5) recovers pin directions for children the
+    table cannot resolve — vendor blackboxes with no port list.
+    Keyed instance name → formal pin → direction
+    (:meth:`rtl_buddy_view.hints.HintMap.pin_directions_for`). A hint
+    is consulted only where resolution came up empty: a resolved
+    module's own declaration always wins, because the RTL is the
+    authority and a stale hint must not be able to flip a real
+    direction.
+
     Returned edges are bundled per endpoint pair and sorted by
     ``(src, dst)``. Each carries the formal pin names it attaches to
     (``src_pins`` / ``dst_pins``) and, when every net's width is
@@ -427,7 +437,7 @@ def scope_connectivity(
     # Pins first so their roots exist as flow-graph nodes before the
     # assign pass wires them; isolated roots still need a component of
     # their own for the direct same-net case.
-    pins = _collect_pins(module, table)
+    pins = _collect_pins(module, table, pin_hints)
     flow = _FlowGraph()
     for pin in pins:
         for root in pin.roots:
@@ -671,10 +681,22 @@ class _Group:
         return out
 
 
-def _collect_pins(module: Module, table: ModuleTable) -> tuple[_Pin, ...]:
-    """Resolve every named child-instance pin into a :class:`_Pin`."""
+def _collect_pins(
+    module: Module,
+    table: ModuleTable,
+    pin_hints: Mapping[str, Mapping[str, PinDirection]] | None = None,
+) -> tuple[_Pin, ...]:
+    """Resolve every named child-instance pin into a :class:`_Pin`.
+
+    ``pin_hints`` fills directions only where resolution came up
+    empty (an unresolved child, or a pin the child's port list
+    doesn't know) — the declaration always beats the hint.
+    """
     pins: list[_Pin] = []
     for inst in module.instances:
+        hinted: Mapping[str, PinDirection] = (
+            pin_hints.get(inst.name, {}) if pin_hints is not None else {}
+        )
         child = table.modules_by_name.get(inst.module_name)
         directions: dict[str, _Direction | None] = (
             {p.name: p.direction for p in child.ports} if child is not None else {}
@@ -697,12 +719,13 @@ def _collect_pins(module: Module, table: ModuleTable) -> tuple[_Pin, ...]:
             roots = root_identifiers(expr)
             if not roots:
                 continue
+            direction = directions.get(conn.port_name) if child is not None else None
+            if direction is None:
+                direction = hinted.get(conn.port_name)
             pins.append(
                 _Pin(
                     endpoint=endpoint,
-                    direction=directions.get(conn.port_name)
-                    if child is not None
-                    else None,
+                    direction=direction,
                     roots=roots,
                     formal=conn.port_name,
                     type_text=types.get(conn.port_name),

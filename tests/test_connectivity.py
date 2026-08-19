@@ -1583,3 +1583,40 @@ def test_sidecar_empty_bundle_breaks_unanimity() -> None:
     )
     edges = scope_connectivity(top, _table(top, _HS_SRC, _HS_SINK), net_hints=revoked)
     assert sorted(e.bundle or "" for e in edges) == ["", "cmd_bus"]
+
+
+# --- rbsch blackbox pin directions (epic #159 phase 5) ----------------------
+
+
+def test_pin_hint_recovers_a_blackbox_driver() -> None:
+    """`vendor_rom` is not in the table; without the hint its output
+    group has no known driver and is dropped."""
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_rom", "vendor_rom", _conn("q", "rom_q")),
+            _inst("u_sink", "sink", _conn("d", "rom_q")),
+        ),
+    )
+    table = _table(top, _SINK)
+    assert scope_connectivity(top, table) == ()
+    edges = scope_connectivity(top, table, pin_hints={"u_rom": {"q": "output"}})
+    assert [(e.src, e.dst) for e in edges] == [(("inst", "u_rom"), ("inst", "u_sink"))]
+
+
+def test_declared_direction_beats_a_lying_pin_hint() -> None:
+    """The RTL is the authority: a stale hint cannot flip a resolved
+    module's pin."""
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "src", _conn("q", "w")),
+            _inst("u_sink", "sink", _conn("d", "w")),
+        ),
+    )
+    table = _table(top, _SRC, _SINK)
+    baseline = scope_connectivity(top, table)
+    hinted = scope_connectivity(
+        top, table, pin_hints={"u_src": {"q": "input"}, "u_sink": {"d": "output"}}
+    )
+    assert hinted == baseline

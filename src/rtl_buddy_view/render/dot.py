@@ -542,7 +542,10 @@ def _emit_scope_connectivity(
         net_hints = (
             hints.nets_for_module(node.module_name) if hints is not None else None
         )
-        for edge in scope_connectivity(node.module, table, net_hints=net_hints):
+        pin_hints = hints.pin_directions_for(node.module) if hints is not None else None
+        for edge in scope_connectivity(
+            node.module, table, net_hints=net_hints, pin_hints=pin_hints
+        ):
             src = _endpoint_ref(edge.src, children, port_directions, is_top=is_top)
             dst = _endpoint_ref(edge.dst, children, port_directions, is_top=is_top)
             if src is None or dst is None or src[0] == dst[0]:
