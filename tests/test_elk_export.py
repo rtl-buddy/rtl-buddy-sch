@@ -866,3 +866,35 @@ def test_root_port_to_port_edges_are_kept() -> None:
     payload = elk_export.export_elk(root, table)
     pairs = [(e["sources"][0], e["targets"][0]) for e in payload["edges"]]
     assert ("top:ti", "top:to") in pairs
+
+
+# --- rb.net: the binding a pin carries (#184) --------------------------------
+
+
+def _ports_by_name(payload: dict, instance_path: str) -> dict:
+    child = next(c for c in payload["children"] if c["id"] == instance_path)
+    return {p["rb"]["name"]: p["rb"] for p in child["ports"]}
+
+
+def test_a_pin_carries_the_net_bound_at_the_binding_site(payload: dict) -> None:
+    """A pin whose net no sibling pin drives — because the parent's
+    own ``always_ff`` drives it — has no edge to attach to and
+    renders as a bare stub. The net name is what keeps it traceable,
+    and it is read off the binding site rather than inferred."""
+    ports = _ports_by_name(payload, "top.u_src")
+    assert ports["d"]["net"] == "din"
+    assert ports["q"]["net"] == "w"
+
+
+def test_an_unbound_pin_has_no_net(payload: dict) -> None:
+    """``en`` is left dangling at the binding site: absent, not
+    bound-to-nothing."""
+    ports = _ports_by_name(payload, "top.u_src")
+    assert ports["en"]["net"] is None
+    assert ports["en"]["connected"] is False
+
+
+def test_root_ports_bind_their_own_name(payload: dict) -> None:
+    """The root is the sheet boundary: its pins *are* the nets."""
+    root = {p["rb"]["name"]: p["rb"] for p in payload["ports"]}
+    assert root["din"]["net"] == "din"

@@ -384,11 +384,19 @@ def _ports(
     both; the consumer picks.
     """
     module = hier.module
-    connected = _connected_formals(hier.instance, module)
+    bound = _bound_nets(hier.instance, module)
     if module is None:
         return [
-            _port_entry(hier.instance_path, name, None, None, None, connected=True)
-            for name in sorted(connected)
+            _port_entry(
+                hier.instance_path,
+                name,
+                None,
+                None,
+                None,
+                connected=True,
+                net=bound.get(name) or None,
+            )
+            for name in sorted(bound)
         ]
     return [
         _port_entry(
@@ -399,8 +407,9 @@ def _ports(
             port_width_expr(port.type_text) if port.port_kind == "wire" else None,
             # The root has no binding site: it is the sheet boundary,
             # so its pins are connected to the outside world by
-            # definition.
-            connected=hier.instance is None or port.name in connected,
+            # definition, and the net they carry is their own name.
+            connected=hier.instance is None or port.name in bound,
+            net=(port.name if hier.instance is None else bound.get(port.name)) or None,
         )
         for port in module.ports
     ]
@@ -414,11 +423,17 @@ def _port_entry(
     width_expr: str | None = None,
     *,
     connected: bool,
+    net: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": port_id(instance_path, name),
         "rb": {
             "name": name,
+            # The net expression bound at the binding site (#184).
+            # Distinct from ``name``, which is the *formal*: a
+            # renderer labels the pin with the formal and can fall
+            # back to this when no wire reaches it.
+            "net": net,
             "direction": direction,
             # Name-shaped: the shared token form PLUS the widened
             # block-diagram patterns. The widened forms are what
@@ -448,24 +463,41 @@ def _port_entry(
     }
 
 
-def _connected_formals(instance: Instance | None, module: Module | None) -> set[str]:
-    """Formal names bound at ``instance``'s binding site.
+def _bound_nets(instance: Instance | None, module: Module | None) -> dict[str, str]:
+    """Formal name → the net expression bound to it at ``instance``.
 
     Positional connections are resolved through the declared port
     order — unlike the connectivity analyzer, which can't trust that
-    order to invent *dataflow*, marking a pin "connected" is a claim
-    cheap enough to make from an index.
+    order to invent *dataflow*, reporting what a pin is *bound to* is
+    a claim cheap enough to make from an index.
+
+    The value is the verbatim source slice (``op_q``, ``~rst_n``,
+    ``cmd[7:0]``), and implicit ``.name`` shorthand resolves to the
+    same-named net, exactly as the elaborator binds it. A formal with
+    an empty binding (``.q()``) maps to ``""`` — bound to nothing,
+    which is a different statement from absent.
+
+    Why the exporter carries this at all: a pin whose net no sibling
+    *pin* drives — because the parent's own ``always_ff`` drives it —
+    has no edge to attach to, and renders as a bare stub with only
+    its formal name on it. The net name is what keeps that pin
+    traceable, and it is a fact read off the binding site rather than
+    an inference about dataflow.
     """
     if instance is None:
-        return set()
+        return {}
     declared = module.ports if module is not None else None
-    formals: set[str] = set()
+    bound: dict[str, str] = {}
     for index, conn in enumerate(instance.port_connections):
-        if conn.port_name is not None:
-            formals.add(conn.port_name)
-        elif declared is not None and index < len(declared):
-            formals.add(declared[index].name)
-    return formals
+        formal = conn.port_name
+        if formal is None:
+            if declared is None or index >= len(declared):
+                continue
+            formal = declared[index].name
+        # Implicit ``.name`` shorthand: no expression means the
+        # same-named net.
+        bound[formal] = conn.net_expr_text.strip() or formal
+    return bound
 
 
 # --- edges ------------------------------------------------------------------
@@ -583,18 +615,9 @@ def _endpoint_ref(
 def _version() -> str:
     """Installed distribution version, best-effort.
 
-    Tries the current distribution name first and the pre-rename one
-    second (the same two-step ``__init__`` does), so an install made
-    before the ``rtl-buddy-sch`` rename still stamps a real version.
-    An editable checkout with no metadata at all must still produce a
-    valid payload, hence the ``0.0.0`` floor.
+    One lookup for every payload stamp — see
+    :mod:`rtl_buddy_view._dist`.
     """
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import version as _v
+    from rtl_buddy_view._dist import dist_version
 
-    for dist in ("rtl-buddy-sch", "rtl-buddy-view"):
-        try:
-            return _v(dist)
-        except PackageNotFoundError:
-            continue
-    return "0.0.0"  # pragma: no cover - source tree without dist metadata
+    return dist_version()

@@ -379,13 +379,16 @@ def _overlays_present(
 
 
 def _version() -> str:
-    """Project version, late-imported to keep this module light."""
-    try:
-        from importlib.metadata import version as _v
+    """Project version, late-imported to keep this module light.
 
-        return _v("rtl-buddy-view")
-    except Exception:  # pragma: no cover - importlib is in stdlib
-        return "0.0.0"
+    Delegates to :func:`rtl_buddy_view._dist.dist_version` — this
+    function used to carry its own lookup of the *pre-rename*
+    distribution name, so every ``view.json`` (and the ELK payload it
+    passes this value to) stamped the ``0.0.0`` floor.
+    """
+    from rtl_buddy_view._dist import dist_version
+
+    return dist_version()
 
 
 # --- nodes ------------------------------------------------------------------

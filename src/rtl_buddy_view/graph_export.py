@@ -948,15 +948,12 @@ def _rel_path(path: str, project_root: Path | None) -> str:
 
 
 def _version() -> str:
-    """Installed rtl-buddy-view version, best-effort.
+    """Installed version, best-effort.
 
-    Same lookup and same fallback as the view.json renderer: an
-    editable checkout without metadata must still produce a valid
-    graph.
+    Same lookup and same fallback as every other payload stamp — see
+    :mod:`rtl_buddy_view._dist`. An editable checkout without
+    metadata must still produce a valid graph.
     """
-    try:
-        from importlib.metadata import version as _v
+    from rtl_buddy_view._dist import dist_version
 
-        return _v("rtl-buddy-view")
-    except Exception:  # pragma: no cover - importlib is in stdlib
-        return "0.0.0"
+    return dist_version()

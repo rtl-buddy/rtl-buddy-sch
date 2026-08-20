@@ -211,7 +211,12 @@
             class="sch-pin"
             :class="[
               pin.kind,
-              { unconnected: !pin.connected, hot: highlight.pins.has(pin.id) },
+              {
+                unconnected: !pin.connected,
+                unwired: pin.connected && !pin.wired,
+                'on-frame': pin.onFrame,
+                hot: highlight.pins.has(pin.id),
+              },
             ]"
             :data-node-id="pin.nodeId"
             :data-port-id="pin.id"
@@ -241,6 +246,27 @@
               :y="pin.y + 3.2"
               :text-anchor="pin.side === 'WEST' ? 'start' : 'end'"
             >{{ pin.name }}</text>
+            <!-- No wire reaches this pin — the net it binds is driven
+                 by logic this diagram doesn't draw (a procedural
+                 block). Name the net outside the border so the pin
+                 stays traceable instead of reading as dangling. -->
+            <text
+              v-if="pin.connected && !pin.wired && pin.net"
+              class="sch-pin-net"
+              :x="pin.side === 'WEST' ? pin.x - PIN_STUB - 3 : pin.x + PIN_STUB + 3"
+              :y="pin.y + 3.2"
+              :text-anchor="pin.side === 'WEST' ? 'end' : 'start'"
+            >{{ pin.net }}</text>
+            <!-- Bus tap: a drawn bundle stands for this pin without
+                 landing on it, so mark the join the way every other
+                 wire join is marked. -->
+            <circle
+              v-if="pin.busTap"
+              class="sch-junction sch-bus-tap"
+              :cx="pin.side === 'WEST' ? pin.x - PIN_STUB : pin.x + PIN_STUB"
+              :cy="pin.y"
+              r="2.7"
+            />
           </g>
 
           <!-- Off-page connector flags for the design's own ports. -->
@@ -1032,6 +1058,34 @@ onBeforeUnmount(() => {
 .sch-pin text {
   fill: var(--fg-muted);
   font-size: 9px;
+}
+.sch-pin-net {
+  /* The net a pin binds, shown only when no wire reaches it. Dimmer
+     and smaller than the formal name inside the box: it is a
+     reference, not a label on the symbol. */
+  font-size: 7.5px;
+  fill: var(--fg-faint);
+  font-style: italic;
+}
+/* Halo. Every text that lives OUTSIDE a block — net names on wires,
+   the net reference on an unwired pin — sits in the routing channel,
+   so sooner or later a wire or a neighbouring label runs through it.
+   Painting the glyph outline in the sheet colour first keeps it
+   legible instead of letting the wire read as a strikethrough. Same
+   trick a map uses for place names over contour lines. */
+.sch-pin-net,
+.sch-label.net text,
+.sch-pin.on-frame text {
+  paint-order: stroke;
+  stroke: var(--bg);
+  /* Wide enough to clear a bus stroke (2.5px) crossing the glyph,
+     not just a 1.1px signal wire — a 3px halo left the fat wires
+     reading as a strikethrough through the label. */
+  stroke-width: 4.5px;
+  stroke-linejoin: round;
+}
+.sch-pin.hot .sch-pin-net {
+  fill: var(--accent);
 }
 .sch-pin.unconnected line {
   stroke: var(--fg-faint);
