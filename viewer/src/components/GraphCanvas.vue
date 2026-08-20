@@ -1226,11 +1226,35 @@ onBeforeUnmount(() => {
    connectivity, so they get the readable ``--fg-muted`` text tier —
    matching what ``graphToDot`` / ``buildBlockFlowDot`` now bake in, so
    the producer and in-JS renders agree on edge weight. Arrowheads are
-   filled polygons and need both properties. */
-.svg-host.producer-dot :deep(g.edge path) {
+   filled polygons and need both properties.
+
+   The exclusions are #153: re-tint everything EXCEPT a *hazard*
+   accent. Two facts shape this, and both had to be checked rather
+   than assumed:
+
+   1. Producer edges are not un-coloured. ``render/dot.py`` bakes a
+      light-palette neutral on most of them (``#cbd5e1`` untyped,
+      ``#475569`` block-diagram, clock-keyed pastels elsewhere), and
+      those are exactly what is unreadable on a dark ground — so a
+      guard like ``[stroke='black']`` (Graphviz's default for an
+      un-coloured edge) would re-tint almost nothing and undo the
+      legibility this rule exists for.
+   2. Only two edge colours carry *meaning*: CDC ``#dc2626`` and RDC
+      ``#ea580c``. Those must survive, because no client-side overlay
+      re-derives them for an already-rendered producer DOT.
+
+   Naming the two accents is therefore the whole fix: the neutrals
+   keep being re-tinted, the hazards keep their colour. Note that
+   ``view.json``'s embedded DOT has carried no hazard colour since
+   #57 made the layout block structure-only (the SPA owns overlay
+   paint), so today this bites only on a pre-#57 payload — it is a
+   safety net for the producer's semantics, kept honest by a test. */
+.svg-host.producer-dot
+  :deep(g.edge path:not([stroke='#dc2626']):not([stroke='#ea580c'])) {
   stroke: var(--fg-muted);
 }
-.svg-host.producer-dot :deep(g.edge polygon) {
+.svg-host.producer-dot
+  :deep(g.edge polygon:not([fill='#dc2626']):not([fill='#ea580c'])) {
   fill: var(--fg-muted);
   stroke: var(--fg-muted);
 }
