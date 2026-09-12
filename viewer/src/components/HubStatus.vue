@@ -170,6 +170,7 @@ import { useHub } from '../composables/useHub.js'
 import { humanizeHubError } from '../hubErrors.js'
 import { readBundleHash, shortServerVersion, versionLabel } from '../buildInfo.js'
 import { displayOrigin, displayOrigins } from '../displayNames.js'
+import { PEER_ROLES } from '../peerRoles.js'
 
 const hub = useHub()
 const open = ref(false)
@@ -207,27 +208,13 @@ const peerSummary = computed(() => {
 
 // Render every known peer role, including ones not currently
 // connected, so the user can tell at a glance which adapter is
-// missing instead of just seeing a shorter list. Roles match the
-// `Origin` enum in rtl_buddy/hub/protocol, minus the two that are not
-// apps a user keeps open: `cli` (that's `rb hub send`, a one-shot) and
-// `notebook` (one marimo session, not an adapter). Same list `rb hub
-// status` prints.
-//
-// `cov` is DISPLAY-ONLY for now: the coverage pane lands with
-// rtl-buddy/rtl_buddy#400 and the origin arrives in this repo's
-// protocol schema first (rtl-buddy/rtl-buddy-view#133). Until a hub
-// speaks it the row simply reads "not connected", which is the honest
-// answer either way.
+// missing instead of just seeing a shorter list. The roster lives in
+// peerRoles.js — its own module so tests/origin_vocabulary.spec.js can
+// check it against the protocol schema's origin enum (the vocabulary's
+// owner; see docs/hub-protocol.md §13 for the cross-repo checklist).
 //
 // The keys are WIRE origins (they are matched against ``hub.peers``);
 // ``display`` is what the row prints, from displayNames.js.
-const PEER_ROLES = [
-  { origin: 'view', label: '(this schematic)' },
-  { origin: 'src', label: '(editor)' },
-  { origin: 'wave', label: '(surfer)' },
-  { origin: 'graph', label: '(graph pane)' },
-  { origin: 'cov', label: '(coverage pane)' },
-]
 const peerRows = computed(() => {
   const list = hub.peers.value || []
   return PEER_ROLES.map((role) => ({

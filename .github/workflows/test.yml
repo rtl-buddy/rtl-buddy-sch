@@ -24,6 +24,11 @@ on:
       - 'tests/**/*.py'
       - 'scripts/**/*.py'
       - 'tests/fixtures/**'
+      # tests/test_hub_protocol_schema.py validates the schema AND every
+      # envelope example in the protocol doc; without these two globs a
+      # schema- or doc-only PR reports no pytest run at all.
+      - 'schemas/**'
+      - 'docs/hub-protocol.md'
   pull_request:
     branches: [main]
     paths:
@@ -35,6 +40,11 @@ on:
       - 'tests/**/*.py'
       - 'scripts/**/*.py'
       - 'tests/fixtures/**'
+      # tests/test_hub_protocol_schema.py validates the schema AND every
+      # envelope example in the protocol doc; without these two globs a
+      # schema- or doc-only PR reports no pytest run at all.
+      - 'schemas/**'
+      - 'docs/hub-protocol.md'
 
 jobs:
   pytest:
