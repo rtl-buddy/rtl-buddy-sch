@@ -1,9 +1,9 @@
 // The family display map, and the fence that keeps it off the wire.
 //
-// The rebrand (`view` → `sch`, `graph` → `gph`) is a DISPLAY-stage
-// change. Two things are asserted here:
+// The rebrand (`view` → `sch`, `graph` → `gph`, `phys` → `phy`) is a
+// DISPLAY-stage change. Two things are asserted here:
 //
-//   1. the map itself — the two renames, and passthrough for every
+//   1. the map itself — the three renames, and passthrough for every
 //      other origin, including ones this build has never heard of;
 //   2. that nothing it produces reaches the protocol. The hello still
 //      says `client: "view"` and the envelope still says
@@ -27,12 +27,13 @@ import { initHub, _testing } from '../src/composables/useHub.js'
 import { useViewerStore } from '../src/store.js'
 
 describe('display names', () => {
-  it('renames exactly the two origins whose label differs from the wire', () => {
+  it('renames exactly the origins whose label differs from the wire', () => {
     expect(displayOrigin('view')).toBe('sch')
     expect(displayOrigin('graph')).toBe('gph')
+    expect(displayOrigin('phys')).toBe('phy')
     // The knob: everything else is passthrough, so the table stays the
     // short list of DIFFERENCES rather than a second copy of the enum.
-    expect(Object.keys(ORIGIN_DISPLAY).sort()).toEqual(['graph', 'view'])
+    expect(Object.keys(ORIGIN_DISPLAY).sort()).toEqual(['graph', 'phys', 'view'])
   })
 
   it('passes through every origin it has no opinion about', () => {
@@ -51,8 +52,8 @@ describe('display names', () => {
   })
 
   it('labels a peer list in order', () => {
-    expect(displayOrigins(['view', 'src', 'graph', 'cov'])).toEqual([
-      'sch', 'src', 'gph', 'cov',
+    expect(displayOrigins(['view', 'src', 'graph', 'cov', 'phys'])).toEqual([
+      'sch', 'src', 'gph', 'cov', 'phy',
     ])
     expect(displayOrigins([])).toEqual([])
     expect(displayOrigins(null)).toEqual([])
@@ -123,6 +124,7 @@ describe('display rebrand does not reach the wire', () => {
     for (const text of sock.sent) {
       expect(text).not.toMatch(/\bsch\b/)
       expect(text).not.toMatch(/\bgph\b/)
+      expect(text).not.toMatch(/\bphy\b/)
     }
   })
 })

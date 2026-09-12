@@ -130,16 +130,18 @@ describe('HubStatus strip', () => {
     // Display labels, same order — the roster keys are still the wire
     // origins, which is what ``registered_clients`` is matched against.
     expect(rows.map((r) => r.find('code').text())).toEqual([
-      'sch', 'src', 'wave', 'gph', 'cov',
+      'sch', 'src', 'wave', 'gph', 'cov', 'phy',
     ])
     const byOrigin = Object.fromEntries(
       rows.map((r) => [r.find('code').text(), r.attributes('data-state')]),
     )
     expect(byOrigin.wave).toBe('connected')
     expect(byOrigin.sch).toBe('disconnected')
-    // `cov` is display-only until the pane lands (rtl_buddy#400) — it
-    // must not claim to be connected on the strength of being listed.
+    // `cov` is display-only until the pane lands (rtl_buddy#400), and
+    // `phy` until rtl_buddy#558 — neither may claim to be connected on
+    // the strength of being listed.
     expect(byOrigin.cov).toBe('disconnected')
+    expect(byOrigin.phy).toBe('disconnected')
     expect(byOrigin.gph).toBe('disconnected')
   })
 

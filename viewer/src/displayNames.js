@@ -15,6 +15,7 @@
 //   view     sch              rtl-buddy-schematic
 //   graph    gph              rtl-buddy-graph
 //   cov      cov              rtl-buddy-coverage
+//   phys     phy              rtl-buddy-phys
 //
 // SHORT names are for chrome LABELS (wordmark, switcher links, send
 // buttons, the peers strip). Prose and tooltips stay natural English —
@@ -36,6 +37,7 @@
 export const ORIGIN_DISPLAY = Object.freeze({
   view: 'sch',
   graph: 'gph',
+  phys: 'phy',
 })
 
 /** This app's own display name — the wordmark and the document title. */
