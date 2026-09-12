@@ -54,6 +54,15 @@ jobs:
       - name: Install test dependencies
         run: uv sync --group test --python ${{ matrix.python-version }}
 
+      # The dot renderer's layout tests (tests/test_dot_grid_pack.py,
+      # rtl-buddy-sch#138) measure a real Graphviz bounding box rather
+      # than asserting on the DOT text, because the failure they guard
+      # — a scope laid out as a tall thin column — only exists after
+      # layout. They skip when ``dot`` is missing, so without this step
+      # the grid rule would be unvalidated on every PR.
+      - name: Install Graphviz
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
       # The verible-dependent integration tests skip when the binary
       # isn't on PATH or in vendor/. Without them, the coverage gate
       # in pyproject.toml (--cov-fail-under=80) won't hold, since the
