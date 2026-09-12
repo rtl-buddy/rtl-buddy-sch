@@ -31,8 +31,10 @@ graph; goldens diff cleanly across runs.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import IO
 
 from rtl_buddy_view.annotations import DomainMap
@@ -47,6 +49,7 @@ from rtl_buddy_view.connectivity import (
 from rtl_buddy_view.extractor import (
     ModuleTable,
     ParameterOverride,
+    Port,
     PortConnection,
     flatten_interface_ports,
 )
@@ -275,6 +278,30 @@ def _emit_top_frame(
         top, out, module_table=module_table, bundle_interfaces=block_diagram
     )
 
+    # The grid packer (#138) only has a job in cluster-tree mode: the
+    # box-and-arrow tree has parent→child edges to rank by, and the
+    # block diagram has sibling dataflow — it is only the cluster tree
+    # whose siblings carry no edge at all and collapse into one column.
+    pack_frame = _PackFrame()
+    pack_plan: dict[str, _ScopePack] | None = None
+    if as_cluster_tree and not block_diagram:
+        # The port anchors flank the child grid: one rank of them on
+        # the left, one on the right. Their combined width and their
+        # (taller of the two) height are what the packer sizes against.
+        inputs, outputs = _split_ports(
+            top, module_table=module_table, bundle_interfaces=block_diagram
+        )
+        in_w, in_h = _port_anchor_extent([p.name for p in inputs])
+        out_w, out_h = _port_anchor_extent([p.name for p in outputs])
+        pack_frame = _PackFrame(
+            side_width=in_w + out_w,
+            height_floor=max(in_h, out_h),
+            pad_width=_TOP_FRAME_PAD_X,
+            pad_height=_TOP_FRAME_PAD_Y,
+            head=f"_in_{inputs[0].name}" if inputs else None,
+        )
+        pack_plan = _build_pack_plan(top, domain_map, reset_map, hints, pack_frame)
+
     if as_cluster_tree:
         # Cluster-tree emission: every instance with children becomes
         # a ``subgraph cluster_…`` so containment reads as
@@ -295,6 +322,8 @@ def _emit_top_frame(
             top_level=True,
             parent_cluster="cluster_top",
             compact_params=block_diagram,
+            pack_plan=pack_plan,
+            pack_head=pack_frame.head,
         )
     else:
         # Original box-and-arrow tree: each child is a flat node and
@@ -682,6 +711,32 @@ def _format_net_label(nets: tuple[str, ...]) -> str:
     return r"\l".join(parts) + r"\l"
 
 
+def _split_ports(
+    top: HierNode,
+    *,
+    module_table: ModuleTable | None,
+    bundle_interfaces: bool,
+) -> tuple[list[Port], list[Port]]:
+    """The top module's port anchors, split into source / sink ranks.
+
+    Shared by :func:`_emit_port_anchors` (which draws them) and
+    :func:`_emit_top_frame` (which needs their extent to size the
+    child grid) so the two can never disagree about what an anchor is.
+    """
+    if top.module is None or not top.module.ports:
+        return ([], [])
+    if bundle_interfaces:
+        ports = top.module.ports
+        inputs = [
+            p for p in ports if p.direction == "input" or p.port_kind == "interface"
+        ]
+    else:
+        ports = flatten_interface_ports(top.module, module_table)
+        inputs = [p for p in ports if p.direction == "input"]
+    outputs = [p for p in ports if p.direction in ("output", "inout")]
+    return (inputs, outputs)
+
+
 def _emit_port_anchors(
     top: HierNode,
     out: IO[str],
@@ -715,17 +770,11 @@ def _emit_port_anchors(
     (``_in_<port>``) addressable by the connectivity analyzer, which
     treats the bundle as a single endpoint.
     """
-    if top.module is None or not top.module.ports:
+    inputs, outputs = _split_ports(
+        top, module_table=module_table, bundle_interfaces=bundle_interfaces
+    )
+    if not inputs and not outputs:
         return
-    if bundle_interfaces:
-        ports = top.module.ports
-        inputs = [
-            p for p in ports if p.direction == "input" or p.port_kind == "interface"
-        ]
-    else:
-        ports = flatten_interface_ports(top.module, module_table)
-        inputs = [p for p in ports if p.direction == "input"]
-    outputs = [p for p in ports if p.direction in ("output", "inout")]
 
     if inputs:
         # Right-edge alignment: pad each name on the LEFT to the max
@@ -877,6 +926,308 @@ def _children_sorted_by_complexity(node: HierNode) -> tuple[HierNode, ...]:
     )
 
 
+# --- landscape grid packing (rtl-buddy-sch#138) ----------------------
+#
+# In cluster-tree mode a scope's children carry no sibling edges (the
+# containment box *is* the relationship), so dot gives every child the
+# same rank and — under ``rankdir="LR"`` — stacks them in one column.
+# A scope with N children is therefore N boxes tall and one box wide,
+# which is how the hierarchy canvas ends up a portrait ribbon inside a
+# landscape viewport.
+#
+# The rule: pack each scope's children into a *grid*. Pick the column
+# count whose resulting scope comes closest to a landscape aspect,
+# deal the children over the columns, and emit an invisible edge chain
+# that puts each column on its own rank. The count is chosen per scope
+# from the scope's own estimated geometry, so a scope of twelve skinny
+# leaves and a scope of three deep sub-blocks get different answers —
+# which is what "rankdir is fixed while scope shapes vary" asked for.
+#
+# Two things make the chain non-obvious:
+#
+# * dot splices a cluster's internal ranks into the *parent's* rank
+#   sequence, so a child that is itself two columns wide spans two of
+#   the parent's columns. Chaining the next column off such a child's
+#   anchor (its first rank) would overlap the two, and overlapping
+#   clusters are pushed apart along the other axis — undoing the pack.
+#   So a column is chained from its deepest member's *last* rank; see
+#   :class:`_NodeInfo.tail`.
+# * a child with no port edge of its own would otherwise sink onto the
+#   top frame's ``rank=source`` rank and share a column with the port
+#   labels, so column 0 is chained off the first port anchor.
+#
+# The whole plan is computed once, bottom-up, in :func:`_build_pack_plan`
+# — it is a pure function of the tree, so the emitted DOT stays
+# byte-deterministic.
+
+#: Aspect ratio (width / height) the packer aims each scope at. The
+#: hub's canvas host measures ~1.7 on a 16:9 display.
+_TARGET_ASPECT = 1.6
+
+#: Courier advance width and line height at Graphviz's default 14pt.
+_CHAR_W = 8.25
+_LINE_H = 16.8
+
+#: ``node [margin="0.4,0.06"]`` in points, both sides, plus Graphviz's
+#: minimum node size (0.75in x 0.5in).
+_NODE_PAD_X = 2 * 0.4 * 72.0
+_NODE_PAD_Y = 2 * 0.06 * 72.0
+_MIN_NODE_W = 54.0
+_MIN_NODE_H = 36.0
+
+#: The graph-level separations this renderer sets, in points.
+_NODESEP_PT = 0.18 * 72.0
+_RANKSEP_PT = 1.2 * 72.0
+
+#: How much bigger a ``subgraph cluster_…`` is than the content it
+#: wraps: the cluster margin, the band reserved for the title, and the
+#: extra separation dot inserts at a cluster boundary. These are
+#: *measured* — render a fixture, read the cluster ``bb``\s out of
+#: ``dot -Tjson``, subtract the content extent — because Graphviz does
+#: not expose the sum as one documented attribute. They land within a
+#: few points on Graphviz 12.x, and the model only has to rank
+#: candidate column counts against each other, never to predict the
+#: final picture.
+_CLUSTER_PAD_X_CONTENT = 40.0
+_CLUSTER_PAD_X_LABEL = 16.0
+_CLUSTER_PAD_Y = 63.0
+
+#: A port anchor is a one-line ``plaintext`` node, so Graphviz's
+#: minimum node height is what a whole rank of them costs, and it keeps
+#: the default (not the node-level) horizontal margin.
+_PORT_ANCHOR_H = _MIN_NODE_H
+_PLAINTEXT_PAD_X = 2 * 0.11 * 72.0
+
+#: What ``cluster_top`` and the graph pad add around everything else —
+#: the frame's ``margin="20,20"``, its title band, and Graphviz's 4pt
+#: graph border. Measured the same way as the cluster pads above. It
+#: matters because it is a *constant* added to both axes: a portrait
+#: scope is less portrait once it is framed, and ignoring it made the
+#: packer keep single columns that the frame then stretched further.
+_TOP_FRAME_PAD_X = 56.0
+_TOP_FRAME_PAD_Y = 88.0
+
+
+@dataclass(frozen=True)
+class _PackFrame:
+    """What sits *around* a scope's child grid, for the packer.
+
+    Only the top frame has one: its port anchors flank the grid on the
+    source and sink ranks, and ``head`` is the anchor column 0 chains
+    off so it cannot drift back onto the source rank.
+    """
+
+    side_width: float = 0.0
+    height_floor: float = 0.0
+    pad_width: float = 0.0
+    pad_height: float = 0.0
+    head: str | None = None
+
+
+@dataclass(frozen=True)
+class _ScopePack:
+    """One scope's children, dealt into columns.
+
+    ``tails[c]`` is the instance path of the node occupying the last
+    rank of column ``c`` — what the following column chains off.
+    """
+
+    columns: tuple[tuple[HierNode, ...], ...]
+    tails: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _NodeInfo:
+    """A node's estimated geometry, as laid out in cluster-tree mode."""
+
+    width: float
+    height: float
+    #: How many ranks the node's own layout consumes in its parent.
+    span: int
+    #: Instance path of a node sitting on the node's own last rank.
+    tail: str
+
+
+def _text_extent(label: str) -> tuple[float, float]:
+    """Approximate (width, height) in points of a Graphviz label."""
+    lines = [line for line in re.split(r"\\[lnr]", label) if line != ""]
+    if not lines:
+        lines = [""]
+    return max(len(line) for line in lines) * _CHAR_W, len(lines) * _LINE_H
+
+
+def _port_anchor_extent(names: Sequence[str]) -> tuple[float, float]:
+    """Estimated (width contribution, height) of one port-anchor rank.
+
+    The width is the anchor column plus the ``ranksep`` gap separating
+    it from the child grid; the height is one minimum-height plaintext
+    node per port.
+    """
+    if not names:
+        return (0.0, 0.0)
+    # Every anchor label is padded to the longest name and carries a
+    # one-character direction marker (see :func:`_emit_port_anchors`).
+    label_w = (max(len(n) for n in names) + 2) * _CHAR_W + _PLAINTEXT_PAD_X
+    return (
+        max(label_w, _MIN_NODE_W) + _RANKSEP_PT,
+        len(names) * _PORT_ANCHOR_H + (len(names) - 1) * _NODESEP_PT,
+    )
+
+
+def _distribute(
+    items: Sequence[tuple[HierNode, _NodeInfo]], columns: int
+) -> tuple[tuple[tuple[HierNode, _NodeInfo], ...], ...]:
+    """Deal ``items`` into ``columns`` columns, shortest column first.
+
+    Walking the (already complexity-sorted) children in order and
+    always appending to the currently shortest column balances column
+    heights without reordering siblings — the largest-first reading
+    order survives, it just wraps.
+    """
+    cols: list[list[tuple[HierNode, _NodeInfo]]] = [[] for _ in range(columns)]
+    heights = [0.0] * columns
+    for item in items:
+        index = min(range(columns), key=lambda k: (heights[k], k))
+        if cols[index]:
+            heights[index] += _NODESEP_PT
+        cols[index].append(item)
+        heights[index] += item[1].height
+    return tuple(tuple(col) for col in cols if col)
+
+
+def _grid_extent(
+    cols: Sequence[Sequence[tuple[HierNode, _NodeInfo]]],
+) -> tuple[float, float]:
+    """Estimated (width, height) of a packed column layout."""
+    if not cols:
+        return (0.0, 0.0)
+    width = sum(max(info.width for _, info in col) for col in cols)
+    width += (len(cols) - 1) * _RANKSEP_PT
+    height = max(
+        sum(info.height for _, info in col) + (len(col) - 1) * _NODESEP_PT
+        for col in cols
+    )
+    return (width, height)
+
+
+def _pack_columns(
+    items: Sequence[tuple[HierNode, _NodeInfo]],
+    frame: _PackFrame,
+) -> tuple[tuple[tuple[HierNode, _NodeInfo], ...], ...]:
+    """Choose the column count whose scope lands closest to landscape.
+
+    Every count from 1 to ``len(items)`` is scored by the log-distance
+    of its estimated aspect from :data:`_TARGET_ASPECT` — log so that
+    2x too wide is penalised exactly as much as 2x too tall. Ties go to
+    the smaller count, so a scope that is already landscape keeps the
+    single column it has always rendered as.
+    """
+    if not items:
+        return ()
+    best: tuple[tuple[tuple[HierNode, _NodeInfo], ...], ...] = ()
+    best_score = float("inf")
+    for columns in range(1, len(items) + 1):
+        candidate = _distribute(items, columns)
+        width, height = _grid_extent(candidate)
+        width += frame.side_width + frame.pad_width
+        height = max(height, frame.height_floor) + frame.pad_height
+        if height <= 0:
+            continue
+        score = abs(math.log((width / height) / _TARGET_ASPECT))
+        if score < best_score - 1e-9:
+            best, best_score = candidate, score
+    return best
+
+
+def _build_pack_plan(
+    top: HierNode,
+    domain_map: DomainMap | None,
+    reset_map: ResetDomainMap | None,
+    hints: HintMap | None,
+    frame: _PackFrame,
+) -> dict[str, _ScopePack]:
+    """Decide every scope's column layout in one bottom-up pass.
+
+    Keyed by instance path, so emission is a lookup rather than a
+    re-derivation — the estimate is recursive (a cluster's size is its
+    own packed interior) and recomputing it per scope would be
+    quadratic for no benefit.
+
+    A scope whose children carry ``rbsch`` ``rank=`` / ``group=`` hints
+    is left in one column: the author has already laid that scope out
+    and an explicit instruction outranks the heuristic.
+    """
+    plan: dict[str, _ScopePack] = {}
+
+    def visit(node: HierNode, outer: _PackFrame) -> _NodeInfo:
+        label_w, label_h = _text_extent(_label_for(node, domain_map, reset_map))
+        if not node.children:
+            return _NodeInfo(
+                width=max(label_w + _NODE_PAD_X, _MIN_NODE_W),
+                height=max(label_h + _NODE_PAD_Y, _MIN_NODE_H),
+                span=1,
+                tail=node.instance_path,
+            )
+        children = _children_sorted_by_complexity(node)
+        items = [(child, visit(child, _PackFrame())) for child in children]
+        if _has_layout_hints(node, hints):
+            cols = _distribute(items, 1)
+        else:
+            cols = _pack_columns(items, outer)
+        plan[node.instance_path] = _ScopePack(
+            columns=tuple(tuple(child for child, _ in col) for col in cols),
+            tails=tuple(
+                max(col, key=lambda item: item[1].span)[1].tail for col in cols
+            ),
+        )
+        inner_w, inner_h = _grid_extent(cols)
+        return _NodeInfo(
+            width=max(label_w + _CLUSTER_PAD_X_LABEL, inner_w + _CLUSTER_PAD_X_CONTENT),
+            height=label_h + inner_h + _CLUSTER_PAD_Y,
+            span=sum(max(info.span for _, info in col) for col in cols),
+            tail=max(cols[-1], key=lambda item: item[1].span)[1].tail,
+        )
+
+    visit(top, frame)
+    return plan
+
+
+def _has_layout_hints(scope: HierNode, hints: HintMap | None) -> bool:
+    """True when the author placed any ``rbsch`` layout hint in ``scope``."""
+    if hints is None:
+        return False
+    for child in scope.children:
+        hint = _layout_hint_for(scope, child, hints)
+        if hint is not None and (hint.rank is not None or bool(hint.group)):
+            return True
+    return False
+
+
+def _emit_column_chain(
+    pack: _ScopePack | None, out: IO[str], *, head: str | None = None
+) -> None:
+    """Put each packed column on its own rank with invisible edges.
+
+    Every child owns a node named by its instance path (a leaf box, or
+    a cluster's invisible anchor), so one invisible edge per member of
+    column *n + 1*, sourced from column *n*'s tail, makes dot rank the
+    columns left to right. ``weight`` is left at the default: the chain
+    wraps the column, it does not out-shout the real port edges.
+
+    No ``rank=same`` statement is emitted — cluster members may not
+    share one, and this renderer's bar is zero Graphviz warnings.
+    """
+    if pack is None or not pack.columns:
+        return
+    if head is not None:
+        for child in pack.columns[0]:
+            out.write(f'    "{head}" -> "{child.instance_path}" [style=invis];\n')
+    for index, column in enumerate(pack.columns[1:]):
+        source = pack.tails[index]
+        for child in column:
+            out.write(f'    "{source}" -> "{child.instance_path}" [style=invis];\n')
+
+
 def _cluster_id_for(instance_path: str) -> str:
     """Sanitize an instance path into a Graphviz cluster name.
 
@@ -899,6 +1250,7 @@ def _emit_cluster_subtree(
     parent_group: str | None = None,
     compact_params: bool = False,
     hints: HintMap | None = None,
+    pack_plan: dict[str, _ScopePack] | None = None,
 ) -> None:
     """Recursively emit ``node`` and its descendants.
 
@@ -1032,6 +1384,7 @@ def _emit_cluster_subtree(
         top_level=False,
         parent_cluster=cluster_id,
         compact_params=compact_params,
+        pack_plan=pack_plan,
     )
     out.write("  }\n")
 
@@ -1069,6 +1422,8 @@ def _emit_scope_children(
     top_level: bool,
     parent_cluster: str,
     compact_params: bool,
+    pack_plan: dict[str, _ScopePack] | None = None,
+    pack_head: str | None = None,
 ) -> None:
     """Emit one scope's children, honoring ``rbsch`` layout hints.
 
@@ -1084,6 +1439,14 @@ def _emit_scope_children(
 
     After the children, ``rank=`` hints become a chain of invisible
     ordering edges (:func:`_emit_rank_chain`).
+
+    ``pack_plan`` (rtl-buddy-sch#138) is the landscape grid decided by
+    :func:`_build_pack_plan`; passing it wraps an otherwise edge-free
+    sibling column into a grid. It is ``None`` unless the caller knows
+    the scope has no sibling dataflow to rank by — the block diagram
+    has its own ranking and must not be second-guessed. ``pack_head``
+    is the top frame's first port anchor (see
+    :func:`_emit_column_chain`).
     """
     members: dict[str, list[HierNode]] = {}
     for child in _children_sorted_by_complexity(scope):
@@ -1105,6 +1468,7 @@ def _emit_scope_children(
                 parent_group=parent_cluster,
                 compact_params=compact_params,
                 hints=hints,
+                pack_plan=pack_plan,
             )
             continue
         if name in emitted:
@@ -1129,9 +1493,12 @@ def _emit_scope_children(
                 parent_group=parent_cluster,
                 compact_params=compact_params,
                 hints=hints,
+                pack_plan=pack_plan,
             )
         out.write("  }\n")
 
+    if pack_plan is not None and not emitted:
+        _emit_column_chain(pack_plan.get(scope.instance_path), out, head=pack_head)
     _emit_rank_chain(scope, out, hints)
 
 
