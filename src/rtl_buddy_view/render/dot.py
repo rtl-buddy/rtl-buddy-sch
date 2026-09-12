@@ -1497,6 +1497,11 @@ def _emit_scope_children(
             )
         out.write("  }\n")
 
+    # ``emitted`` is non-empty only when a ``group=`` hint put some
+    # children inside a virtual container. The plan already leaves such
+    # a scope in one column, but the head chain would still reach into
+    # the container — so stand down from the scope entirely and let the
+    # author's grouping be the whole layout.
     if pack_plan is not None and not emitted:
         _emit_column_chain(pack_plan.get(scope.instance_path), out, head=pack_head)
     _emit_rank_chain(scope, out, hints)
