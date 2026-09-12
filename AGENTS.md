@@ -283,6 +283,16 @@ When changing any of the above, update
 `rtl_buddy/src/rtl_buddy/tools/hier_rtl_buddy_view.py` in the same
 change set.
 
+- **Hub origin vocabulary**: `schemas/hub-protocol-v1.json` owns it;
+  nine copies across three repos follow it (rtl_buddy's vendored schema
+  + `Origin` enum, the nvim client's vendored schema + `PEERS` +
+  `VALID_ORIGIN` + `M.ORIGIN`, this repo's `PEER_ROLES` and the pinned
+  `ORIGINS` in `tests/test_hub_protocol_schema.py`), and the separate
+  origin→display map has five more. Adding or renaming one is a
+  lockstep edit with a fixed cross-repo merge order —
+  [`docs/hub-protocol.md` § 13](docs/hub-protocol.md#13-adding-or-renaming-an-origin--lockstep-checklist)
+  is the checklist, including which test catches each missed copy.
+
 ## Cross-repo coupling — hub design tokens (vendored FROM rtl_buddy)
 
 Most cross-repo coupling in this file runs outward: rtl_buddy consumes

@@ -27,11 +27,21 @@ on:
     paths:
       - '.github/workflows/viewer.yml'
       - 'viewer/**'
+      # The origin fence (viewer/tests/origin_vocabulary.spec.js) reads
+      # the protocol schema, so a schema-only PR — exactly the PR that
+      # adds an origin — has to run this suite or the fence never fires
+      # on the change it exists to catch.
+      - 'schemas/hub-protocol-v1.json'
   pull_request:
     branches: [main]
     paths:
       - '.github/workflows/viewer.yml'
       - 'viewer/**'
+      # The origin fence (viewer/tests/origin_vocabulary.spec.js) reads
+      # the protocol schema, so a schema-only PR — exactly the PR that
+      # adds an origin — has to run this suite or the fence never fires
+      # on the change it exists to catch.
+      - 'schemas/hub-protocol-v1.json'
 
 defaults:
   run:

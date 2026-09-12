@@ -28,6 +28,7 @@ Schema (`schemas/hub-protocol-v1.json`).
 10. [nvim mapping](#10-nvim-mapping)
 11. [Capability negotiation](#11-capability-negotiation)
 12. [Glossary](#12-glossary)
+13. [Adding or renaming an origin — lockstep checklist](#13-adding-or-renaming-an-origin--lockstep-checklist)
 
 ---
 
@@ -919,6 +920,117 @@ applied per connection is the `v` from that connection's `hello`.
 | `view.json`     | The JSON contract emitted by `rtl-buddy-view --format json` once Phase 4 lands; see `rtl-buddy/rtl-buddy-view#17`.   |
 | `wave_scope`    | A path into the surfer-loaded waveform, e.g. `tb.dut.u_fifo`.                                                       |
 | WCP             | Waveform Control Protocol — surfer's native external-control socket. Source of truth: `surfer-wcp/src/proto.rs`.    |
+
+---
+
+## 13. Adding or renaming an origin — lockstep checklist
+
+The origin vocabulary has exactly one owner: `properties.origin.enum`
+in `schemas/hub-protocol-v1.json`, in this repo. Everything else is a
+copy: **nine** of the wire vocabulary and **five** of the display map,
+spread over three repos — because a pane is a self-contained single
+file by design and both non-browser clients vendor the schema rather
+than fetch it. So "add an origin" is a ten-place edit, and the failure
+mode is a half-landing: the wire accepts the new peer, one surface
+draws it, the others silently don't.
+
+Two vocabularies are in play and they move independently:
+
+- **Wire origins** — `view`, `wave`, `src`, `cli`, `notebook`, `graph`, `cov` — are frozen
+  for the life of protocol v1. Nothing below renames one; §13.1 is the
+  checklist for *adding* one.
+- **Display names** (`view`→`sch`, `graph`→`gph`; everything else
+  passes through) are a separate frozen map that exists in five copies.
+  §13.2 is the checklist for renaming one, which never touches the wire.
+
+`rb hub status` is the deliberate exception to the display map: it
+prints raw origins, because it is the tool you reach for when you want
+to know what the *wire* says (rtl_buddy `docs/concepts/hub.md`).
+
+### 13.1 Adding a wire origin
+
+In this order. The "caught by" column is what goes red if you skip the
+row — read it as the reason the row is on the list, not as a promise
+you can skip reading it.
+
+| #  | Place                                          | Repo             | File                                                | Caught by                                                                                           |
+| -- | ---------------------------------------------- | ---------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| 1  | `origin` enum — all 8 repeats                  | rtl-buddy-sch    | `schemas/hub-protocol-v1.json`                        | `tests/test_hub_protocol_schema.py::test_every_origin_enum_lists_every_origin`                        |
+| 2  | The pinned vocabulary (`ORIGINS`)              | rtl-buddy-sch    | `tests/test_hub_protocol_schema.py`                   | `::test_origin_enum_is_the_full_vocabulary` — this row *is* the pin; editing it is the deliberate act |
+| 3  | Glossary `origin` row + a `§4.x` peer section  | rtl-buddy-sch    | `docs/hub-protocol.md`                                | `::test_doc_examples_name_only_real_origins` (subset only — see the gap note below)                   |
+| 4  | `PEER_ROLES` / `NON_APP_ORIGINS`               | rtl-buddy-sch    | `viewer/src/peerRoles.js`                             | `viewer/tests/origin_vocabulary.spec.js` — reads the schema, asserts an exact partition               |
+| 5  | Vendored schema copy                           | rtl_buddy        | `src/rtl_buddy/hub/schema/hub-protocol-v1.json`       | `tests/test_hub_protocol.py::test_vendored_schema_matches_source_when_view_repo_present` (local only) |
+| 6  | `Origin` enum                                  | rtl_buddy        | `src/rtl_buddy/hub/protocol.py`                       | `tests/test_hub_protocol.py::test_origin_enum_matches_vendored_schema`                                |
+| 7  | Vendored schema copy                           | rtl-buddy-nvim   | `lua/rtlbuddy/schema/hub-protocol-v1.json`            | `.github/workflows/test.yml` → `schema-drift` job (diffs against rtl-buddy-sch `main`)                |
+| 8  | `PEERS`                                        | rtl-buddy-nvim   | `lua/rtlbuddy/schema.lua`                             | `tests/schema_spec.lua` → "vendored schema's origin enum is the PEERS table"                          |
+| 9  | `VALID_ORIGIN`                                 | rtl-buddy-nvim   | `lua/rtlbuddy/protocol.lua`                           | same test                                                                                             |
+| 10 | `M.ORIGIN`                                     | rtl-buddy-nvim   | `lua/rtlbuddy/protocol.lua`                           | nothing — a deliberate **subset** (the origins nvim itself may *emit*). Only touch it if nvim will send as the new origin. |
+
+Then decide, once, whether the new origin is an app a user keeps open.
+If it is, it gets a row in `PEER_ROLES` (#4); if it is not — `cli` is a
+one-shot, `notebook` is one marimo session — it goes in
+`NON_APP_ORIGINS` instead. Naming the exclusions is what lets the fence
+assert an exact partition rather than a subset, so "forgot the row" and
+"deliberately not a row" stay distinguishable.
+
+**Gaps, stated plainly.** Row 3 is only half-guarded.
+`::test_doc_examples_name_only_real_origins` checks that every origin
+*named in the prose* is real, not that every real origin is named, and
+`::test_docs_document_the_cov_peer`'s "every prose origin list carries
+the whole vocabulary" rule is hardcoded to `cov` — the origin it was
+written for. Adding the eighth origin means extending that test too, or
+a glossary that quietly lags the wire. Row 5's drift test skips in
+rtl_buddy's CI (it fires only when a `rtl-buddy-view` checkout sits
+beside the repo, i.e. on a developer's machine); the nvim copy at row 7
+is the one that is genuinely CI-guarded.
+
+### 13.2 Merge order across repos
+
+The clients pin *this* repo's `main`, so the schema change has to be on
+`main` before anything downstream can go green:
+
+1. **rtl-buddy-sch first** — rows 1–4 in one PR. Its own suites are
+   self-contained; nothing external is pinned, so it merges on its own.
+2. **rtl-buddy-nvim second, or any time after (1) merges** — rows 7–9.
+   The `schema-drift` job curls
+   `raw.githubusercontent.com/rtl-buddy/rtl-buddy-sch/main/schemas/hub-protocol-v1.json`,
+   so it is **red by construction** until the sch PR lands and green
+   the moment it does. Opening it early is fine; it cannot pass early.
+3. **rtl_buddy third** — rows 5–6. Re-copy the schema byte-for-byte
+   (`cp` from the sch checkout — the drift test is a byte compare, not
+   a semantic one) and extend `Origin` in the same commit, or
+   `decode()` raises on the first envelope that carries the new origin:
+   schema validation passes and `Origin(obj["origin"])` is what blows
+   up.
+
+A new origin is not "landed" until all three are on `main`. Until then
+the hub will accept a `hello` it has no `Origin` member for.
+
+### 13.3 Renaming a display name
+
+The wire is untouched; five copies of the origin→short-name map move
+together:
+
+| Place            | Repo          | File                                    | Caught by                                                     |
+| ---------------- | ------------- | --------------------------------------- | --------------------------------------------------------------- |
+| `ORIGIN_DISPLAY` | rtl-buddy-sch | `viewer/src/displayNames.js`            | `viewer/tests/display_names.spec.js` (exact map) + `origin_vocabulary.spec.js` (keys are real origins) |
+| `APPS` (`name` / `short`) | rtl_buddy | `src/rtl_buddy/hub/landing_page.py` | `tests/test_hub_landing.py`                                    |
+| `ORIGIN_LABELS`  | rtl_buddy     | `src/rtl_buddy/hub/landing_page.html`   | `tests/test_hub_landing.py` (asserts the literal line)          |
+| `ORIGIN_LABELS`  | rtl_buddy     | `src/rtl_buddy/hub/graph_page.html`     | `tests/test_hub_graph_page.py` (asserts the literal line)       |
+| `ORIGIN_LABELS`  | rtl_buddy     | `src/rtl_buddy/hub/cov_page.html`       | `tests/test_hub_cov_page.py` (asserts the literal line)         |
+
+The three `ORIGIN_LABELS` copies sit between `>>> origin-labels`
+markers and are asserted as literal strings, so they fail loudly and
+individually — but each in its own repo's suite, which is why they are
+one checklist rather than three.
+
+### 13.4 CI trigger note
+
+`test.yml` and `viewer.yml` in this repo both list `schemas/**` in
+their `paths:` filters. They have to: an origin addition is often a
+schema-only diff, and a `paths:` filter that excludes the schema turns
+rows 1–4 into checks that never ran — which GitHub renders identically
+to checks that passed.
 
 ---
 
