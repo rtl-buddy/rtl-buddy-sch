@@ -993,7 +993,7 @@ The clients pin *this* repo's `main`, so the schema change has to be on
    self-contained; nothing external is pinned, so it merges on its own.
 2. **rtl-buddy-nvim second, or any time after (1) merges** — rows 7–9.
    The `schema-drift` job curls
-   `raw.githubusercontent.com/rtl-buddy/rtl-buddy-view/main/schemas/hub-protocol-v1.json`,
+   `raw.githubusercontent.com/rtl-buddy/rtl-buddy-sch/main/schemas/hub-protocol-v1.json`,
    so it is **red by construction** until the sch PR lands and green
    the moment it does. Opening it early is fine; it cannot pass early.
 3. **rtl_buddy third** — rows 5–6. Re-copy the schema byte-for-byte
