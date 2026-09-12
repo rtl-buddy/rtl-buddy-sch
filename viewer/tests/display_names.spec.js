@@ -65,13 +65,16 @@ describe('display names', () => {
       __RTL_BUDDY_HUB__: '127.0.0.1:8123',
       __RTL_BUDDY_GRAPH_URL__: '/graph.json',
       __RTL_BUDDY_COV_URL__: '/cov.json',
+      __RTL_BUDDY_PHY_URL__: '/phy.json',
     })
     // Labels are short names; the routes are the hub's canonical TLA
-    // paths (the hub 307s the legacy /graph spelling to /gph).
+    // paths (the hub 307s the legacy /graph spelling to /gph). `phys`
+    // is the wire origin, `phy` the label AND the route.
     expect(apps.map((a) => [a.label, a.href])).toEqual([
       ['⌂ hub', '/'],
       ['gph ↗', '/gph'],
       ['cov ↗', '/cov'],
+      ['phy ↗', '/phy'],
     ])
   })
 })
