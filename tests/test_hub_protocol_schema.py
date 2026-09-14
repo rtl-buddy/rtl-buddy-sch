@@ -12,9 +12,10 @@ hand-editing a 1000-line JSON file:
    peer list, ``hello``'s envelope + ``client``, ``welcome``'s
    ``registered_clients``). Adding a peer means adding it to all of
    them; the enum-sweep test below fails when one is missed.
-2. ``cov_focus`` (rtl-buddy/rtl-buddy-view#133) is structurally a
-   sibling of ``graph_focus`` — one required coordinate string plus
-   optional hints, closed payload, ``kind: "event"``.
+2. ``cov_focus`` (rtl-buddy/rtl-buddy-view#133) and ``phys_focus``
+   (rtl-buddy/rtl_buddy#558) are structurally siblings of
+   ``graph_focus`` — one required coordinate string plus optional
+   hints, closed payload, ``kind: "event"``.
 3. The examples in ``docs/hub-protocol.md`` are what implementers copy,
    and nothing else checks them: the ``hello`` row shipped
    ``client: "viewer"`` for the whole life of the document, a value the
@@ -36,7 +37,20 @@ SCHEMA_PATH = Path(__file__).parent.parent / "schemas" / "hub-protocol-v1.json"
 DOC_PATH = Path(__file__).parent.parent / "docs" / "hub-protocol.md"
 
 # The v1 origin vocabulary, in the order the schema lists it.
-ORIGINS = ["view", "wave", "src", "cli", "notebook", "graph", "cov"]
+ORIGINS = ["view", "wave", "src", "cli", "notebook", "graph", "cov", "phys"]
+
+# The peers whose prose the doc fence checks by name: the wire origin,
+# its focus event, and the ``§4.x`` heading that has to introduce it.
+# A new origin with a pane of its own belongs here — that is what keeps
+# row 3 of the ``docs/hub-protocol.md`` §13.1 checklist guarded.
+PROSE_PEERS = [
+    ("cov", "cov_focus", "### 4.9 Coverage pane (`cov` client, browser)"),
+    (
+        "phys",
+        "phys_focus",
+        "### 4.10 Physical-metrics pane (`phys` client, browser)",
+    ),
+]
 
 UUID = "9c3f8e5f-7d1b-4d3a-9a3b-1a2f5c8e7d3a"
 
@@ -176,6 +190,26 @@ def test_cov_may_hello_and_appear_in_welcome(
     )
 
 
+def test_phys_may_hello_and_appear_in_welcome(
+    validator: jsonschema.protocols.Validator,
+) -> None:
+    validator.validate(
+        _envelope(
+            "hello",
+            {"client": "phys", "version": "0.1.0", "capabilities": ["phys_focus"]},
+            origin="phys",
+            kind="request",
+        )
+    )
+    validator.validate(
+        _envelope(
+            "welcome",
+            {"server_version": "0.1.0", "registered_clients": ["view", "phys"]},
+            kind="response",
+        )
+    )
+
+
 # --- cov_focus --------------------------------------------------------------
 
 
@@ -263,17 +297,134 @@ def test_cov_focus_mirrors_graph_focus_structurally(schema: dict) -> None:
     assert branches["cov_focus"]["properties"]["kind"] == {"const": "event"}
 
 
+# --- phys_focus -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"target": "instance:top.u_fifo.u_wr_ptr"},
+        {"target": "top.u_fifo.u_wr_ptr"},  # unprefixed reads as an instance
+        {"target": "module:fifo"},
+        {"target": "module:fifo", "metric": "cells"},
+        {"target": "module:fifo", "metric": "area"},
+        {"target": "instance:top.u_fifo", "metric": "leakage"},
+        {"target": "instance:top.u_fifo", "metric": "dynamic"},
+        {"target": "instance:top.u_fifo", "metric": "total"},
+    ],
+)
+def test_phys_focus_accepts_target_plus_optional_metric(
+    validator: jsonschema.protocols.Validator, payload: dict
+) -> None:
+    validator.validate(_envelope("phys_focus", payload, origin="cli"))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},  # target is required
+        {"target": ""},  # and non-empty
+        {"target": "module:fifo", "metric": "power"},  # closed enum
+        {"target": "module:fifo", "metric": "switching"},  # summed into `dynamic`
+        {"target": "module:fifo", "metric": "internal"},
+        {"target": "module:fifo", "line": 42},  # closed payload — cov_focus's hint
+        {"target": "module:fifo", "instance": "top.u_fifo"},
+        {"node": "module:fifo"},  # graph_focus's payload, not this one
+    ],
+)
+def test_phys_focus_rejects_malformed_payloads(
+    validator: jsonschema.protocols.Validator, payload: dict
+) -> None:
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(_envelope("phys_focus", payload, origin="cli"))
+
+
+def test_phys_focus_is_an_event_not_a_request(
+    validator: jsonschema.protocols.Validator,
+) -> None:
+    """Same asymmetry as graph_focus and cov_focus: broadcast state."""
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(
+            _envelope(
+                "phys_focus", {"target": "module:fifo"}, origin="cli", kind="request"
+            )
+        )
+
+
+def test_phys_focus_may_originate_anywhere(
+    validator: jsonschema.protocols.Validator,
+) -> None:
+    """`any → all`, so the pane itself is a legal producer too."""
+    for origin in ORIGINS:
+        validator.validate(
+            _envelope("phys_focus", {"target": "module:fifo"}, origin=origin)
+        )
+
+
+def test_phys_focus_mirrors_cov_focus_structurally(schema: dict) -> None:
+    """The three focus events stay siblings.
+
+    ``phys_focus`` was specified as "``cov_focus`` for the physical
+    model"; if one grows a required field or opens its payload, the
+    divergence should be a deliberate edit here, not a silent drift.
+    """
+    branches = {
+        branch["if"]["properties"]["type"]["const"]: branch["then"]
+        for branch in schema["allOf"]
+        if "const" in branch["if"]["properties"]["type"]
+    }
+    cov = branches["cov_focus"]["properties"]["payload"]
+    phys = branches["phys_focus"]["properties"]["payload"]
+    for shape in (cov, phys):
+        assert shape["type"] == "object"
+        assert shape["additionalProperties"] is False
+        assert shape["required"] == ["target"]
+        assert shape["description"]
+    assert branches["phys_focus"]["properties"]["kind"] == {"const": "event"}
+    # The metric hint is a closed enum in both, and `dynamic` is the
+    # pane-resolved sum rather than a `/phy.json` key of its own.
+    assert phys["properties"]["metric"]["enum"] == [
+        "cells",
+        "area",
+        "leakage",
+        "dynamic",
+        "total",
+    ]
+    assert "internal + switching" in phys["properties"]["metric"]["description"]
+
+
 # --- schema ↔ docs ----------------------------------------------------------
 
 
-def test_docs_document_the_cov_peer(doc: str) -> None:
+@pytest.mark.parametrize(("origin", "event", "heading"), PROSE_PEERS)
+def test_docs_document_the_peer(
+    doc: str, origin: str, event: str, heading: str
+) -> None:
     """`docs/hub-protocol.md` is the prose form of the same promise."""
-    assert "| `cov_focus`" in doc, "§3 event catalog row missing"
-    assert "### 4.9 Coverage pane (`cov` client, browser)" in doc
-    # Every prose list of origins carries the whole vocabulary.
-    for line in doc.splitlines():
-        if "`notebook`" in line and "`graph`" in line:
-            assert "`cov`" in line, f"origin list missing cov: {line}"
+    assert f"| `{event}`" in doc, f"§3 event catalog row missing for {event}"
+    assert heading in doc, f"§4.x peer section missing for `{origin}`"
+
+
+def test_every_prose_origin_list_carries_the_whole_vocabulary(doc: str) -> None:
+    """No glossary or checklist line lags the wire.
+
+    This used to name `cov` — the origin it was written for — which
+    made row 3 of the §13.1 checklist half-guarded: the next origin
+    could land on the wire with the prose lists still enumerating the
+    old vocabulary. It is now driven by `ORIGINS`, so adding an origin
+    to the pin above is what fails the doc lists that forgot it.
+
+    A line is "an origin list" if it names ``notebook`` and ``graph``
+    in backticks — the two that only ever appear in an enumeration of
+    the whole vocabulary, never on their own in a sentence.
+    """
+    lists = [
+        line for line in doc.splitlines() if "`notebook`" in line and "`graph`" in line
+    ]
+    assert lists, "origin lists moved out of the document"
+    for line in lists:
+        for origin in ORIGINS:
+            assert f"`{origin}`" in line, f"origin list missing {origin}: {line}"
 
 
 def test_doc_examples_name_only_real_origins(doc: str) -> None:

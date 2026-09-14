@@ -187,7 +187,7 @@ data-presence rule the landing cards follow.
 | Position | Content |
 |---|---|
 | left | connection dot + status word. One vocabulary: `connected` / `connecting…` / `offline`, on `--ok` / `--warn` / `--err`. |
-| middle | peer list — every origin a user can have open (`view`, `src`, `wave`, `graph`, `cov`), connected or not. |
+| middle | peer list — every origin a user can have open (`view`, `src`, `wave`, `graph`, `cov`, `phys`), connected or not. |
 | right | message area on the shared severity tokens: `--err` for errors, `--warn` for warnings, `--fg-muted` for notes. |
 
 Anything that does not fit the vocabulary — the hub's `server_version`,

@@ -37,9 +37,11 @@ export const HUB_LANDING_ROUTE = '/'
  * Sibling apps, each gated on the injected global that says the hub
  * has data for it.
  *
- * ``cov`` is listed ahead of the pane itself (rtl-buddy/rtl_buddy#400):
- * the global is simply never set until that lands, so the entry costs
- * nothing and the switcher needs no second edit when it does.
+ * ``cov`` is listed ahead of the pane itself (rtl-buddy/rtl_buddy#400),
+ * and ``phys`` likewise ahead of the synth+power pane
+ * (rtl-buddy/rtl_buddy#558): the global is simply never set until that
+ * lands, so the entry costs nothing and the switcher needs no second
+ * edit when it does.
  */
 //
 // Labels carry the family's SHORT display names (displayNames.js) —
@@ -59,6 +61,13 @@ const SIBLINGS = [
     href: '/cov',
     gate: '__RTL_BUDDY_COV_URL__',
     title: 'Open the coverage pane in a new tab',
+  },
+  {
+    key: 'phys',
+    label: `${displayOrigin('phys')} ↗`,
+    href: '/phy',
+    gate: '__RTL_BUDDY_PHY_URL__',
+    title: 'Open the physical-metrics pane in a new tab',
   },
 ]
 

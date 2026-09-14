@@ -23,8 +23,10 @@
  * shows the raw wire origins; see rtl_buddy's `docs/concepts/hub.md`).
  *
  * `cov` is DISPLAY-ONLY until the coverage pane's hub client lands
- * (rtl-buddy/rtl_buddy#400); until a hub speaks it the row simply reads
- * "not connected", which is the honest answer either way.
+ * (rtl-buddy/rtl_buddy#400), and `phys` likewise until the synth+power
+ * pane lands (rtl-buddy/rtl_buddy#558); until a hub speaks one of them
+ * the row simply reads "not connected", which is the honest answer
+ * either way.
  */
 export const PEER_ROLES = Object.freeze([
   { origin: 'view', label: '(this schematic)' },
@@ -32,6 +34,7 @@ export const PEER_ROLES = Object.freeze([
   { origin: 'wave', label: '(surfer)' },
   { origin: 'graph', label: '(graph pane)' },
   { origin: 'cov', label: '(coverage pane)' },
+  { origin: 'phys', label: '(physical-metrics pane)' },
 ])
 
 /**

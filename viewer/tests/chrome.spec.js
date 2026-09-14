@@ -52,13 +52,26 @@ describe('app switcher', () => {
     expect(apps.map((a) => a.href)).toEqual(['/', '/cov'])
   })
 
+  it('carries the phys pane ahead of the pane itself', () => {
+    // Same pre-land as cov: rtl-buddy/rtl_buddy#558 sets the global,
+    // and until it does the entry simply never appears. The route is
+    // `/phy` (the family's TLA), the wire origin is `phys`.
+    const apps = hubApps({
+      __RTL_BUDDY_HUB__: '127.0.0.1:8123',
+      __RTL_BUDDY_PHY_URL__: '/phy.json',
+    })
+    expect(apps.map((a) => a.key)).toEqual(['hub', 'phys'])
+    expect(apps.map((a) => a.href)).toEqual(['/', '/phy'])
+  })
+
   it('labels siblings the way the panes do, arrow included', () => {
     const apps = hubApps({
       __RTL_BUDDY_HUB__: '127.0.0.1:8123',
       __RTL_BUDDY_GRAPH_URL__: '/graph.json',
       __RTL_BUDDY_COV_URL__: '/cov.json',
+      __RTL_BUDDY_PHY_URL__: '/phy.json',
     })
-    expect(apps.map((a) => a.label)).toEqual(['⌂ hub', 'gph ↗', 'cov ↗'])
+    expect(apps.map((a) => a.label)).toEqual(['⌂ hub', 'gph ↗', 'cov ↗', 'phy ↗'])
   })
 
   it('opens siblings in a new tab so the view peer slot survives', () => {
@@ -71,10 +84,12 @@ describe('app switcher', () => {
       __RTL_BUDDY_HUB__: '127.0.0.1:8123',
       __RTL_BUDDY_GRAPH_URL__: '/graph.json',
       __RTL_BUDDY_COV_URL__: '/cov.json',
+      __RTL_BUDDY_PHY_URL__: '/phy.json',
     })
     const byKey = Object.fromEntries(apps.map((a) => [a.key, switcherLinkAttrs(a)]))
     expect(byKey.graph).toEqual({ href: '/gph', target: '_blank', rel: 'noopener' })
     expect(byKey.cov).toEqual({ href: '/cov', target: '_blank', rel: 'noopener' })
+    expect(byKey.phys).toEqual({ href: '/phy', target: '_blank', rel: 'noopener' })
     // ⌂ hub is the exception: the landing page is never a peer, so
     // same-tab costs nothing that Back does not undo.
     expect(byKey.hub).toEqual({ href: '/' })
@@ -90,6 +105,10 @@ describe('app switcher', () => {
     }
     expect(siblingAppHref('graph', win)).toBe('/gph')
     expect(siblingAppHref('cov', win)).toBe(null)
+    expect(siblingAppHref('phys', win)).toBe(null)
+    expect(siblingAppHref('phys', { ...win, __RTL_BUDDY_PHY_URL__: '/phy.json' })).toBe(
+      '/phy',
+    )
     expect(siblingAppHref('graph', { ...win, __RTL_BUDDY_GRAPH_URL__: '' })).toBe(null)
     // Not hub-served, and an app nobody has heard of.
     expect(siblingAppHref('graph', {})).toBe(null)
