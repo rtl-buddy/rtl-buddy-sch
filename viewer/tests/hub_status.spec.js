@@ -137,9 +137,9 @@ describe('HubStatus strip', () => {
     )
     expect(byOrigin.wave).toBe('connected')
     expect(byOrigin.sch).toBe('disconnected')
-    // `cov` is display-only until the pane lands (rtl_buddy#400), and
-    // `phy` until rtl_buddy#558 — neither may claim to be connected on
-    // the strength of being listed.
+    // `cov` and `phy` both have panes now (rtl_buddy#400 / #558), but
+    // listed is still not connected — each stays disconnected until a
+    // real peer registers under its origin.
     expect(byOrigin.cov).toBe('disconnected')
     expect(byOrigin.phy).toBe('disconnected')
     expect(byOrigin.gph).toBe('disconnected')

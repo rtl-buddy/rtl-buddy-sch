@@ -1018,6 +1018,7 @@ you can skip reading it.
 | 8  | `PEERS`                                        | rtl-buddy-nvim   | `lua/rtlbuddy/schema.lua`                             | `tests/schema_spec.lua` → "vendored schema's origin enum is the PEERS table"                          |
 | 9  | `VALID_ORIGIN`                                 | rtl-buddy-nvim   | `lua/rtlbuddy/protocol.lua`                           | same test                                                                                             |
 | 10 | `M.ORIGIN`                                     | rtl-buddy-nvim   | `lua/rtlbuddy/protocol.lua`                           | nothing — a deliberate **subset** (the origins nvim itself may *emit*). Only touch it if nvim will send as the new origin. |
+| 11 | Pinned roster expectation (display labels)     | rtl-buddy-sch    | `viewer/tests/hub_status.spec.js`                     | the spec itself — `HubStatus` renders the roster straight from `PEER_ROLES`, so doing row 4 without this one is a red test. The row is here so the fix is extending the pin, never weakening it. |
 
 Then decide, once, whether the new origin is an app a user keeps open.
 If it is, it gets a row in `PEER_ROLES` (#4); if it is not — `cli` is a
