@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 VENDORED = REPO_ROOT / "viewer" / "src" / "theme.css"
 
 # sha256 of the vendored bytes. Bump together with the file.
-EXPECTED_SHA256 = "5c33af1ee4a133aaa55b390269a28c79305b536fd7e40f2c2bc7820b929e0315"
+EXPECTED_SHA256 = "bfbe7ac1eddc8bde9bac35972adaa2a743e30ee79adfa40289804c6115a09dfe"
 
 # Where the source of truth lives inside a sibling rtl_buddy checkout.
 SIBLING_RELPATH = Path("src") / "rtl_buddy" / "hub" / "theme.css"
