@@ -49,11 +49,11 @@ exact bytes here, re-pin `EXPECTED_SHA256` in the same commit.
 
 | File | Contents |
 |---|---|
-| `viewer/src/theme.css` | **vendored, do not edit.** Surfaces, text tiers, accent, status + banner tints, graph column hues, coverage ramp, brand marks, type, radii, shadows. |
+| `viewer/src/theme.css` | **vendored, do not edit.** Surfaces, text tiers, accent, status + banner tints, graph column hues, coverage ramp, the sequential area/power heat ramp (`--heat-h/s/l0/l1/none`), brand marks, type, radii, shadows. |
 | `viewer/src/tokens.css` | only what the shared sheet has no home for: the seven clock pastels, the two reset strokes, and the layout constants (`--header-h`, `--sidebar-w`, `--status-h`). |
 | `viewer/src/app.css` | the global rules that *consume* the tokens: document base, one disabled-control treatment, one severity map (`.rb-sev`), one backpressure ramp (`.rb-bp`). |
 | `viewer/src/theme.js` | `token(name)` for code that cannot say `var(--…)`, plus the theme-change signal and the `data-theme` pin. |
-| `viewer/src/palette.js` | the clock palette, the backpressure ramp and the coverage ramp, each defined once. |
+| `viewer/src/palette.js` | the clock palette, the backpressure ramp, the coverage ramp and the physical heat ramp (`heatRampColor` / `heatNoneColor` / `saturateBy`), each defined once. |
 | `viewer/src/severity.js` | one severity rank order and one severity → colour map. |
 
 Import order in `main.js` is load-bearing: vendored sheet, then
