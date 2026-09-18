@@ -14,6 +14,8 @@
 //   - hubError / hubErrorDismissedAt: surfaces hub `error` envelopes.
 //   - covData / covEnabled: the hub's live coverage payload
 //     (`/cov.json`, null without a hub) and the canvas tint toggle.
+//   - physScope: 'subtree' | 'self' — which figures the phys overlay
+//     paints. A re-style, not a re-layout.
 //
 // Actions:
 //   - bootstrap(): kick off the initial load (URL query, inlined
@@ -22,7 +24,7 @@
 //   - loadFromUrl(url) / loadFromFile(file) / loadFromText(text):
 //     three explicit entry points for the same parse+validate path.
 //   - select(id) / clearSelection()
-//   - toggleOverlay(name) / toggleCoverageTint()
+//   - toggleOverlay(name) / toggleCoverageTint() / setPhysScope(scope)
 //   - loadCoverage(): one-shot fetch of the hub's /cov.json.
 //   - applyHubCursorTime / applyHubSelection / applyHubScope /
 //     applyDiagnostics / applyHubError — invoked by useHub on inbound
@@ -345,6 +347,13 @@ export const useViewerStore = defineStore('viewer', {
     // of the session, including across model switches.
     covEnabled: true,
     covEnabledTouched: false,
+    // Phase 7b (rtl-buddy/rtl-buddy-sch#22): which figures the phys
+    // overlay paints. ``subtree`` is the default because a node on a
+    // hierarchy diagram stands for its scope; ``self`` answers "what
+    // does this block itself cost". Switching it repaints the overlay
+    // layer only — the layout is untouched, which is the whole point
+    // of keeping it out of the layout state above.
+    physScope: 'subtree',
   }),
   getters: {
     nodesById: (state) => {
@@ -1281,6 +1290,18 @@ export const useViewerStore = defineStore('viewer', {
     clearAxiPerfTimeWindow() {
       this.axiPerfTimeWindow = null
     },
+    /**
+     * Set the phys overlay's self-vs-subtree scope.
+     *
+     * A plain setter rather than a toggle so the two radio-style
+     * controls in the overlay panel are each idempotent — clicking
+     * "subtree" twice must not land on "self".
+     */
+    setPhysScope(scope) {
+      if (scope !== 'self' && scope !== 'subtree') return
+      this.physScope = scope
+    },
+
     toggleOverlay(name) {
       if (this.enabledOverlays.has(name)) {
         this.enabledOverlays.delete(name)

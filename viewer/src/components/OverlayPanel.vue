@@ -13,7 +13,7 @@
           <span class="overlay-name">{{ entry.name }}</span>
           <span v-if="!entry.known" class="tag-unknown">unknown</span>
         </label>
-        <ul v-if="entry.known && legendFor(entry.name).length" class="legend">
+        <ul v-if="entry.known && entry.name !== 'phys' && legendFor(entry.name).length" class="legend">
           <li v-for="item in legendFor(entry.name)" :key="item.label">
             <span
               class="swatch"
@@ -29,6 +29,11 @@
             {{ tbScopeNoteFor(entry.name) }}
           </li>
         </ul>
+        <!-- The phys overlay's legend is bivariate (area × power) and
+             carries its own scope toggle + provenance block, so it
+             replaces the flat swatch list rather than sitting beside
+             it. Every other overlay keeps the generic list above. -->
+        <PhysLegend v-if="entry.known && entry.name === 'phys'" />
       </li>
     </ul>
     <!-- Actionable empty state: the second line is the command that
@@ -102,6 +107,7 @@ import { coverageLiveOverlay } from '../overlays/coverage_live.js'
 import { covGeneratedDate } from '../covData.js'
 import { token, themeVersion } from '../theme.js'
 import { RENDER_WITH_OVERLAYS_HINT } from '../cliHints.js'
+import PhysLegend from './PhysLegend.vue'
 
 const store = useViewerStore()
 const summary = computed(() =>

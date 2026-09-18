@@ -157,6 +157,28 @@
           >open in {{ COV_LABEL }} ↗</a>
         </dd>
       </template>
+      <template v-if="phys">
+        <dt>Physical</dt>
+        <dd class="phys-block" data-testid="node-phys">
+          <div class="phys-figures">
+            <span v-for="f in physFigures" :key="f.label" class="phys-figure">
+              <span class="phys-fig-label">{{ f.label }}</span>
+              <span class="phys-fig-value">{{ f.value }}</span>
+            </span>
+          </div>
+          <div v-for="bar in physBars" :key="bar.label" class="cov-row">
+            <span class="cov-label">{{ bar.label }}</span>
+            <span class="cov-bar" :title="bar.title">
+              <span
+                class="cov-bar-fill"
+                :style="{ width: bar.pct + '%', background: bar.color }"
+              ></span>
+            </span>
+            <span class="cov-nums">{{ bar.pct }}%</span>
+          </div>
+          <p v-if="physScopeNote" class="phys-scope-note">{{ physScopeNote }}</p>
+        </dd>
+      </template>
       <template v-if="axiPins.length || axiInterconnect">
         <dt>AXI performance</dt>
         <dd>
@@ -213,7 +235,8 @@ import { heatColor } from '../overlays/coverage.js'
 import { covSummaryText, COV_PANE_ROUTE } from '../covData.js'
 import { isHubServed } from '../hubApps.js'
 import { displayOrigin } from '../displayNames.js'
-import { bpLevel } from '../palette.js'
+import { bpLevel, heatRampColor } from '../palette.js'
+import { areaOf, physScope, powerOf } from '../overlays/phys.js'
 import { themeVersion } from '../theme.js'
 import { formatBandwidth as fmtBps } from '../format.js'
 
@@ -278,6 +301,100 @@ const liveCoverageText = computed(() => covSummaryText(liveCoverage.value))
 // or the dev server ``/cov`` is a 404 (or someone else's page).
 const covPaneHref = computed(() => (isHubServed() ? COV_PANE_ROUTE : null))
 
+// --- phys: area + power (rtl-buddy/rtl-buddy-sch#22) ----------------
+//
+// Three numbers and two bars, per the issue. The numbers are the
+// node's own measurements; the bars are its share of its PARENT's
+// subtree, which is the question a hierarchy panel is actually asked
+// ("is this the block that owns the area?") and the one a raw µW
+// figure cannot answer. The parent comes from the instance path —
+// ``nodesById`` is keyed on it — so a node whose parent is outside
+// the rendered subtree simply gets no bars.
+const phys = computed(
+  () => (node.value && node.value.overlays && node.value.overlays.phys) || null,
+)
+// Which figures the panel shows follows the canvas toggle, so the
+// number under the cursor is the number the node is painted with.
+const physScopeLabel = computed(() => physScope({ physScope: store.physScope }))
+const physParent = computed(() => {
+  const id = node.value && node.value.id
+  if (typeof id !== 'string') return null
+  const cut = id.lastIndexOf('.')
+  if (cut < 0) return null
+  const parent = store.nodesById.get(id.slice(0, cut))
+  return (parent && parent.overlays && parent.overlays.phys) || null
+})
+const physFigures = computed(() => {
+  const block = phys.value
+  if (!block) return []
+  const scope = physScopeLabel.value
+  const out = []
+  if (typeof block.cell_count === 'number') {
+    out.push({ label: 'cells', value: formatCount(block.cell_count) })
+  }
+  const area = areaOf(block, scope)
+  if (area !== null) out.push({ label: 'area', value: `${formatMetric(area)} µm²` })
+  const power = powerOf(block, scope)
+  if (power !== null) out.push({ label: 'power', value: `${formatMetric(power)} µW` })
+  return out
+})
+const physBars = computed(() => {
+  themeVersion.value // the bar colours are resolved tokens
+  const block = phys.value
+  const parent = physParent.value
+  if (!block || !parent) return []
+  const bars = []
+  const area = share(areaOf(block, 'subtree'), areaOf(parent, 'subtree'))
+  if (area !== null) {
+    bars.push({
+      label: 'area',
+      pct: area,
+      color: heatRampColor(area / 100),
+      title: 'Share of the parent scope\u2019s area',
+    })
+  }
+  const power = share(powerOf(block, 'subtree'), powerOf(parent, 'subtree'))
+  if (power !== null) {
+    bars.push({
+      label: 'power',
+      pct: power,
+      color: heatRampColor(power / 100),
+      title: 'Share of the parent scope\u2019s total power',
+    })
+  }
+  return bars
+})
+// The self scope has one honest gap worth naming: ``self_area_um2``
+// is absent whenever subtracting the children's areas would have
+// been a guess (a blackbox child, a child the synthesis flattened
+// away). Silence there reads as "no area", so say which it is.
+const physScopeNote = computed(() => {
+  const block = phys.value
+  if (!block || physScopeLabel.value !== 'self') return ''
+  if (typeof block.area_um2 !== 'number') return ''
+  if (typeof block.self_area_um2 === 'number') return ''
+  return 'self area unavailable: a child module has no area row to subtract'
+})
+function share(value, total) {
+  if (typeof value !== 'number' || typeof total !== 'number' || !(total > 0)) {
+    return null
+  }
+  return Math.round(Math.min(100, (value / total) * 100) * 10) / 10
+}
+// Enough precision to keep a sub-µW leakage from reading as 0 and
+// few enough digits to fit the panel — the same choice the hub's
+// /phy pane makes for its columns.
+function formatMetric(value) {
+  const abs = Math.abs(value)
+  if (abs >= 1000) return formatCount(Math.round(value))
+  if (abs >= 1) return value.toFixed(2)
+  if (abs === 0) return '0'
+  return value.toPrecision(3)
+}
+function formatCount(value) {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
 // --- axi-perf: render the overlay human-readably instead of raw JSON.
 // (throughput formatting shared via ../format.js — bytes/s, decimal MB/GB)
 function axiMaxBp(block) {
@@ -317,12 +434,13 @@ const axiInterconnect = computed(
   () => node.value?.overlays?.['axi-perf']?.interconnect || null,
 )
 // Every overlay WITHOUT a dedicated section above (axi-perf,
-// coverage) falls back to the raw-JSON renderer.
+// coverage, phys) falls back to the raw-JSON renderer.
+const DEDICATED_OVERLAYS = new Set(['axi-perf', 'coverage', 'phys'])
 const otherOverlays = computed(() => {
   const ov = node.value?.overlays || {}
   const out = {}
   for (const k of Object.keys(ov)) {
-    if (k !== 'axi-perf' && k !== 'coverage') out[k] = ov[k]
+    if (!DEDICATED_OVERLAYS.has(k)) out[k] = ov[k]
   }
   return out
 })
@@ -665,6 +783,31 @@ function sendToCov() {
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+/* Physical (#22): three figures on one mono line over the two
+   share-of-parent bars, which reuse the coverage bar geometry — they
+   are the same control answering a different question. */
+.phys-block { font-size: 0.78rem; }
+.phys-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+.phys-figure { white-space: nowrap; }
+.phys-fig-label {
+  color: var(--fg-muted);
+  margin-right: 0.25rem;
+}
+.phys-fig-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.phys-scope-note {
+  margin: 0.25rem 0 0;
+  font-size: 0.7rem;
+  font-style: italic;
+  color: var(--fg-faint);
 }
 .coverview-link {
   display: inline-block;

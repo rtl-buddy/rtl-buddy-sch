@@ -141,3 +141,92 @@ export function coverageColor(pct) {
 export function coverageNoDataColor() {
   return token('--cov-none')
 }
+
+// ---------------------------------------------------------------------
+// Physical heat ramp (area + power)
+// ---------------------------------------------------------------------
+
+/**
+ * The sequential area/power ramp, driven by a 0..1 fraction.
+ *
+ * SEQUENTIAL where the coverage ramp above is diverging, because the
+ * quantity is: coverage has a bad end and a good end and earns a
+ * red→green hue sweep, while area and power only have "more". So the
+ * hue is fixed (``--heat-h``) and the ramp runs on lightness, from
+ * ``--heat-l0`` (a rounding error) to ``--heat-l1`` (the row that owns
+ * the design). The four tokens are the vendored hub sheet's, so the
+ * schematic overlay and the hub's ``/phy`` pane land on one ramp — the
+ * pane computes the same expression in CSS ``calc``.
+ */
+export function heatRampColor(fraction) {
+  const f = Math.max(0, Math.min(1, typeof fraction === 'number' ? fraction : 0))
+  const hue = token('--heat-h')
+  const sat = token('--heat-s')
+  const l0 = _percent(token('--heat-l0'), 96)
+  const l1 = _percent(token('--heat-l1'), 66)
+  const l = l0 + (l1 - l0) * f
+  return `hsl(${hue}, ${sat}, ${_round(l)}%)`
+}
+
+/** The "this node was not measured" fill/stroke for the phys overlay. */
+export function heatNoneColor() {
+  return token('--heat-none')
+}
+
+/**
+ * ``base``'s hue and lightness, saturated by a 0..1 fraction.
+ *
+ * This is the clock × area composition the phys overlay's fill uses
+ * when the clock overlay is enabled too: the clock keeps the hue (its
+ * whole job) and the area drives the saturation, so a big block in
+ * ``clk_a`` and a small one in ``clk_a`` read as the same colour at
+ * two intensities rather than as two colours. At ``fraction === 1``
+ * the result is the clock pastel exactly, which is what keeps the
+ * overlay panel's clock legend honest.
+ *
+ * Returns ``null`` for a colour this can't parse (only ``#rgb`` and
+ * ``#rrggbb`` are ever in the clock palette) so the caller can fall
+ * back to the sequential ramp rather than emit an invalid colour.
+ */
+export function saturateBy(base, fraction) {
+  const hsl = _hexToHsl(base)
+  if (hsl === null) return null
+  const f = Math.max(0, Math.min(1, typeof fraction === 'number' ? fraction : 0))
+  // 12% is "grey, but still this hue" — low enough to read as
+  // near-neutral, high enough that the hue survives the trip.
+  const sat = 12 + (hsl.s - 12) * f
+  return `hsl(${_round(hsl.h)}, ${_round(Math.max(0, sat))}%, ${_round(hsl.l)}%)`
+}
+
+function _percent(raw, fallback) {
+  const n = parseFloat(String(raw))
+  return Number.isFinite(n) ? n : fallback
+}
+
+function _round(n) {
+  return Math.round(n * 10) / 10
+}
+
+function _hexToHsl(hex) {
+  if (typeof hex !== 'string') return null
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim())
+  if (!m) return null
+  const digits = m[1]
+  const pairs =
+    digits.length === 3
+      ? [digits[0] + digits[0], digits[1] + digits[1], digits[2] + digits[2]]
+      : [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4, 6)]
+  const [r, g, b] = pairs.map((p) => parseInt(p, 16) / 255)
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const l = (max + min) / 2
+  const d = max - min
+  if (d === 0) return { h: 0, s: 0, l: l * 100 }
+  const s = d / (1 - Math.abs(2 * l - 1))
+  let h
+  if (max === r) h = ((g - b) / d) % 6
+  else if (max === g) h = (b - r) / d + 2
+  else h = (r - g) / d + 4
+  h = (h * 60 + 360) % 360
+  return { h, s: s * 100, l: l * 100 }
+}
