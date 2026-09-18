@@ -53,6 +53,7 @@ from rtl_buddy_view.extractor import (
 )
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.hints import HintMap
+from rtl_buddy_view.phys_annotations import PhysJoin
 from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 from rtl_buddy_view.wave_annotations import WaveMap
@@ -70,6 +71,7 @@ def render(
     wave_map: WaveMap | None = None,
     coverage_map: CoverageMap | None = None,
     coverage_metric: str = "lines",
+    phys_join: PhysJoin | None = None,
     axi_perf_source: Path | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
@@ -118,6 +120,18 @@ def render(
     re-reading config. ``None`` for both is valid (the field is
     omitted as ``null``) — covers direct ``json_render.render``
     callers that don't know the CLI surface.
+
+    ``phys_join`` (Phase 7b — rtl-buddy/rtl-buddy-sch#22) is the
+    physical model already projected onto *this* hierarchy by
+    :func:`rtl_buddy_view.phys_annotations.join_hierarchy` — area and
+    cell counts from the RTL module rows, power rolled up from the
+    leaf instance rows. It arrives pre-joined rather than as a raw
+    payload because the power channel's join is one walk of the whole
+    tree, not a per-node lookup; the renderer only has to copy each
+    node's block out. Contributes ``overlays.phys`` per node plus an
+    ``overlay_meta.phys`` block carrying the source paths, which
+    halves the run produced, where the join was rooted, and the
+    producer's own totals beside this roll-up of the rows.
     """
     payload = _build_payload(
         node,
@@ -127,6 +141,7 @@ def render(
         wave_map,
         coverage_map=coverage_map,
         coverage_metric=coverage_metric,
+        phys_join=phys_join,
         axi_perf_source=axi_perf_source,
         with_legend=with_legend,
         embed_layout=embed_layout,
@@ -148,6 +163,7 @@ def _build_payload(
     *,
     coverage_map: CoverageMap | None = None,
     coverage_metric: str = "lines",
+    phys_join: PhysJoin | None = None,
     axi_perf_source: Path | None = None,
     with_legend: bool = False,
     embed_layout: bool = True,
@@ -166,6 +182,7 @@ def _build_payload(
                 wave_map,
                 module_table,
                 coverage_map=coverage_map,
+                phys_join=phys_join,
             )
             for n in _walk(node)
         ),
@@ -176,7 +193,7 @@ def _build_payload(
         key=lambda d: (d["from"], d["to"]),
     )
     overlays_present = _overlays_present(
-        domain_map, reset_map, axi_perf_map, wave_map, coverage_map
+        domain_map, reset_map, axi_perf_map, wave_map, coverage_map, phys_join
     )
     payload: dict = {
         "schema_version": SCHEMA_VERSION,
@@ -204,6 +221,12 @@ def _build_payload(
             "url_base": coverage_map.url_base,
             "metric": coverage_metric,
         }
+    # The phys envelope block is emitted whenever a model was loaded at
+    # all — including one that attached nothing, because "the model's
+    # top is not this design" is precisely what the viewer has to be
+    # able to say. The per-node blocks are what go absent, never this.
+    if phys_join is not None and not phys_join.model.is_empty:
+        payload.setdefault("overlay_meta", {})["phys"] = phys_join.meta
     if axi_perf_source is not None:
         block = _axi_perf_source_block(axi_perf_source)
         # Carry the clock period so the SPA can compute each bundle's
@@ -344,6 +367,7 @@ def _overlays_present(
     axi_perf_map: AxiPerfMap | None,
     wave_map: WaveMap | None = None,
     coverage_map: CoverageMap | None = None,
+    phys_join: PhysJoin | None = None,
 ) -> list[str]:
     """Sorted list of overlay names whose payloads contributed to this view.
 
@@ -375,6 +399,12 @@ def _overlays_present(
         present.append("wave")
     if coverage_map is not None and not coverage_map.is_empty:
         present.append("coverage")
+    # A model that loaded but attached nothing still counts as present:
+    # the overlay contributed ``overlay_meta.phys``, whose notes are
+    # the explanation the viewer's panel shows. Listing it is what puts
+    # that panel entry on screen.
+    if phys_join is not None and not phys_join.model.is_empty:
+        present.append("phys")
     return sorted(present)
 
 
@@ -403,6 +433,7 @@ def _node_dict(
     module_table: ModuleTable | None = None,
     *,
     coverage_map: CoverageMap | None = None,
+    phys_join: PhysJoin | None = None,
 ) -> dict:
     """One ``view.json`` v1 node entry.
 
@@ -427,6 +458,7 @@ def _node_dict(
             axi_perf_map,
             wave_map,
             coverage_map=coverage_map,
+            phys_join=phys_join,
         ),
     }
     return out
@@ -619,6 +651,7 @@ def _node_overlays(
     wave_map: WaveMap | None = None,
     *,
     coverage_map: CoverageMap | None = None,
+    phys_join: PhysJoin | None = None,
 ) -> dict:
     """Per-overlay contributions for ``node``.
 
@@ -652,6 +685,12 @@ def _node_overlays(
         coverage_block = _coverage_node_contribution(node, coverage_map)
         if coverage_block:
             overlays["coverage"] = coverage_block
+    if phys_join is not None:
+        # Already joined — see ``render``'s docstring. A node the model
+        # said nothing about carries no key, same rule as coverage.
+        phys_block = phys_join.block(node.instance_path)
+        if phys_block:
+            overlays["phys"] = dict(phys_block)
     return overlays
 
 

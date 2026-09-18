@@ -182,12 +182,14 @@ uv run rtl-buddy-view \
 
 ### Overlays — `--overlay name=path`
 
-Every overlay (clock, reset, and the Phase 6+ coverage / physical /
-waveform ones) is dispatched through a single repeatable flag:
+Every overlay is dispatched through a single repeatable flag. The
+built-ins today are `clock`, `clock-tb`, `reset`, `coverage`, `phys`,
+`wave`, `axi-perf` and `hints`:
 
 ```bash
 uv run rtl-buddy-view --list-overlays
 # clock    1.0
+# phys     1.0
 # reset    1.0
 
 uv run rtl-buddy-view \
@@ -350,6 +352,76 @@ picker once per tab, or bake the data in the way deployments do
 (`embed.py --inject-data <archive>.zip`, then serve `dist/`), which
 makes cold deep links resolve with no interaction.
 
+### Physical overlay (consuming `--overlay phys=…`)
+
+When `rb synth` / `rb power` have published a physical model
+(`phys-model.json` + its discovery manifest, rtl-buddy/rtl_buddy#558),
+the `phys` overlay projects it onto the elaborated hierarchy: **area
+and cell counts** from the model's per-RTL-module rows, **power**
+rolled up from its per-leaf-instance rows. Point the flag at the
+manifest, the model, or the artefact directory holding either:
+
+```bash
+uv run rtl-buddy-view \
+    --top phys_top \
+    --filelist tests/fixtures/phys_design/files.f \
+    --overlay phys=tests/fixtures/phys_design/phys-manifest.json \
+    --format tree
+# phys_top  [area=11.17µm² P=2.86µW]
+# ├── u_sub : phys_sub  [area=5.59µm² P=2.52µW]
+# │   └── u_leaf : phys_leaf  [area=4.52µm² P=2.43µW]
+# └── u_dff : DFF_X1  [area=4.52µm² P=0.27µW]
+```
+
+Each node the model measured gets an `overlays.phys` block:
+
+```json
+{
+  "cell_count": 2,
+  "area_um2": 5.586,
+  "leakage_uw": 0.0174,
+  "internal_uw": 0.0714,
+  "switching_uw": 0.0,
+  "dynamic_uw": 0.0714,
+  "total_uw": 0.0888,
+  "leaf_instances": 1,
+  "subtree_leakage_uw": 0.0965,
+  "subtree_internal_uw": 2.3514,
+  "subtree_switching_uw": 0.0675,
+  "subtree_dynamic_uw": 2.4189,
+  "subtree_total_uw": 2.5154,
+  "subtree_leaf_instances": 2
+}
+```
+
+Two joins, and they are different joins. **Area** matches the node's
+module name against the model's RTL-module rows; the producer's area
+column already rolls the submodules up, so it is a subtree figure with
+no self counterpart — un-rolling it would mean subtracting the
+children's areas, and the view carries no instance multiplicity to do
+that correctly for an array or a generate loop. **Power** matches the
+model's
+rootless instance paths — rooted the way the hub's `/phy` pane roots
+one — and attributes each leaf row to its nearest enclosing scope,
+then rolls the parents up. The instance rows' `module` field holds the
+*Liberty cell* (`DFF_X1`), which is joined to nothing: a design with
+an RTL module of that name would otherwise collect every flop's power.
+
+A model of another design attaches nothing and says so rather than
+guessing, a wrapper top (`--tb-top`) is rooted at the model top's
+instance, and a half-filled model (synthesis without power, or the
+reverse) contributes the half it has with a note naming the missing
+command. The overlay adds one suffix to the ASCII tree and the
+`view.json` blocks above; dot / mermaid / elk output stays
+byte-identical with or without it.
+
+In the browser the two channels are fill saturation (area) and an
+outer ring (power) on the shared heat tokens, with a bivariate legend,
+a self-vs-subtree toggle for the power channel, and per-node figures
+plus share-of-parent bars in the detail panel. Full contract, composition rules with the
+clock / coverage / reset overlays, and limitations:
+[`docs/phys-overlay.md`](docs/phys-overlay.md).
+
 ## CLI
 
 ```
@@ -368,9 +440,11 @@ rtl-buddy-view [OPTIONS]
                         Parser frontend. [default: verible]
                         (slang activation is a Phase 2 follow-up.)
 --overlay name=path     Apply the named overlay. Repeatable.
-                        Built-ins: clock, reset, hints.
+                        Built-ins: axi-perf, clock, clock-tb,
+                        coverage, hints, phys, reset, wave.
                         Examples: --overlay clock=clock-map.json
                                   --overlay reset=reset-map.json
+                                  --overlay phys=phys-manifest.json
 --list-overlays         List registered overlays + their schema
                         versions and exit.
 --cdc-annotations PATH  (Deprecated; use --overlay clock=PATH.)
@@ -617,6 +691,11 @@ Consumers extract the version with `r"rtl-buddy-view\s+(\d+\.\d+(?:\.\d+)?)"` (t
   (`--overlay name=path`), locked `view.json` v1 schema, OSC-8
   hyperlinks in the tree renderer.
   ([#17](https://github.com/rtl-buddy/rtl-buddy-view/issues/17))
+- **Phase 7b** ✅ — Physical overlay: area as fill saturation, power
+  as an outer ring, bivariate legend, self-vs-subtree power toggle, and a
+  hierarchy roll-up of the physical model `rb synth` / `rb power`
+  publish. ([rtl-buddy/rtl-buddy-sch#22](https://github.com/rtl-buddy/rtl-buddy-sch/issues/22),
+  producer epic [rtl-buddy/rtl_buddy#558](https://github.com/rtl-buddy/rtl_buddy/issues/558))
 
 ## License
 

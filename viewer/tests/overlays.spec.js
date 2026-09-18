@@ -11,6 +11,17 @@ import { describe, expect, it } from 'vitest'
 import { getOverlay, overlaySummary, applyOverlays } from '../src/overlays/index.js'
 import { heatColor, tintMetric } from '../src/overlays/coverage.js'
 import { resolvePortValues } from '../src/overlays/wave.js'
+import {
+  areaFill,
+  areaOf,
+  bivariateLegend,
+  fractionOf,
+  physFillNote,
+  physMax,
+  physScope,
+  powerOf,
+} from '../src/overlays/phys.js'
+import { heatNoneColor, heatRampColor, saturateBy } from '../src/palette.js'
 
 describe('overlay registry', () => {
   it('returns null for an unknown name (never throws)', () => {
@@ -564,5 +575,372 @@ describe('built-in overlays', () => {
     }
     const labels = overlay.legend(graph).map((e) => e.label)
     expect(labels).toEqual(['clk_a', 'clk_other', 'clk_unbound'])
+  })
+})
+
+// ---------------------------------------------------------------------
+// phys overlay (Phase 7b — rtl-buddy/rtl-buddy-sch#22)
+// ---------------------------------------------------------------------
+//
+// The area/power channels, the two-axis composition rules, and the
+// self-vs-subtree scope. The DOM fake below is richer than the
+// coverage one above because the power ring is its own element —
+// cloned off the node shape so the reset overlay's border on the
+// shape itself survives underneath it.
+
+function physSvg(ids) {
+  const groups = {}
+  for (const id of ids) {
+    const shape = {
+      style: {},
+      attrs: {},
+      setAttribute(k, v) {
+        this.attrs[k] = v
+      },
+      removeAttribute(k) {
+        delete this.attrs[k]
+      },
+      cloneNode() {
+        return {
+          style: {},
+          attrs: {},
+          setAttribute(k, v) {
+            this.attrs[k] = v
+          },
+          removeAttribute(k) {
+            delete this.attrs[k]
+          },
+        }
+      },
+    }
+    groups[id] = {
+      shape,
+      ring: null,
+      attrs: {},
+      classList: { contains: () => false },
+      setAttribute(k, v) {
+        this.attrs[k] = v
+      },
+      removeAttribute(k) {
+        delete this.attrs[k]
+      },
+      appendChild(child) {
+        this.ring = child
+      },
+      removeChild() {
+        this.ring = null
+      },
+      querySelector(sel) {
+        if (sel.includes('data-phys-ring')) return this.ring
+        return this.shape
+      },
+      // The wave overlay is applied unconditionally by
+      // ``applyOverlays``; give it the empty badge list it expects.
+      querySelectorAll() {
+        return []
+      },
+    }
+  }
+  return {
+    groups,
+    svgRoot: {
+      querySelector(sel) {
+        const m = sel.match(/data-node-id="([^"]+)"/)
+        if (!m) return null
+        return groups[m[1].replace(/\\/g, '')] || null
+      },
+    },
+  }
+}
+
+const PHYS_GRAPH = {
+  overlays_present: ['phys'],
+  overlay_meta: {
+    phys: {
+      join_root: 'phys_top',
+      halves: { modules: true, instances: true },
+      notes: [],
+    },
+  },
+  nodes: [
+    {
+      id: 'phys_top',
+      module: 'phys_top',
+      overlays: {
+        phys: {
+          cell_count: 3,
+          area_um2: 11.172,
+          total_uw: 0.075,
+          subtree_total_uw: 2.8565,
+        },
+      },
+    },
+    {
+      id: 'phys_top.u_sub',
+      module: 'phys_sub',
+      overlays: {
+        phys: {
+          cell_count: 2,
+          area_um2: 5.586,
+          total_uw: 0.0888,
+          subtree_total_uw: 2.5154,
+        },
+      },
+    },
+    { id: 'phys_top.u_none', module: 'blackbox', overlays: {} },
+  ],
+  edges: [],
+}
+
+describe('phys overlay', () => {
+  it('is registered and reports the two channels in its flat legend', () => {
+    const overlay = getOverlay('phys')
+    expect(overlay).not.toBeNull()
+    expect(overlay.name).toBe('phys')
+    const labels = overlay.legend(PHYS_GRAPH, {}).map((e) => e.label)
+    expect(labels).toEqual([
+      'small area',
+      'large area',
+      'low power (subtree)',
+      'high power (subtree)',
+      'not measured',
+    ])
+    // The scope suffix rides on the POWER entries only: the area
+    // channel does not change with the toggle, and labelling it
+    // "(self)" would promise a figure that does not exist.
+    expect(overlay.legend(PHYS_GRAPH, { physScope: 'self' }).map((e) => e.label)).toEqual(
+      ['small area', 'large area', 'low power (self)', 'high power (self)', 'not measured'],
+    )
+  })
+
+  it('reads the sequential heat ramp from the vendored --heat-* tokens', () => {
+    // hsl(h, s, lerp(l0, l1)) — the expression the hub's /phy pane
+    // computes in CSS calc. A page-local ramp would drift from it.
+    expect(heatRampColor(0)).toBe('hsl(18, 85%, 96%)')
+    expect(heatRampColor(1)).toBe('hsl(18, 85%, 66%)')
+    expect(heatRampColor(0.5)).toBe('hsl(18, 85%, 81%)')
+    expect(heatRampColor(-1)).toBe(heatRampColor(0))
+    expect(heatRampColor(9)).toBe(heatRampColor(1))
+    expect(heatNoneColor()).toBe('#e5e7eb')
+  })
+
+  it('scope selection defaults to subtree and validates the value', () => {
+    expect(physScope({})).toBe('subtree')
+    expect(physScope({ physScope: 'nonsense' })).toBe('subtree')
+    expect(physScope({ physScope: 'self' })).toBe('self')
+  })
+
+  it('switches POWER per scope and leaves area alone', () => {
+    const block = PHYS_GRAPH.nodes[1].overlays.phys
+    expect(powerOf(block, 'subtree')).toBe(2.5154)
+    expect(powerOf(block, 'self')).toBe(0.0888)
+    expect(powerOf(null, 'subtree')).toBeNull()
+    // Area is the producer's module roll-up and has no self
+    // counterpart: the view carries no instance multiplicity, so
+    // subtracting the children's areas would over-report for an
+    // instance array or a generate loop. The scope argument is
+    // accepted and ignored.
+    expect(areaOf(block, 'subtree')).toBe(5.586)
+    expect(areaOf(block, 'self')).toBe(5.586)
+    expect(areaOf(block)).toBe(5.586)
+    expect(areaOf({}, 'subtree')).toBeNull()
+  })
+
+  it('fills by area fraction and rings by power fraction, relative to the max', () => {
+    const overlay = getOverlay('phys')
+    const { groups, svgRoot } = physSvg([
+      'phys_top',
+      'phys_top.u_sub',
+      'phys_top.u_none',
+    ])
+    overlay.apply(svgRoot, PHYS_GRAPH, true, { enabledOverlays: new Set(['phys']) })
+
+    // phys_top owns the largest area AND the hottest subtree power.
+    expect(groups['phys_top'].shape.style.fill).toBe(heatRampColor(1))
+    expect(groups['phys_top'].ring.style.stroke).toBe(heatRampColor(1))
+    expect(groups['phys_top'].attrs['data-overlay-phys-area']).toBe('100')
+    expect(groups['phys_top'].attrs['data-overlay-phys-power']).toBe('100')
+
+    // u_sub is half the area and most of the power.
+    expect(groups['phys_top.u_sub'].attrs['data-overlay-phys-area']).toBe('50')
+    expect(groups['phys_top.u_sub'].attrs['data-overlay-phys-power']).toBe('88')
+
+    // A node the model said nothing about: the explicit not-measured
+    // grey while the overlay is on, never a zero-area colour.
+    expect(groups['phys_top.u_none'].shape.style.fill).toBe(heatNoneColor())
+    expect(groups['phys_top.u_none'].attrs['data-overlay-phys-area']).toBeUndefined()
+  })
+
+  it('re-styles the RING on a scope switch and leaves the fill alone', () => {
+    const overlay = getOverlay('phys')
+    const { groups, svgRoot } = physSvg(['phys_top', 'phys_top.u_sub'])
+    const context = { enabledOverlays: new Set(['phys']) }
+    overlay.apply(svgRoot, PHYS_GRAPH, true, context)
+    const subtreeFill = groups['phys_top.u_sub'].shape.style.fill
+    const subtreeRing = groups['phys_top.u_sub'].ring.style.stroke
+
+    overlay.apply(svgRoot, PHYS_GRAPH, true, { ...context, physScope: 'self' })
+    // Self power: u_sub is 0.0888 of a 0.0888 max (its own leaf row),
+    // the top 0.075 of it — where the subtree scope had u_sub at 88%.
+    expect(groups['phys_top.u_sub'].ring.style.stroke).not.toBe(subtreeRing)
+    expect(groups['phys_top.u_sub'].attrs['data-overlay-phys-power']).toBe('100')
+    expect(groups['phys_top'].attrs['data-overlay-phys-power']).toBe('84')
+    // The area channel is scope-independent, so the fill does not move.
+    expect(groups['phys_top.u_sub'].shape.style.fill).toBe(subtreeFill)
+    expect(groups['phys_top.u_sub'].attrs['data-overlay-phys-area']).toBe('50')
+  })
+
+  it('takes the clock hue and drives only saturation when clock is on', () => {
+    const overlay = getOverlay('phys')
+    const graph = {
+      ...PHYS_GRAPH,
+      overlays_present: ['clock', 'phys'],
+      nodes: PHYS_GRAPH.nodes.map((n) => ({
+        ...n,
+        overlays: { ...n.overlays, clock: { clock: 'clk_a' } },
+      })),
+    }
+    const { groups, svgRoot } = physSvg([
+      'phys_top',
+      'phys_top.u_sub',
+      'phys_top.u_none',
+    ])
+    overlay.apply(svgRoot, graph, true, {
+      enabledOverlays: new Set(['clock', 'phys']),
+    })
+    // One clock → the first palette pastel, #dbeafe = hsl(214, 94%, 93%).
+    // At the top (full area) the fill IS that pastel; at half area the
+    // hue and lightness hold and the saturation drops.
+    expect(groups['phys_top'].shape.style.fill).toBe('hsl(214.3, 94.6%, 92.7%)')
+    expect(groups['phys_top.u_sub'].shape.style.fill).toBe('hsl(214.3, 53.3%, 92.7%)')
+    expect(saturateBy('#dbeafe', 1)).toBe('hsl(214.3, 94.6%, 92.7%)')
+    expect(saturateBy('not-a-colour', 1)).toBeNull()
+  })
+
+  it('never greys a clock-tinted node when there is no area to show', () => {
+    // A POWER-ONLY model (`rb power` with no synthesis in the same
+    // artefact directory) carries no area rows at all. Painting the
+    // not-measured grey there would have this overlay overwrite a
+    // channel it has nothing to say about — and since every node is
+    // in that state, the whole diagram would go flat grey the moment
+    // both overlays were ticked.
+    const overlay = getOverlay('phys')
+    const graph = {
+      overlays_present: ['clock', 'phys'],
+      nodes: [
+        {
+          id: 'phys_top',
+          overlays: {
+            clock: { clock: 'clk_a' },
+            phys: { total_uw: 0.075, subtree_total_uw: 2.8565 },
+          },
+        },
+        {
+          id: 'phys_top.u_sub',
+          overlays: {
+            clock: { clock: 'clk_a' },
+            phys: { total_uw: 0.0888, subtree_total_uw: 2.5154 },
+          },
+        },
+      ],
+      edges: [],
+    }
+    const { groups, svgRoot } = physSvg(['phys_top', 'phys_top.u_sub'])
+    overlay.apply(svgRoot, graph, true, {
+      enabledOverlays: new Set(['clock', 'phys']),
+    })
+    // The clock overlay ran first and painted its pastel; phys leaves
+    // it exactly as found and contributes the ring it DOES have data
+    // for.
+    const pastel = '#dbeafe'
+    expect(groups['phys_top'].shape.style.fill).toBe(pastel)
+    expect(groups['phys_top.u_sub'].shape.style.fill).toBe(pastel)
+    expect(groups['phys_top'].ring.style.stroke).toBe(heatRampColor(1))
+    expect(groups['phys_top'].attrs['data-overlay-phys-area']).toBeUndefined()
+    expect(groups['phys_top'].attrs['data-overlay-phys-power']).toBe('100')
+    // Without a clock there is nothing to preserve, so the
+    // not-measured grey is still the right answer.
+    expect(areaFill(null, null)).toBe(heatNoneColor())
+    expect(areaFill(null, pastel)).toBe(pastel)
+  })
+
+  it('yields the fill to coverage and says so, keeping the ring', () => {
+    const overlay = getOverlay('phys')
+    const enabledOverlays = new Set(['coverage', 'phys'])
+    const { groups, svgRoot } = physSvg(['phys_top', 'phys_top.u_sub'])
+    // Coverage has already painted this fill (it runs first — the
+    // registry iterates ``overlays_present``, and 'coverage' sorts
+    // before 'phys'); phys must leave it exactly as found.
+    groups['phys_top'].shape.style.fill = 'coverage-tint'
+    overlay.apply(svgRoot, PHYS_GRAPH, true, { enabledOverlays })
+    expect(groups['phys_top'].shape.style.fill).toBe('coverage-tint')
+    expect(groups['phys_top'].ring.style.stroke).toBe(heatRampColor(1))
+    expect(physFillNote({ enabledOverlays })).toContain('coverage owns the fill')
+    expect(physFillNote({ enabledOverlays: new Set(['phys']) })).toBe('')
+    // Toggling phys off must not clear a fill it never owned.
+    overlay.apply(svgRoot, PHYS_GRAPH, false, { enabledOverlays })
+    expect(groups['phys_top'].shape.style.fill).toBe('coverage-tint')
+    expect(groups['phys_top'].ring).toBeNull()
+  })
+
+  it('rings clusters but never fills them', () => {
+    const overlay = getOverlay('phys')
+    const { groups, svgRoot } = physSvg(['phys_top'])
+    groups['phys_top'].classList = { contains: (c) => c === 'cluster' }
+    overlay.apply(svgRoot, PHYS_GRAPH, true, { enabledOverlays: new Set(['phys']) })
+    expect(groups['phys_top'].shape.style.fill).toBeUndefined()
+    expect(groups['phys_top'].ring.style.stroke).toBe(heatRampColor(1))
+  })
+
+  it('clears both channels on toggle-off, idempotently', () => {
+    const overlay = getOverlay('phys')
+    const context = { enabledOverlays: new Set(['phys']) }
+    const { groups, svgRoot } = physSvg(['phys_top'])
+    overlay.apply(svgRoot, PHYS_GRAPH, true, context)
+    overlay.apply(svgRoot, PHYS_GRAPH, false, context)
+    overlay.apply(svgRoot, PHYS_GRAPH, false, context)
+    expect(groups['phys_top'].shape.style.fill).toBe('')
+    expect(groups['phys_top'].ring).toBeNull()
+    expect(groups['phys_top'].attrs['data-overlay-phys-area']).toBeUndefined()
+    expect(groups['phys_top'].attrs['data-overlay-phys-power']).toBeUndefined()
+  })
+
+  it('reports the maxima it scales against, and no fraction without one', () => {
+    expect(physMax(PHYS_GRAPH, 'subtree')).toEqual({
+      area: 11.172,
+      power: 2.8565,
+    })
+    expect(physMax({ nodes: [] }, 'subtree')).toEqual({ area: 0, power: 0 })
+    expect(fractionOf(5, 10)).toBe(0.5)
+    expect(fractionOf(5, 0)).toBeNull()
+    expect(fractionOf(null, 10)).toBeNull()
+  })
+
+  it('exposes a 3x3 bivariate key over both channels', () => {
+    const key = bivariateLegend()
+    expect(key.rows).toHaveLength(3)
+    for (const row of key.rows) expect(row.cells).toHaveLength(3)
+    expect(key.areaLabels).toEqual(['small', 'mid', 'large'])
+    expect(key.powerLabels).toEqual(['hot', 'mid', 'cool'])
+    // Hottest row first, and each cell carries BOTH channels — a
+    // reader matches a node to a cell rather than to two ramps.
+    expect(key.rows[0].cells[2]).toMatchObject({
+      fill: heatRampColor(1),
+      ring: heatRampColor(1),
+    })
+    expect(key.rows[2].cells[0]).toMatchObject({
+      fill: heatRampColor(0),
+      ring: heatRampColor(0),
+    })
+  })
+
+  it('applyOverlays forwards the enabled set so phys can compose', () => {
+    // The composition rules above are only reachable if the registry
+    // tells each overlay what ELSE is on. Regression guard for the
+    // context plumbing in overlays/index.js.
+    const { groups, svgRoot } = physSvg(['phys_top'])
+    groups['phys_top'].shape.style.fill = 'coverage-tint'
+    applyOverlays(svgRoot, PHYS_GRAPH, new Set(['coverage', 'phys']))
+    expect(groups['phys_top'].shape.style.fill).toBe('coverage-tint')
   })
 })

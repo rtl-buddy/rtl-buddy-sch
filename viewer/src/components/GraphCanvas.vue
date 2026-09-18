@@ -464,6 +464,10 @@ function overlayContext() {
     // Live coverage from the hub's /cov.json, joined by module name.
     // An empty Map when there is no hub or no coverage data.
     covByModule: store.covByModule,
+    // Which figures the phys overlay paints (#22). Read here rather
+    // than from the store inside the overlay so the overlay module
+    // stays a pure function of (svg, graph, enabled, context).
+    physScope: store.physScope,
   }
 }
 
@@ -485,6 +489,18 @@ function repaintOverlays() {
 }
 watch(
   () => [store.waveValuesByKey, store.hubSignalSelected],
+  () => {
+    if (_svgEl && graph.value) {
+      repaintOverlays()
+    }
+  },
+)
+// The phys overlay's self-vs-subtree toggle: a repaint of the overlay
+// layer, never a re-layout. That is the acceptance criterion from
+// rtl-buddy/rtl-buddy-sch#22, and watching it HERE — beside the wave
+// repaint, not in the layout watcher — is what enforces it.
+watch(
+  () => store.physScope,
   () => {
     if (_svgEl && graph.value) {
       repaintOverlays()

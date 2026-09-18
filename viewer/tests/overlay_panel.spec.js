@@ -257,3 +257,125 @@ describe('OverlayPanel live coverage', () => {
     expect(wrapper.find('[data-testid="cov-live-toggle"]').exists()).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------
+// phys: the bivariate legend + scope toggle (rtl-buddy/rtl-buddy-sch#22)
+// ---------------------------------------------------------------------
+
+function physPayload(extra = {}) {
+  return {
+    schema_version: '1.1',
+    top: 'phys_top',
+    dut_top: 'phys_top',
+    tb_top: null,
+    nodes: [
+      {
+        id: 'phys_top',
+        module: 'phys_top',
+        is_blackbox: false,
+        parameters: {},
+        ports: [],
+        overlays: {
+          phys: {
+            cell_count: 3,
+            area_um2: 11.172,
+            total_uw: 0.075,
+            subtree_total_uw: 2.8565,
+          },
+        },
+      },
+      {
+        id: 'phys_top.u_sub',
+        module: 'phys_sub',
+        is_blackbox: false,
+        parameters: {},
+        ports: [],
+        overlays: {
+          phys: {
+            cell_count: 2,
+            area_um2: 5.586,
+            total_uw: 0.0888,
+            subtree_total_uw: 2.5154,
+          },
+        },
+      },
+    ],
+    edges: [{ from: 'phys_top', to: 'phys_top.u_sub' }],
+    overlays_present: ['phys'],
+    overlay_meta: {
+      phys: {
+        source: '/p/phys-model.json',
+        manifest: '/p/phys-manifest.json',
+        join_root: 'phys_top',
+        halves: { modules: true, instances: true },
+        notes: [],
+      },
+    },
+    ...extra,
+  }
+}
+
+describe('OverlayPanel phys legend (#22)', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('replaces the flat swatch list with the bivariate key + scope toggle', () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(physPayload()))
+    const wrapper = mount(OverlayPanel)
+    const legend = wrapper.find('[data-testid="phys-legend"]')
+    expect(legend.exists()).toBe(true)
+    // 3x3 key, plus the axis-label row.
+    expect(legend.findAll('.cell').length).toBe(9)
+    expect(legend.text()).toContain('fill = module area · ring = power')
+    // The scope toggle is labelled as the power control it is.
+    expect(legend.find('.scope-label').text()).toBe('power')
+    // Provenance: which halves the run filled, and where the join was
+    // rooted — the two things a µW figure on a schematic needs said.
+    expect(legend.text()).toContain('area + power')
+    expect(legend.text()).toContain('rooted at phys_top')
+    // The flat list phys would otherwise get is suppressed.
+    expect(wrapper.findAll('.legend .swatch').length).toBe(0)
+  })
+
+  it('drives store.physScope from the two scope buttons, idempotently', async () => {
+    const store = useViewerStore()
+    store.loadFromText(JSON.stringify(physPayload()))
+    const wrapper = mount(OverlayPanel)
+    const buttons = wrapper.findAll('.scope-btn')
+    expect(buttons.map((b) => b.text())).toEqual(['subtree', 'self'])
+    expect(store.physScope).toBe('subtree')
+    await buttons[1].trigger('click')
+    expect(store.physScope).toBe('self')
+    // Two clicks on the same control land on the same scope — the
+    // reason this is a setter and not a toggle.
+    await buttons[1].trigger('click')
+    expect(store.physScope).toBe('self')
+    await buttons[0].trigger('click')
+    expect(store.physScope).toBe('subtree')
+  })
+
+  it('surfaces the join notes and the coverage-owns-the-fill sentence', () => {
+    const store = useViewerStore()
+    store.loadFromText(
+      JSON.stringify(
+        physPayload({
+          overlays_present: ['coverage', 'phys'],
+          overlay_meta: {
+            phys: {
+              join_root: null,
+              halves: { modules: true, instances: false },
+              notes: ["the model's top 'other' is not this design"],
+            },
+          },
+        }),
+      ),
+    )
+    const wrapper = mount(OverlayPanel)
+    const text = wrapper.find('[data-testid="phys-legend"]').text()
+    expect(text).toContain("the model's top 'other' is not this design")
+    expect(text).toContain('coverage owns the fill')
+    // Half-filled model: the provenance line says which half is here.
+    expect(text).toContain('area')
+    expect(text).not.toContain('area + power')
+  })
+})

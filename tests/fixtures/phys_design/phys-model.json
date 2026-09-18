@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "publication": "7c1d4f0a2b6e48d0a9f35e21c8b7d4a6",
+  "generator": "rtl-buddy 6.49.0 (hand-written fixture)",
+  "design": {
+    "top": "phys_top"
+  },
+  "units": {
+    "area": "um2",
+    "power": "uW"
+  },
+  "provenance": {
+    "synth": {
+      "netlist_sha256": "11d3f5a7c9e1b3d5f7091b3d5f7991b3d5f7991b3d5f7991b3d5f7991b3d5f79",
+      "config": {
+        "platform": "nangate45",
+        "effort": "base"
+      }
+    },
+    "power": {
+      "netlist_sha256": "11d3f5a7c9e1b3d5f7091b3d5f7991b3d5f7991b3d5f7991b3d5f7991b3d5f79",
+      "config": {
+        "tool": "opensta",
+        "netlist_source": "synth"
+      },
+      "mode": "static",
+      "activity": {
+        "source": "default"
+      }
+    }
+  },
+  "totals": {
+    "area_um2": 11.172,
+    "cell_count": 4,
+    "internal_uw": 2.554,
+    "switching_uw": 0.1555,
+    "leakage_uw": 0.1478,
+    "total_uw": 2.86
+  },
+  "modules": [
+    {
+      "module": "DFF_X1",
+      "cell_count": 1,
+      "area_um2": 4.522
+    },
+    {
+      "module": "phys_leaf",
+      "cell_count": 1,
+      "area_um2": 4.522
+    },
+    {
+      "module": "phys_sub",
+      "cell_count": 2,
+      "area_um2": 5.586
+    },
+    {
+      "module": "phys_top",
+      "cell_count": 3,
+      "area_um2": 11.172
+    }
+  ],
+  "instances": [
+    {
+      "instance_path": "_9_",
+      "module": "AND2_X1",
+      "leakage_uw": 0.015,
+      "internal_uw": 0.05,
+      "switching_uw": 0.01,
+      "total_uw": 0.075
+    },
+    {
+      "instance_path": "u_dff/_18_",
+      "module": "DFF_X1",
+      "leakage_uw": 0.0362,
+      "internal_uw": 0.152,
+      "switching_uw": 0.0779,
+      "total_uw": 0.2661
+    },
+    {
+      "instance_path": "u_sub/_31_",
+      "module": "AND2_X1",
+      "leakage_uw": 0.0174,
+      "internal_uw": 0.0714,
+      "switching_uw": 0.0,
+      "total_uw": 0.0888
+    },
+    {
+      "instance_path": "u_sub/u_leaf/_42_",
+      "module": "DFF_X1",
+      "leakage_uw": 0.0791,
+      "internal_uw": 2.28,
+      "switching_uw": 0.0675,
+      "total_uw": 2.4266
+    }
+  ]
+}

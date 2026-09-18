@@ -13,6 +13,7 @@ import { axiPerfOverlay } from './axi_perf.js'
 import { clockOverlay } from './clock.js'
 import { coverageOverlay } from './coverage.js'
 import { coverageLiveOverlay } from './coverage_live.js'
+import { physOverlay } from './phys.js'
 import { resetOverlay } from './reset.js'
 import { waveOverlay } from './wave.js'
 
@@ -32,6 +33,7 @@ const BUILTINS = {
   clock: clockOverlay,
   coverage: coverageOverlay,
   'coverage-live': coverageLiveOverlay,
+  phys: physOverlay,
   reset: resetOverlay,
   wave: waveOverlay,
 }
@@ -42,10 +44,18 @@ export function getOverlay(name) {
 
 // ``context`` is an optional bag of dynamic state overlays may
 // consult — e.g. the live wave-values map sourced from
-// ``wave_values_changed`` hub events. The clock/reset/axi-perf
-// overlays ignore it; only the wave overlay reads it today. Adding
-// new keys is back-compat by construction.
+// ``wave_values_changed`` hub events, or the phys overlay's
+// self-vs-subtree scope. The clock/reset/axi-perf overlays ignore
+// it. Adding new keys is back-compat by construction.
+//
+// ``enabledOverlays`` is folded into the context each overlay sees,
+// because one of them needs to know what ELSE is on: the phys
+// overlay composes with clock (it takes the clock's hue and drives
+// only the saturation) and yields the fill entirely to coverage. An
+// overlay that asks "am I enabled" still gets that as its own
+// boolean argument; this is the neighbours, not the self.
 export function applyOverlays(svgRoot, graph, enabledOverlays, context = {}) {
+  const shared = { ...context, enabledOverlays }
   // Always include 'wave' in the iteration. The Phase-8 producer
   // writes node.overlays.wave on each node (so graph.overlays_present
   // already lists it), but in the Phase-9 live path the values come
@@ -59,7 +69,7 @@ export function applyOverlays(svgRoot, graph, enabledOverlays, context = {}) {
   for (const name of names) {
     const overlay = getOverlay(name)
     if (!overlay) continue
-    overlay.apply(svgRoot, graph, enabledOverlays.has(name), context)
+    overlay.apply(svgRoot, graph, enabledOverlays.has(name), shared)
   }
 }
 

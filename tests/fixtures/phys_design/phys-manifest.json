@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "publication": "7c1d4f0a2b6e48d0a9f35e21c8b7d4a6",
+  "generator": "rtl-buddy 6.49.0 (hand-written fixture)",
+  "generated_at": "2026-09-18T11:04:12+08:00",
+  "command": "power",
+  "run": "phys_design",
+  "top": "phys_top",
+  "phys_dir": "tests/fixtures/phys_design",
+  "model": "tests/fixtures/phys_design/phys-model.json",
+  "totals": {
+    "area_um2": 11.172,
+    "cell_count": 4,
+    "internal_uw": 2.554,
+    "switching_uw": 0.1555,
+    "leakage_uw": 0.1478,
+    "total_uw": 2.86
+  },
+  "synth": {
+    "backend": "yosys",
+    "run": "phys_design",
+    "stats": "tests/fixtures/phys_design/synth-stat.json",
+    "netlist": "tests/fixtures/phys_design/phys_top.mapped.v",
+    "log": "tests/fixtures/phys_design/synth.log",
+    "config": {
+      "platform": "nangate45",
+      "effort": "base"
+    }
+  },
+  "power": {
+    "backend": "openroad",
+    "run": "phys_design",
+    "netlist_source": "synth",
+    "netlist_path": "tests/fixtures/phys_design/phys_top.mapped.v",
+    "report": "tests/fixtures/phys_design/power.rpt",
+    "instances": "tests/fixtures/phys_design/power-instances.rpt",
+    "cells": "tests/fixtures/phys_design/power-cells.txt",
+    "log": "tests/fixtures/phys_design/power.log",
+    "mode": "static",
+    "activity": {
+      "source": "default"
+    },
+    "config": {
+      "tool": "opensta",
+      "netlist_source": "synth"
+    }
+  }
+}

@@ -15,8 +15,9 @@ plugin layer:
   parsed data so the registry can pass overlays around without
   caring about their concrete payload shape.
 - :class:`OverlayRegistry` — name → Overlay instance dispatch.
-  Built-ins (``clock``, ``reset``) are registered at import time
-  by :func:`default_registry`. Third-party packages register via
+  Built-ins (``clock``, ``clock-tb``, ``reset``, ``coverage``,
+  ``wave``, ``axi-perf``, ``hints``, ``phys``) are registered by
+  :func:`default_registry`. Third-party packages register via
   the :data:`ENTRY_POINT_GROUP` (``rtl_buddy_view.overlays``)
   entry-point group; :func:`default_registry` discovers them
   after the built-ins so name collisions deterministically resolve
@@ -242,8 +243,8 @@ def default_registry(*, warn_stream: IO[str] | None = None) -> OverlayRegistry:
     The CLI builds one of these per invocation; tests construct
     their own registries to mock subsets in isolation.
 
-    Built-ins live in :mod:`rtl_buddy_view.overlays.clock` and
-    :mod:`rtl_buddy_view.overlays.reset`. They're imported lazily
+    Built-ins live in the sibling modules of this package (one per
+    overlay name). They're imported lazily
     *inside this function* so importing
     :mod:`rtl_buddy_view.overlays` for the protocol alone (e.g.
     in a third-party package) doesn't drag the built-in loader
@@ -272,6 +273,7 @@ def default_registry(*, warn_stream: IO[str] | None = None) -> OverlayRegistry:
     from rtl_buddy_view.overlays.clock_tb import ClockTbOverlay
     from rtl_buddy_view.overlays.coverage import CoverageOverlay
     from rtl_buddy_view.overlays.hints import HintsOverlay
+    from rtl_buddy_view.overlays.phys import PhysOverlay
     from rtl_buddy_view.overlays.reset import ResetOverlay
     from rtl_buddy_view.overlays.wave import WaveOverlay
 
@@ -283,6 +285,7 @@ def default_registry(*, warn_stream: IO[str] | None = None) -> OverlayRegistry:
     registry.register(ClockTbOverlay())
     registry.register(CoverageOverlay())
     registry.register(HintsOverlay())
+    registry.register(PhysOverlay())
 
     for instance, source in _discover_external_overlays(stream):
         if instance.name in registry.names():

@@ -320,6 +320,13 @@ A flavour:
               "branches": { "covered": 22,  "total": 30,  "pct": 73.3 },
               "toggles":  { "covered": 78,  "total": 96,  "pct": 81.3 },
               "coverview_link": "http://localhost:5173/#/blk%2Ffifo.sv?L=42" }
+"phys":   { "cell_count": 2, "area_um2": 5.586,
+            "leakage_uw": 0.0174, "internal_uw": 0.0714,
+            "switching_uw": 0.0, "dynamic_uw": 0.0714,
+            "total_uw": 0.0888, "leaf_instances": 1,
+            "subtree_leakage_uw": 0.0965, "subtree_internal_uw": 2.3514,
+            "subtree_switching_uw": 0.0675, "subtree_dynamic_uw": 2.4189,
+            "subtree_total_uw": 2.5154, "subtree_leaf_instances": 2 }
 ```
 
 The `coverage` block (Phase 6, #20) is joined by the defining
@@ -329,6 +336,45 @@ node with no data at all carries no block. The companion
 `overlay_meta.coverage` envelope block records `source`,
 `url_base`, and the `metric` channel the viewer's heatmap tint
 should use.
+
+The `phys` block (Phase 7b,
+[rtl-buddy/rtl-buddy-sch#22](https://github.com/rtl-buddy/rtl-buddy-sch/issues/22))
+carries two channels joined two different ways, and the asymmetry
+is the producer's rather than ours:
+
+- **area / cells** come from the physical model's per-RTL-module
+  row of the same name as `node.module`. `area_um2` **already
+  rolls the submodules up**, so it is a subtree figure as given
+  and there is deliberately **no self counterpart**: un-rolling it
+  means subtracting the children's areas, and the view carries no
+  instance multiplicity, so an instance array or a generate loop
+  would over-report. `cell_count` does *not* roll up — it counts a
+  submodule instance as one cell — so there is no subtree cell
+  count either.
+- **power** comes from the model's per-leaf-instance rows,
+  attributed to their nearest enclosing hierarchy node; the bare
+  keys are this scope's own rows and the `subtree_*` keys are the
+  roll-up. `dynamic_uw` is `internal + switching` (no producer
+  writes that column).
+
+Keys are **omitted, never nulled**, when the half behind them was
+not measured — a half-filled model must not read as a design that
+burns nothing. All of it is optional: a node the model said
+nothing about carries no block. The companion `overlay_meta.phys`
+envelope records the source paths, `model_top` / `view_root` /
+`join_root`, `attached`, `units`, which `halves` the run filled,
+the producer's own `totals` beside this overlay's `rollup` of the
+rows, the matched/unmatched row counts for both channels
+(`unmatched_instance_rows`, `unmatched_module_rows` +
+`unmatched_module_names`), and `notes` — whole sentences a surface
+shows the user. The `rollup` block keeps the same omitted-never-nulled
+rule, so it is `{}` when there was nothing to roll up. The envelope is
+emitted even when the join attached nothing — "this model is of
+another design" is exactly what a viewer has to be able to say — and
+in that case `node.overlays.phys` is absent from **every** node,
+area included, because the area join is by name and would otherwise
+paint a module the two designs happen to share.
+[`phys-overlay.md`](phys-overlay.md) is the full contract.
 
 Third-party overlays own their own per-node and per-edge key
 shapes — keep them stable across `schema_version` minors.
@@ -397,6 +443,8 @@ change.
 
 - [`overlays.md`](overlays.md) — protocol for writing a third-party
   overlay whose data lands under `node.overlays.<name>`.
+- [`phys-overlay.md`](phys-overlay.md) — the `phys` block above, its
+  two joins and the `overlay_meta.phys` envelope, in full.
 - [`elk-json-v1.md`](elk-json-v1.md) — the schematic payload
   embedded at `layout.elk` (§1.2) and emitted standalone by
   `--format elk`.

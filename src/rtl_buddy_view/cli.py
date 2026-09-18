@@ -10,8 +10,9 @@ Phase 4 (#17) surface::
                    [--clock-legend]
 
 ``--overlay name=path`` is the single generalized hook for every
-overlay type — clock + reset built-ins ship today, coverage / phys
-/ wave land in later phases as plugins. The flag is repeatable;
+overlay type — clock, reset, coverage, wave, axi-perf, hints and
+phys all ship as built-ins today; third-party overlays register via
+the entry-point group. The flag is repeatable;
 loaders dispatch through :class:`rtl_buddy_view.overlays.OverlayRegistry`.
 
 The pre-#17 ``--cdc-annotations`` / ``--rdc-annotations`` flags
@@ -75,6 +76,12 @@ from rtl_buddy_view.hints import (
     scan_pragmas,
 )
 from rtl_buddy_view.overlays import OverlayError, OverlayRegistry, default_registry
+from rtl_buddy_view.phys_annotations import (
+    PhysAnnotationsError,
+    PhysJoin,
+    PhysModel,
+    join_hierarchy,
+)
 from rtl_buddy_view.render import dot as dot_render
 from rtl_buddy_view.render import json_render
 from rtl_buddy_view.render import mermaid as mermaid_render
@@ -321,6 +328,7 @@ def main(
             AxiPerfAnnotationsError,
             WaveAnnotationsError,
             CoverageAnnotationsError,
+            PhysAnnotationsError,
             HintsError,
         ) as e:
             # Loader exceptions carry the overlay's own prefix in
@@ -364,12 +372,25 @@ def main(
     axi_perf_map: AxiPerfMap | None = annotations.get("axi-perf")  # type: ignore[assignment]
     wave_map: WaveMap | None = annotations.get("wave")  # type: ignore[assignment]
     coverage_map: CoverageMap | None = annotations.get("coverage")  # type: ignore[assignment]
+    phys_model: PhysModel | None = annotations.get("phys")  # type: ignore[assignment]
 
     # The overlay protocol's load(path) has no channel for CLI knobs,
     # so the Coverview URL base is assigned post-load. Deep links in
     # view.json and the overlay_meta block both read it from the map.
     if coverage_map is not None:
         coverage_map.url_base = coverage_url_base
+
+    # Phase 7b (rtl-buddy/rtl-buddy-sch#22): the physical overlay is the
+    # one built-in whose join is a walk of the whole hierarchy rather
+    # than a per-node lookup, so it happens once, here, against the
+    # *hint-rewritten* root — a collapsed subtree is one scope, and its
+    # leaf rows must roll up into it rather than into nodes the diagram
+    # no longer shows.
+    phys_join: PhysJoin | None = None
+    if phys_model is not None:
+        phys_join = join_hierarchy(phys_model, root)
+        for note in phys_join.meta["notes"]:
+            typer.echo(f"overlay phys: {note}", err=True)
 
     # Phase 6e (#99): TB-context clock + reset map. When a
     # ``tb_clock_map.json`` is loaded via ``--overlay clock-tb=…``,
@@ -432,6 +453,7 @@ def main(
             module_table=table,
             coverage_map=coverage_map,
             coverage_metric=coverage_metric.value,
+            phys_join=phys_join,
             block_diagram=block_diagram,
             hints=hint_map,
         )
@@ -452,6 +474,7 @@ def main(
                 module_table=table,
                 coverage_map=coverage_map,
                 coverage_metric=coverage_metric.value,
+                phys_join=phys_join,
                 block_diagram=block_diagram,
                 hints=hint_map,
             )
@@ -549,14 +572,23 @@ def _render(
     module_table: ModuleTable | None = None,
     coverage_map: CoverageMap | None = None,
     coverage_metric: str = "lines",
+    phys_join: PhysJoin | None = None,
     block_diagram: bool = False,
     hints: HintMap | None = None,
 ) -> None:
     # The coverage overlay contributes to view.json only (the web
     # viewer paints the heatmap); tree/dot/mermaid output is
-    # byte-identical with or without it.
+    # byte-identical with or without it. The phys overlay adds one
+    # suffix to the ASCII tree on top of that — dot / mermaid stay
+    # untouched there too.
     if fmt is OutputFormat.tree:
-        tree_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
+        tree_render.render(
+            root,
+            sink,
+            domain_map=domain_map,
+            reset_map=reset_map,
+            phys_join=phys_join,
+        )
     elif fmt is OutputFormat.dot:
         dot_render.render(
             root,
@@ -592,6 +624,7 @@ def _render(
             wave_map=wave_map,
             coverage_map=coverage_map,
             coverage_metric=coverage_metric,
+            phys_join=phys_join,
             axi_perf_source=axi_perf_source,
             with_legend=clock_legend,
             module_table=module_table,

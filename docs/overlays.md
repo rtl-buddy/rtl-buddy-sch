@@ -35,8 +35,16 @@ your class.
 
 ## 2. Minimal example
 
+> This sketch used to be `phys`. That name is a **built-in** now —
+> the real one landed with
+> [rtl-buddy/rtl-buddy-sch#22](https://github.com/rtl-buddy/rtl-buddy-sch/issues/22)
+> and is documented in [`phys-overlay.md`](phys-overlay.md); it is
+> worth reading as the worked example of an overlay that does real
+> joining work (§9). The sketch below keeps the same shape under a
+> name nothing in tree claims.
+
 ```python
-# my_overlay_pkg/phys_overlay.py
+# my_overlay_pkg/thermal_overlay.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -44,25 +52,25 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
-class AreaMap:
+class ThermalMap:
     schema_version: str
-    per_instance: dict[str, float]  # instance_path -> area (um^2)
+    per_instance: dict[str, float]  # instance_path -> peak temp (degC)
 
 
-class PhysOverlay:
-    name = "phys"
+class ThermalOverlay:
+    name = "thermal"
     schema_version = "1.0"
 
-    def load(self, path: Path) -> AreaMap:
+    def load(self, path: Path) -> ThermalMap:
         import json
         data = json.loads(path.read_text())
-        return AreaMap(
+        return ThermalMap(
             schema_version=data["schema_version"],
             per_instance=data["per_instance"],
         )
 
     def join(self, graph, annotation) -> None:
-        # No-op for now; renderers read AreaMap directly.
+        # No-op for now; renderers read ThermalMap directly.
         return None
 
     def contribute(self, ctx) -> None:
@@ -74,7 +82,7 @@ Once registered (§3), users invoke it with:
 
 ```
 rtl-buddy-view --top top --filelist files.f \
-    --overlay phys=path/to/area.json
+    --overlay thermal=path/to/thermal.json
 ```
 
 And see it in `--list-overlays`:
@@ -82,8 +90,9 @@ And see it in `--list-overlays`:
 ```
 clock     1.0    (built-in)
 coverage  1.0    (built-in)
-phys      1.0    (my-overlay-pkg)
+phys      1.0    (built-in)
 reset     1.0    (built-in)
+thermal   1.0    (my-overlay-pkg)
 ```
 
 ## 3. Registering via entry points
@@ -98,7 +107,7 @@ version = "0.1.0"
 dependencies = ["rtl-buddy-view>=0.1"]
 
 [project.entry-points."rtl_buddy_view.overlays"]
-phys = "my_overlay_pkg.phys_overlay:PhysOverlay"
+thermal = "my_overlay_pkg.thermal_overlay:ThermalOverlay"
 ```
 
 The entry-point value resolves to a no-arg callable — almost always
@@ -133,12 +142,14 @@ user-facing identifier (`--overlay name=path`), the key under
 Pick something that describes the *domain*, not the *analysis*.
 The built-ins are `clock` and `reset` (the domains the user
 thinks in), not `cdc` and `rdc` (the crossing analyses); the
-Phase-6 built-in is `coverage`, not `cov` or `lcov`.
+Phase-6 built-in is `coverage`, not `cov` or `lcov`; the
+Phase-7b built-in is `phys`, not `openroad` or `power`.
 
 Collisions with a built-in name are detected at registry build
 time and resolved in favour of the built-in, with a stderr
 warning naming your package. Don't use a built-in name
-(`clock`, `clock-tb`, `reset`, `coverage`, `wave`, `axi-perf`).
+(`axi-perf`, `clock`, `clock-tb`, `coverage`, `hints`, `phys`,
+`reset`, `wave`).
 
 ### `schema_version`
 
@@ -169,6 +180,17 @@ renderers reach directly into the payload (`predominant_clock` /
 state that several renderers consume, this is where to do it —
 otherwise return `None`.
 
+The `phys` built-in is the case where that is not enough, and
+it is worth knowing before you design around this hook. Its
+power channel attributes every leaf row to its nearest enclosing
+scope and then rolls the parents up — one walk of the whole
+hierarchy, not a per-node lookup. But `HierNode` is frozen and
+this hook returns nothing, so there is nowhere to put the
+product: `phys_annotations.join_hierarchy()` is the join, the
+CLI calls it once against the hint-rewritten root, and the value
+it returns is what the renderers read. An overlay of that shape
+needs a seam in `cli.py`, not just this hook.
+
 ### `contribute(ctx)`
 
 A hook for overlays that need to emit rendered output (badges,
@@ -189,8 +211,25 @@ without any code change on your side.
 If your overlay's metadata is meant to *combine* with another (e.g.
 coverage-tinted nodes that still want a clock-colored border), use
 distinct visual axes — color vs. border, fill vs. pattern, suffix
-vs. prefix. The clock/reset built-ins reserve fill color and reset
-suffix respectively; pick something else.
+vs. prefix. The axes the built-ins have claimed on the SPA canvas:
+
+| Overlay | Axis |
+| --- | --- |
+| `clock` | node fill **hue** |
+| `coverage` | node fill (outright — it wins the fill from `phys`) |
+| `reset` | the node shape's own **border** |
+| `phys` | fill **saturation** (area) + an **outer ring** element (power) |
+| `wave` | per-node value **badges** |
+| `axi-perf` | edge decoration |
+
+`phys` is the worked example of negotiating rather than colliding:
+with `clock` it keeps the clock's hue and drives only the
+saturation, with `coverage` it gives up the fill entirely and says
+so in the panel, and its ring is a separate SVG element so
+`reset`'s border survives underneath —
+[`phys-overlay.md` §5](phys-overlay.md) has the table. Two
+overlays writing one `style.fill` is a race decided by alphabetical
+registry order, which is not a design.
 
 ## 5a. Built-in: `clock-tb` (TB-context clock + reset, issue #99 / phase 6e)
 
@@ -328,15 +367,26 @@ the pattern.
   thin wrapper over the Phase 3 reset-domain-map loader.
 
 Both are minimal (load + two no-op hooks) and demonstrate the
-"renderers read the payload directly" pattern. A future coverage
-or physical overlay can follow the same shape until/unless it
-needs the `join` / `contribute` hooks.
+"renderers read the payload directly" pattern.
+
+- [`overlays/phys.py`](../src/rtl_buddy_view/overlays/phys.py) +
+  [`phys_annotations.py`](../src/rtl_buddy_view/phys_annotations.py)
+  — the other shape. Same minimal plugin class, but the loader
+  module carries a real join: two different joins onto two
+  namespaces, a subtree roll-up, a wrapper-top anchor search, and
+  an `overlay_meta` block that says what it could and could not
+  attach. Read it if your overlay's data is per-instance rather
+  than per-module, or if it needs to say *why* it contributed
+  nothing. [`phys-overlay.md`](phys-overlay.md) is the write-up.
 
 ## 10. Related docs
 
 - [`view-json-v1.md`](view-json-v1.md) — locked schema for the
   JSON output your overlay's data will land in (under
   `node.overlays.<name>` / `edge.overlays.<name>`).
+- [`phys-overlay.md`](phys-overlay.md) — the `phys` built-in: the
+  schema it consumes, its two joins, its render channels and how
+  it composes with the other built-ins.
 - [`hub-protocol.md`](hub-protocol.md) — the hub event schema your
   overlay's selections will travel through if it ever needs to
   bridge schematic ↔ waveform ↔ source.

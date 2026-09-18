@@ -38,6 +38,14 @@ also supplied (Phase 3):
   after any ``⚠CDC[…]`` marker so reviewers see clock issues first
   and reset issues second.
 
+When a :class:`rtl_buddy_view.phys_annotations.PhysJoin` is supplied
+(Phase 7b — rtl-buddy/rtl-buddy-sch#22), each line gains a trailing
+``[area=1240µm² P=15µW]`` — the node's module area (already a
+subtree figure, per the producer) and the overlay's roll-up of the
+leaf power rows below it. Last of the four suffixes, because it is
+the only one that is a measurement rather than a hazard. Without the
+overlay the output is byte-identical to the no-annotations case.
+
 Designed to be terminal-friendly and easy to feed to an LLM.
 """
 
@@ -49,6 +57,7 @@ from urllib.parse import quote
 
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.graph import HierNode
+from rtl_buddy_view.phys_annotations import PhysJoin, tree_suffix
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 
 # OSC-8 hyperlink terminal escape sequence. Supported by iTerm2,
@@ -65,6 +74,7 @@ def render(
     *,
     domain_map: DomainMap | None = None,
     reset_map: ResetDomainMap | None = None,
+    phys_join: PhysJoin | None = None,
     links: bool | None = None,
 ) -> None:
     """Render ``node`` and its subtree as ASCII to ``out``.
@@ -86,7 +96,8 @@ def render(
         f"{_wrap(node.module_name, node, use_links)}"
         f"{_attr_suffix(node, domain_map, reset_map)}"
         f"{_cdc_suffix(node, domain_map)}"
-        f"{_rdc_suffix(node, reset_map)}\n"
+        f"{_rdc_suffix(node, reset_map)}"
+        f"{tree_suffix(phys_join, node)}\n"
     )
     _render_children(
         node.children,
@@ -94,6 +105,7 @@ def render(
         out=out,
         domain_map=domain_map,
         reset_map=reset_map,
+        phys_join=phys_join,
         use_links=use_links,
     )
 
@@ -160,6 +172,7 @@ def _render_children(
     out: IO[str],
     domain_map: DomainMap | None,
     reset_map: ResetDomainMap | None,
+    phys_join: PhysJoin | None,
     use_links: bool,
 ) -> None:
     last_idx = len(children) - 1
@@ -174,9 +187,11 @@ def _render_children(
         attr = _attr_suffix(child, domain_map, reset_map)
         cdc = _cdc_suffix(child, domain_map)
         rdc = _rdc_suffix(child, reset_map)
+        phys = tree_suffix(phys_join, child)
         wrapped_inst = _wrap(inst_name, child, use_links)
         out.write(
-            f"{prefix}{branch}{wrapped_inst} : {child.module_name}{tag}{attr}{cdc}{rdc}\n"
+            f"{prefix}{branch}{wrapped_inst} : "
+            f"{child.module_name}{tag}{attr}{cdc}{rdc}{phys}\n"
         )
         _render_children(
             child.children,
@@ -184,6 +199,7 @@ def _render_children(
             out=out,
             domain_map=domain_map,
             reset_map=reset_map,
+            phys_join=phys_join,
             use_links=use_links,
         )
 

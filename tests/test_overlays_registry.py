@@ -43,6 +43,7 @@ def test_default_registry_has_clock_and_reset() -> None:
         "clock-tb",
         "coverage",
         "hints",
+        "phys",
         "reset",
         "wave",
     )
@@ -60,7 +61,7 @@ def test_get_unknown_raises_with_known_list() -> None:
     registry = default_registry()
     with pytest.raises(
         OverlayError,
-        match=r"unknown overlay 'cov'.*\['axi-perf', 'clock', 'clock-tb', 'coverage', 'hints', 'reset', 'wave'\]",
+        match=r"unknown overlay 'cov'.*\['axi-perf', 'clock', 'clock-tb', 'coverage', 'hints', 'phys', 'reset', 'wave'\]",
     ):
         registry.get("cov")
 
@@ -84,6 +85,7 @@ def test_iteration_is_name_sorted() -> None:
         "clock-tb",
         "coverage",
         "hints",
+        "phys",
         "reset",
         "wave",
     ]
