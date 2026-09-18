@@ -381,15 +381,30 @@ def _resolve_model_path(
 
     Manifest paths are **project-root-relative**, not
     manifest-relative — the producer's own rule, so a manifest
-    survives being archived or read from elsewhere. The root is
-    recovered the way rtl_buddy's ``manifest.project_root_for`` does:
-    count the components of the manifest's own ``phys_dir`` back up
-    from the directory it was found in. Then two fallbacks, because a
-    consumer that cannot find a model beside the manifest naming it
-    is a worse outcome than a slightly loose search: the path as
-    given (relative to the cwd), and finally the model's basename in
-    the manifest's own directory, which is where every producer in
-    fact writes it.
+    survives being archived or read from elsewhere. But the resolution
+    order here does not start from that rule, and deliberately:
+
+    1. an **absolute** pointer, which is unambiguous;
+    2. the pointer's basename **beside the manifest**, then the
+       canonical ``phys-model.json`` there. Every producer writes the
+       two documents into one directory, and that is the one pairing
+       that cannot be wrong: two documents in one place are one
+       publication, whatever the project root turned out to be;
+    3. the **project-root-relative** pointer, with the root recovered
+       the way rtl_buddy's ``manifest.project_root_for`` does — count
+       the components of the manifest's own ``phys_dir`` back up from
+       the directory it was found in;
+    4. the pointer **relative to the cwd**, the last resort.
+
+    Reversing (2) and (3) — which is how this was first written — puts
+    a *counted* root ahead of an observed fact. The count is only
+    right when the manifest is read through the same route it was
+    written through, and an ``artefacts/`` symlinked to scratch is an
+    ordinary layout that breaks exactly that (the producer's own
+    ``project_root_for`` documents the case). Getting it wrong there
+    does not fail: it silently resolves to *another run's* model that
+    happens to sit at the same project-relative path, which is a wrong
+    answer where an unfound file would have been an honest one.
     """
     candidates: list[Path] = []
     if pointer:
@@ -397,6 +412,8 @@ def _resolve_model_path(
         if as_given.is_absolute():
             candidates.append(as_given)
         else:
+            candidates.append(manifest_path.parent / as_given.name)
+            candidates.append(manifest_path.parent / MODEL_FILENAME)
             phys_dir = manifest.get("phys_dir")
             if (
                 isinstance(phys_dir, str)
@@ -408,7 +425,6 @@ def _resolve_model_path(
                     root = root.parent
                 candidates.append(root / as_given)
             candidates.append(as_given)
-            candidates.append(manifest_path.parent / as_given.name)
     candidates.append(manifest_path.parent / MODEL_FILENAME)
 
     for candidate in candidates:
@@ -430,18 +446,34 @@ def _cross_check_publication(model: PhysModel, manifest: dict) -> PhysModel:
     user named a path on a command line), so it reports the numbers
     it has and says they may belong to a different publication than
     the manifest describes.
+
+    An **unpaired** pair — exactly one of the two tokens present — is
+    its own note, and the producer treats the same state as a refusal:
+    ``phys.publish._existing_pair`` merges onto neither document when
+    it cannot show the two were written together, because an unpaired
+    manifest is evidence that the last publish did not finish. A
+    consumer cannot refuse (the user named the path), so it reads the
+    documents and says the pairing is unproven.
     """
     theirs = manifest.get("publication")
-    if (
-        isinstance(theirs, str)
-        and isinstance(model.publication, str)
-        and theirs != model.publication
-    ):
+    ours = model.publication
+    mine_is_token = isinstance(ours, str)
+    theirs_is_token = isinstance(theirs, str)
+    if mine_is_token and theirs_is_token and theirs != ours:
         return _with_note(
             model,
             "the manifest and the model carry different publication tokens: "
             "one of the pair is from an earlier run (re-read after the "
             "producing command finishes)",
+        )
+    if mine_is_token != theirs_is_token:
+        missing = "model" if theirs_is_token else "manifest"
+        return _with_note(
+            model,
+            f"unpaired publication: the {missing} carries no publication "
+            f"token, so there is no evidence these two documents were "
+            f"written together — the run that wrote them may not have "
+            f"finished publishing",
         )
     return model
 
@@ -738,6 +770,13 @@ def join_hierarchy(model: PhysModel, root: HierNode) -> PhysJoin:
 
     subtree_power, subtree_leaves = _rollup(root, self_power, self_leaves)
 
+    # Both channels are gated on the anchor, not just the power one.
+    # A module row joins by NAME, so a model of another design that
+    # happens to share a module name would otherwise paint area on it
+    # while ``attached: false`` and the notes said nothing was
+    # attached — a block reading "measured" from a measurement of a
+    # different design, contradicted by its own envelope.
+    attached = anchor is not None
     blocks: dict[str, dict] = {}
     for node in nodes:
         block = _node_block(
@@ -747,10 +786,20 @@ def join_hierarchy(model: PhysModel, root: HierNode) -> PhysJoin:
             subtree_power[node.instance_path],
             self_leaves[node.instance_path],
             subtree_leaves[node.instance_path],
-            has_power=anchor is not None and model.has_instances,
+            has_area=attached,
+            has_power=attached and model.has_instances,
         )
         if block:
             blocks[node.instance_path] = block
+
+    # Module rows no node claimed. The common cause is not an error at
+    # all: Yosys names a parameterized module ``$paramod\sub\W=32``,
+    # which matches no RTL module name the view carries, so its area
+    # silently goes missing. Counting the rows is how a surface can say
+    # "some area is unaccounted for" instead of showing a diagram whose
+    # blocks quietly have none.
+    claimed = {n.module_name for n in nodes} if attached else set()
+    unmatched_modules = sorted(name for name in model.modules if name not in claimed)
 
     meta = _meta(
         model,
@@ -760,8 +809,9 @@ def join_hierarchy(model: PhysModel, root: HierNode) -> PhysJoin:
         rollup=subtree_power.get(root.instance_path, [0.0] * 4),
         matched=matched,
         unmatched=unmatched,
+        unmatched_modules=unmatched_modules,
     )
-    return PhysJoin(model=model, blocks=blocks, meta=meta, attached=anchor is not None)
+    return PhysJoin(model=model, blocks=blocks, meta=meta, attached=attached)
 
 
 def _walk(node: HierNode) -> Iterable[HierNode]:
@@ -888,6 +938,7 @@ def _node_block(
     own_leaves: int,
     subtree_leaves: int,
     *,
+    has_area: bool,
     has_power: bool,
 ) -> dict:
     """One node's ``overlays.phys`` block.
@@ -897,17 +948,28 @@ def _node_block(
     overlay had nothing to say about this node", which the viewer
     renders as "not measured" and never as zero. A node with nothing
     at all gets no block.
+
+    There is deliberately **no self area**. The producer's module area
+    already includes the submodules', so a self figure could only be
+    derived by subtracting the children's — and the view does not carry
+    instance multiplicity, so ``leafm u_arr [3:0]`` is one
+    :class:`~rtl_buddy_view.graph.HierNode` where Yosys elaborated
+    four. The subtraction would then account for one child where the
+    area covers four and report the other three as this scope's own
+    gates, silently and with no way to notice: the "negative remainder"
+    guard never fires, because over-reporting is the direction the
+    error takes. Power has no such problem — a self power figure is the
+    leaf rows attributed to this node, counted rather than derived — so
+    the self scope is a power-only distinction and the area channel
+    keeps the module roll-up in both scopes.
     """
     block: dict[str, float | int | str] = {}
-    row = model.modules.get(node.module_name)
+    row = model.modules.get(node.module_name) if has_area else None
     if row is not None:
         if row.cell_count is not None:
             block["cell_count"] = row.cell_count
         if row.area_um2 is not None:
             block["area_um2"] = round(row.area_um2, _ROUND)
-            self_area = _self_area(node, model, row)
-            if self_area is not None:
-                block["self_area_um2"] = round(self_area, _ROUND)
     if has_power:
         leakage, internal, switching, total = own
         block["leakage_uw"] = round(leakage, _ROUND)
@@ -926,35 +988,6 @@ def _node_block(
     return block
 
 
-def _self_area(node: HierNode, model: PhysModel, row: ModuleRow) -> float | None:
-    """``area_um2`` minus the children's, when every child has a row.
-
-    The module row's area already rolls the submodules up, so the
-    *subtree* figure is the one the producer gives and the **self**
-    figure is the one that has to be derived — the opposite way round
-    from power. Derived against this view's children, which is the
-    only hierarchy that knows what ``area_um2`` rolled up.
-
-    ``None`` — the key omitted — whenever the subtraction would be a
-    guess: a child that is a blackbox, a child whose module the
-    synthesis has no row for (it was flattened away, or it is a
-    Liberty cell), or a result the floating-point residue drove
-    below zero. A leaf node's self area is its whole area, so it is
-    reported as such.
-    """
-    if not node.children:
-        return row.area_um2
-    accounted = 0.0
-    for child in node.children:
-        child_row = model.modules.get(child.module_name)
-        if child_row is None or child_row.area_um2 is None:
-            return None
-        accounted += child_row.area_um2
-    assert row.area_um2 is not None  # guarded by the caller
-    remainder = row.area_um2 - accounted
-    return None if remainder < 0 else remainder
-
-
 def _meta(
     model: PhysModel,
     *,
@@ -964,16 +997,24 @@ def _meta(
     rollup: list[float],
     matched: int,
     unmatched: list[str],
+    unmatched_modules: list[str],
 ) -> dict:
     """The ``overlay_meta.phys`` envelope block.
 
     Everything a surface needs to say what it is showing and how much
     of it it believes: where the numbers came from, which halves the
     run produced, where the join was rooted, the producer's own
-    totals beside our roll-up of the rows, and how many rows found no
-    node. ``notes`` is a list of whole sentences — a consumer gates
-    on it being non-empty, never on a code.
+    totals beside our roll-up of the rows, and how many rows of each
+    kind found no home. ``notes`` is a list of whole sentences — a
+    consumer gates on it being non-empty, never on a code.
+
+    ``rollup`` follows the per-node rule (``view-json-v1.md`` §6):
+    keys are **omitted, never nulled or zeroed**. A run with no power
+    half, and a join that attached nothing, both have no power to roll
+    up — and ``total_uw: 0.0`` there would be read as a design that
+    burns nothing, which is the one thing it must not say.
     """
+    attached = anchor is not None
     notes = list(model.notes)
     if anchor_note:
         notes.append(anchor_note)
@@ -985,25 +1026,41 @@ def _meta(
             f"model was measured on a netlist whose hierarchy differs from "
             f"the RTL as rendered"
         )
-    rolled = {
-        "leakage_uw": round(rollup[0], _ROUND),
-        "internal_uw": round(rollup[1], _ROUND),
-        "switching_uw": round(rollup[2], _ROUND),
-        "dynamic_uw": round(rollup[1] + rollup[2], _ROUND),
-        "total_uw": round(rollup[3], _ROUND),
-    }
-    root_row = model.modules.get(
-        root.module_name if anchor is None else _module_at(root, anchor)
-    )
-    if root_row is not None and root_row.area_um2 is not None:
-        rolled["area_um2"] = round(root_row.area_um2, _ROUND)
+    # Only worth saying when something DID attach: with no anchor every
+    # module row is unmatched by construction, and the anchor note
+    # above has already explained why.
+    if unmatched_modules and attached:
+        notes.append(
+            f"{len(unmatched_modules)} module row(s) matched no node in this "
+            f"hierarchy, so their area is not shown "
+            f"(e.g. {', '.join(unmatched_modules[:5])}); Yosys names a "
+            f"parameterized module '$paramod\\<name>\\<params>', which "
+            f"matches no RTL module name the view carries"
+        )
+
+    rolled: dict[str, float] = {}
+    if attached and model.has_instances:
+        rolled["leakage_uw"] = round(rollup[0], _ROUND)
+        rolled["internal_uw"] = round(rollup[1], _ROUND)
+        rolled["switching_uw"] = round(rollup[2], _ROUND)
+        rolled["dynamic_uw"] = round(rollup[1] + rollup[2], _ROUND)
+        rolled["total_uw"] = round(rollup[3], _ROUND)
+    if anchor is not None:
+        root_row = model.modules.get(_module_at(root, anchor))
+        if root_row is not None and root_row.area_um2 is not None:
+            rolled["area_um2"] = round(root_row.area_um2, _ROUND)
+
+    disagreement = _totals_disagreement(model.totals, rolled)
+    if disagreement is not None:
+        notes.append(disagreement)
+
     return {
         "source": model.source,
         "manifest": model.manifest,
         "model_top": model.top,
         "view_root": root.instance_path,
         "join_root": anchor,
-        "attached": anchor is not None,
+        "attached": attached,
         "units": dict(model.units),
         "halves": {
             "modules": model.has_modules,
@@ -1013,8 +1070,48 @@ def _meta(
         "rollup": rolled,
         "matched_instance_rows": matched,
         "unmatched_instance_rows": len(unmatched),
+        "unmatched_module_rows": len(unmatched_modules),
+        "unmatched_module_names": unmatched_modules[:5],
         "notes": notes,
     }
+
+
+#: How far the roll-up of the rows may sit from the producer's own
+#: scraped total before it is worth saying out loud. The same 0.5% the
+#: test suite pins the fixture to (rtl-buddy/rtl-buddy-sch#22's
+#: acceptance criterion), checked at runtime as well: the two figures
+#: come from different scrapes of one run, so a small gap is expected
+#: and a large one means rows went missing or landed twice.
+TOTALS_TOLERANCE = 0.005
+
+
+def _totals_disagreement(
+    totals: dict[str, float | int | None], rolled: dict[str, float]
+) -> str | None:
+    """A sentence when ``totals`` and ``rollup`` disagree materially.
+
+    Both blocks are already in the envelope, so a surface *could*
+    compare them itself — but every surface would have to, and the one
+    that forgets shows a confident number with rows missing behind it.
+    Compared on total power only: it is the column both sides always
+    carry, and the one every other power figure is a component of.
+    """
+    reported = totals.get("total_uw")
+    ours = rolled.get("total_uw")
+    if not isinstance(reported, (int, float)) or ours is None:
+        return None
+    if reported == 0:
+        return None
+    drift = abs(ours - reported) / abs(reported)
+    if drift <= TOTALS_TOLERANCE:
+        return None
+    return (
+        f"the roll-up of the instance rows ({ours:.6g} µW) disagrees with the "
+        f"total the run itself scraped ({reported:.6g} µW) by "
+        f"{drift * 100:.1f}% — more than the {TOTALS_TOLERANCE * 100:g}% two "
+        f"scrapes of one run should differ by, so rows are probably missing "
+        f"from this hierarchy or counted twice in it"
+    )
 
 
 def _module_at(root: HierNode, instance_path: str) -> str:

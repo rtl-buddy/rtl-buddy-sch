@@ -1,9 +1,10 @@
 <template>
   <div class="phys-legend" data-testid="phys-legend">
-    <!-- Self-vs-subtree. Two explicit buttons rather than one
-         toggle so each click is idempotent and the current scope is
-         readable without hovering. -->
-    <div class="phys-scope" role="group" aria-label="phys figures">
+    <!-- Self-vs-subtree, for the POWER channel. Two explicit buttons
+         rather than one toggle so each click is idempotent and the
+         current scope is readable without hovering. -->
+    <div class="phys-scope" role="group" aria-label="phys power scope">
+      <span class="scope-label">power</span>
       <button
         v-for="scope in PHYS_SCOPES"
         :key="scope"
@@ -37,7 +38,7 @@
         </tr>
       </tbody>
     </table>
-    <p class="axis-note">fill = area · ring = power</p>
+    <p class="axis-note">fill = module area · ring = power</p>
     <p v-if="fillNote" class="fill-note">{{ fillNote }}</p>
     <p v-if="provenance" class="provenance" :title="provenanceTitle">{{ provenance }}</p>
     <p v-for="note in notes" :key="note" class="phys-note">{{ note }}</p>
@@ -60,9 +61,15 @@ import { themeVersion } from '../theme.js'
 
 const store = useViewerStore()
 
+// The toggle acts on POWER only. Area is the producer's per-module
+// figure, which already includes the submodules', and the view carries
+// no instance multiplicity to subtract them back out with — so there
+// is no self area to switch to. Saying so on the hover is cheaper than
+// letting a reader conclude the area channel is broken.
 const SCOPE_TITLE = {
-  subtree: 'Figures for this node and everything under it (the default).',
-  self: "This node's own figures: its area net of its submodules, and only the leaf cells it directly contains.",
+  subtree:
+    'Power of every leaf cell under this node (the default). Area is the module roll-up either way.',
+  self: 'Power of only the leaf cells this node directly contains. Area is the module roll-up either way.',
 }
 
 // The swatches are resolved token values, not ``var()``, so a theme
@@ -115,8 +122,13 @@ const notes = computed(() => {
 }
 .phys-scope {
   display: flex;
+  align-items: center;
   gap: 0.25rem;
   margin: 0.15rem 0 0.35rem;
+}
+.scope-label {
+  color: var(--fg-faint);
+  margin-right: 0.15rem;
 }
 .scope-btn {
   font-family: var(--font-mono);

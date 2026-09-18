@@ -21,7 +21,6 @@ const NODES = [
       phys: {
         cell_count: 3,
         area_um2: 11.172,
-        self_area_um2: 1.064,
         total_uw: 0.075,
         subtree_total_uw: 2.8565,
       },
@@ -34,16 +33,12 @@ const NODES = [
       phys: {
         cell_count: 2,
         area_um2: 5.586,
-        self_area_um2: 1.064,
         total_uw: 0.0888,
         subtree_total_uw: 2.5154,
       },
     },
   },
   {
-    // A node whose self area could not be derived: the producer omits
-    // ``self_area_um2`` when subtracting the children's areas would
-    // have been a guess.
     id: 'phys_top.u_opaque',
     module: 'opaque',
     overlays: { phys: { area_um2: 2.0, total_uw: 0.01, subtree_total_uw: 0.01 } },
@@ -83,9 +78,12 @@ describe('NodeDetail physical section', () => {
     const text = block.text()
     expect(text).toContain('cells')
     expect(text).toContain('2')
-    // Subtree scope by default: the producer's own module area, and
-    // this overlay's roll-up of the leaf power rows.
+    // The area figure names what it IS, because there is no self
+    // counterpart to switch to.
+    expect(text).toContain('module area (rolls submodules up)')
     expect(text).toContain('5.59 µm²')
+    // Subtree scope by default for the power channel.
+    expect(text).toContain('power (subtree)')
     expect(text).toContain('2.52 µW')
     // 5.586/11.172 = 50%, 2.5154/2.8565 = 88.1%.
     const bars = block.findAll('.cov-row')
@@ -94,28 +92,34 @@ describe('NodeDetail physical section', () => {
     expect(bars[1].text()).toContain('88.1%')
   })
 
-  it('follows the canvas scope toggle rather than keeping its own', async () => {
+  it('follows the canvas scope toggle for POWER only', async () => {
     const store = useViewerStore()
     loadAndSelect(store, 'phys_top.u_sub')
     const wrapper = mount(NodeDetail)
     store.setPhysScope('self')
     await wrapper.vm.$nextTick()
     const text = wrapper.find('[data-testid="node-phys"]').text()
-    // Self figures: area net of the submodule, and only the leaf
-    // cells this scope directly contains.
-    expect(text).toContain('1.06 µm²')
+    // Self power: only the leaf cells this scope directly contains.
+    expect(text).toContain('power (self)')
     expect(text).toContain('0.0888 µW')
+    // The area figure is the module roll-up in both scopes and says
+    // so — the view carries no instance multiplicity, so a self area
+    // would over-report for an instance array or a generate loop.
+    expect(text).toContain('module area (rolls submodules up)')
+    expect(text).toContain('5.59 µm²')
+    expect(text).not.toContain('self area')
   })
 
-  it('names an unavailable self area instead of showing none silently', async () => {
+  it('never promises a self area, in either scope', async () => {
     const store = useViewerStore()
     loadAndSelect(store, 'phys_top.u_opaque')
     const wrapper = mount(NodeDetail)
     store.setPhysScope('self')
     await wrapper.vm.$nextTick()
-    expect(wrapper.find('[data-testid="node-phys"]').text()).toContain(
-      'self area unavailable',
-    )
+    const text = wrapper.find('[data-testid="node-phys"]').text()
+    expect(text).toContain('module area (rolls submodules up)')
+    expect(text).toContain('2.00 µm²')
+    expect(text).not.toContain('unavailable')
   })
 
   it('omits the bars at the root and the section entirely without a block', () => {

@@ -279,7 +279,6 @@ function physPayload(extra = {}) {
           phys: {
             cell_count: 3,
             area_um2: 11.172,
-            self_area_um2: 1.064,
             total_uw: 0.075,
             subtree_total_uw: 2.8565,
           },
@@ -295,7 +294,6 @@ function physPayload(extra = {}) {
           phys: {
             cell_count: 2,
             area_um2: 5.586,
-            self_area_um2: 1.064,
             total_uw: 0.0888,
             subtree_total_uw: 2.5154,
           },
@@ -328,7 +326,9 @@ describe('OverlayPanel phys legend (#22)', () => {
     expect(legend.exists()).toBe(true)
     // 3x3 key, plus the axis-label row.
     expect(legend.findAll('.cell').length).toBe(9)
-    expect(legend.text()).toContain('fill = area · ring = power')
+    expect(legend.text()).toContain('fill = module area · ring = power')
+    // The scope toggle is labelled as the power control it is.
+    expect(legend.find('.scope-label').text()).toBe('power')
     // Provenance: which halves the run filled, and where the join was
     // rooted — the two things a µW figure on a schematic needs said.
     expect(legend.text()).toContain('area + power')

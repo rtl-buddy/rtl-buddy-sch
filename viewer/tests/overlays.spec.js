@@ -12,6 +12,7 @@ import { getOverlay, overlaySummary, applyOverlays } from '../src/overlays/index
 import { heatColor, tintMetric } from '../src/overlays/coverage.js'
 import { resolvePortValues } from '../src/overlays/wave.js'
 import {
+  areaFill,
   areaOf,
   bivariateLegend,
   fractionOf,
@@ -669,7 +670,6 @@ const PHYS_GRAPH = {
         phys: {
           cell_count: 3,
           area_um2: 11.172,
-          self_area_um2: 1.064,
           total_uw: 0.075,
           subtree_total_uw: 2.8565,
         },
@@ -682,7 +682,6 @@ const PHYS_GRAPH = {
         phys: {
           cell_count: 2,
           area_um2: 5.586,
-          self_area_um2: 1.064,
           total_uw: 0.0888,
           subtree_total_uw: 2.5154,
         },
@@ -700,16 +699,17 @@ describe('phys overlay', () => {
     expect(overlay.name).toBe('phys')
     const labels = overlay.legend(PHYS_GRAPH, {}).map((e) => e.label)
     expect(labels).toEqual([
-      'small area (subtree)',
-      'large area (subtree)',
+      'small area',
+      'large area',
       'low power (subtree)',
       'high power (subtree)',
       'not measured',
     ])
-    // The legend follows the scope toggle, so the panel never labels
-    // one scope's swatches while the canvas paints the other's.
-    expect(overlay.legend(PHYS_GRAPH, { physScope: 'self' })[0].label).toBe(
-      'small area (self)',
+    // The scope suffix rides on the POWER entries only: the area
+    // channel does not change with the toggle, and labelling it
+    // "(self)" would promise a figure that does not exist.
+    expect(overlay.legend(PHYS_GRAPH, { physScope: 'self' }).map((e) => e.label)).toEqual(
+      ['small area', 'large area', 'low power (self)', 'high power (self)', 'not measured'],
     )
   })
 
@@ -730,17 +730,20 @@ describe('phys overlay', () => {
     expect(physScope({ physScope: 'self' })).toBe('self')
   })
 
-  it('picks subtree vs self figures per scope, and omits what is absent', () => {
+  it('switches POWER per scope and leaves area alone', () => {
     const block = PHYS_GRAPH.nodes[1].overlays.phys
-    expect(areaOf(block, 'subtree')).toBe(5.586)
-    expect(areaOf(block, 'self')).toBe(1.064)
     expect(powerOf(block, 'subtree')).toBe(2.5154)
     expect(powerOf(block, 'self')).toBe(0.0888)
-    // ``self_area_um2`` is omitted by the producer whenever the
-    // subtraction would have been a guess — the self scope then has
-    // no area rather than a wrong one.
-    expect(areaOf({ area_um2: 4 }, 'self')).toBeNull()
     expect(powerOf(null, 'subtree')).toBeNull()
+    // Area is the producer's module roll-up and has no self
+    // counterpart: the view carries no instance multiplicity, so
+    // subtracting the children's areas would over-report for an
+    // instance array or a generate loop. The scope argument is
+    // accepted and ignored.
+    expect(areaOf(block, 'subtree')).toBe(5.586)
+    expect(areaOf(block, 'self')).toBe(5.586)
+    expect(areaOf(block)).toBe(5.586)
+    expect(areaOf({}, 'subtree')).toBeNull()
   })
 
   it('fills by area fraction and rings by power fraction, relative to the max', () => {
@@ -768,21 +771,23 @@ describe('phys overlay', () => {
     expect(groups['phys_top.u_none'].attrs['data-overlay-phys-area']).toBeUndefined()
   })
 
-  it('re-styles on a scope switch without touching layout inputs', () => {
+  it('re-styles the RING on a scope switch and leaves the fill alone', () => {
     const overlay = getOverlay('phys')
     const { groups, svgRoot } = physSvg(['phys_top', 'phys_top.u_sub'])
     const context = { enabledOverlays: new Set(['phys']) }
     overlay.apply(svgRoot, PHYS_GRAPH, true, context)
     const subtreeFill = groups['phys_top.u_sub'].shape.style.fill
+    const subtreeRing = groups['phys_top.u_sub'].ring.style.stroke
 
-    // Self scope: both nodes' self areas are equal (1.064), so u_sub
-    // saturates to the max where the subtree scope had it at half.
     overlay.apply(svgRoot, PHYS_GRAPH, true, { ...context, physScope: 'self' })
-    expect(groups['phys_top.u_sub'].shape.style.fill).not.toBe(subtreeFill)
-    expect(groups['phys_top.u_sub'].attrs['data-overlay-phys-area']).toBe('100')
-    // Self power: u_sub 0.0888 of a 0.0888 max.
+    // Self power: u_sub is 0.0888 of a 0.0888 max (its own leaf row),
+    // the top 0.075 of it — where the subtree scope had u_sub at 88%.
+    expect(groups['phys_top.u_sub'].ring.style.stroke).not.toBe(subtreeRing)
     expect(groups['phys_top.u_sub'].attrs['data-overlay-phys-power']).toBe('100')
     expect(groups['phys_top'].attrs['data-overlay-phys-power']).toBe('84')
+    // The area channel is scope-independent, so the fill does not move.
+    expect(groups['phys_top.u_sub'].shape.style.fill).toBe(subtreeFill)
+    expect(groups['phys_top.u_sub'].attrs['data-overlay-phys-area']).toBe('50')
   })
 
   it('takes the clock hue and drives only saturation when clock is on', () => {
@@ -810,6 +815,53 @@ describe('phys overlay', () => {
     expect(groups['phys_top.u_sub'].shape.style.fill).toBe('hsl(214.3, 53.3%, 92.7%)')
     expect(saturateBy('#dbeafe', 1)).toBe('hsl(214.3, 94.6%, 92.7%)')
     expect(saturateBy('not-a-colour', 1)).toBeNull()
+  })
+
+  it('never greys a clock-tinted node when there is no area to show', () => {
+    // A POWER-ONLY model (`rb power` with no synthesis in the same
+    // artefact directory) carries no area rows at all. Painting the
+    // not-measured grey there would have this overlay overwrite a
+    // channel it has nothing to say about — and since every node is
+    // in that state, the whole diagram would go flat grey the moment
+    // both overlays were ticked.
+    const overlay = getOverlay('phys')
+    const graph = {
+      overlays_present: ['clock', 'phys'],
+      nodes: [
+        {
+          id: 'phys_top',
+          overlays: {
+            clock: { clock: 'clk_a' },
+            phys: { total_uw: 0.075, subtree_total_uw: 2.8565 },
+          },
+        },
+        {
+          id: 'phys_top.u_sub',
+          overlays: {
+            clock: { clock: 'clk_a' },
+            phys: { total_uw: 0.0888, subtree_total_uw: 2.5154 },
+          },
+        },
+      ],
+      edges: [],
+    }
+    const { groups, svgRoot } = physSvg(['phys_top', 'phys_top.u_sub'])
+    overlay.apply(svgRoot, graph, true, {
+      enabledOverlays: new Set(['clock', 'phys']),
+    })
+    // The clock overlay ran first and painted its pastel; phys leaves
+    // it exactly as found and contributes the ring it DOES have data
+    // for.
+    const pastel = '#dbeafe'
+    expect(groups['phys_top'].shape.style.fill).toBe(pastel)
+    expect(groups['phys_top.u_sub'].shape.style.fill).toBe(pastel)
+    expect(groups['phys_top'].ring.style.stroke).toBe(heatRampColor(1))
+    expect(groups['phys_top'].attrs['data-overlay-phys-area']).toBeUndefined()
+    expect(groups['phys_top'].attrs['data-overlay-phys-power']).toBe('100')
+    // Without a clock there is nothing to preserve, so the
+    // not-measured grey is still the right answer.
+    expect(areaFill(null, null)).toBe(heatNoneColor())
+    expect(areaFill(null, pastel)).toBe(pastel)
   })
 
   it('yields the fill to coverage and says so, keeping the ring', () => {

@@ -379,7 +379,6 @@ Each node the model measured gets an `overlays.phys` block:
 {
   "cell_count": 2,
   "area_um2": 5.586,
-  "self_area_um2": 1.064,
   "leakage_uw": 0.0174,
   "internal_uw": 0.0714,
   "switching_uw": 0.0,
@@ -397,8 +396,11 @@ Each node the model measured gets an `overlays.phys` block:
 
 Two joins, and they are different joins. **Area** matches the node's
 module name against the model's RTL-module rows; the producer's area
-column already rolls the submodules up, so it is a subtree figure and
-`self_area_um2` is the derived one. **Power** matches the model's
+column already rolls the submodules up, so it is a subtree figure with
+no self counterpart — un-rolling it would mean subtracting the
+children's areas, and the view carries no instance multiplicity to do
+that correctly for an array or a generate loop. **Power** matches the
+model's
 rootless instance paths — rooted the way the hub's `/phy` pane roots
 one — and attributes each leaf row to its nearest enclosing scope,
 then rolls the parents up. The instance rows' `module` field holds the
@@ -415,8 +417,8 @@ byte-identical with or without it.
 
 In the browser the two channels are fill saturation (area) and an
 outer ring (power) on the shared heat tokens, with a bivariate legend,
-a self-vs-subtree toggle, and per-node figures plus share-of-parent
-bars in the detail panel. Full contract, composition rules with the
+a self-vs-subtree toggle for the power channel, and per-node figures
+plus share-of-parent bars in the detail panel. Full contract, composition rules with the
 clock / coverage / reset overlays, and limitations:
 [`docs/phys-overlay.md`](docs/phys-overlay.md).
 
@@ -690,7 +692,7 @@ Consumers extract the version with `r"rtl-buddy-view\s+(\d+\.\d+(?:\.\d+)?)"` (t
   hyperlinks in the tree renderer.
   ([#17](https://github.com/rtl-buddy/rtl-buddy-view/issues/17))
 - **Phase 7b** ✅ — Physical overlay: area as fill saturation, power
-  as an outer ring, bivariate legend, self-vs-subtree toggle, and a
+  as an outer ring, bivariate legend, self-vs-subtree power toggle, and a
   hierarchy roll-up of the physical model `rb synth` / `rb power`
   publish. ([rtl-buddy/rtl-buddy-sch#22](https://github.com/rtl-buddy/rtl-buddy-sch/issues/22),
   producer epic [rtl-buddy/rtl_buddy#558](https://github.com/rtl-buddy/rtl_buddy/issues/558))

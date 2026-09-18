@@ -161,7 +161,12 @@
         <dt>Physical</dt>
         <dd class="phys-block" data-testid="node-phys">
           <div class="phys-figures">
-            <span v-for="f in physFigures" :key="f.label" class="phys-figure">
+            <span
+              v-for="f in physFigures"
+              :key="f.label"
+              class="phys-figure"
+              :title="f.title"
+            >
               <span class="phys-fig-label">{{ f.label }}</span>
               <span class="phys-fig-value">{{ f.value }}</span>
             </span>
@@ -176,7 +181,6 @@
             </span>
             <span class="cov-nums">{{ bar.pct }}%</span>
           </div>
-          <p v-if="physScopeNote" class="phys-scope-note">{{ physScopeNote }}</p>
         </dd>
       </template>
       <template v-if="axiPins.length || axiInterconnect">
@@ -310,6 +314,11 @@ const covPaneHref = computed(() => (isHubServed() ? COV_PANE_ROUTE : null))
 // figure cannot answer. The parent comes from the instance path —
 // ``nodesById`` is keyed on it — so a node whose parent is outside
 // the rendered subtree simply gets no bars.
+//
+// Only the POWER figure follows the scope toggle. The area figure is
+// the producer's module roll-up in both scopes and is labelled as
+// such, because a self area is not derivable here — see
+// overlays/phys.js and docs/phys-overlay.md §6.
 const phys = computed(
   () => (node.value && node.value.overlays && node.value.overlays.phys) || null,
 )
@@ -330,12 +339,39 @@ const physFigures = computed(() => {
   const scope = physScopeLabel.value
   const out = []
   if (typeof block.cell_count === 'number') {
-    out.push({ label: 'cells', value: formatCount(block.cell_count) })
+    out.push({
+      label: 'cells',
+      value: formatCount(block.cell_count),
+      title:
+        "The module's own cells, as Yosys counted them — a submodule instance counts as one cell, so this does not roll up.",
+    })
   }
-  const area = areaOf(block, scope)
-  if (area !== null) out.push({ label: 'area', value: `${formatMetric(area)} µm²` })
+  // The area label says what the figure IS, in both scopes: the
+  // producer's module area, submodules included. There is no self
+  // counterpart to show — the view carries no instance multiplicity,
+  // so subtracting the children's areas would over-report for an
+  // instance array or a generate loop. Only the power figure follows
+  // the scope toggle.
+  const area = areaOf(block)
+  if (area !== null) {
+    out.push({
+      label: 'module area (rolls submodules up)',
+      value: `${formatMetric(area)} µm²`,
+      title:
+        "The defining module's area from the synthesis, which already includes its submodules'. Unaffected by the self/subtree toggle.",
+    })
+  }
   const power = powerOf(block, scope)
-  if (power !== null) out.push({ label: 'power', value: `${formatMetric(power)} µW` })
+  if (power !== null) {
+    out.push({
+      label: scope === 'self' ? 'power (self)' : 'power (subtree)',
+      value: `${formatMetric(power)} µW`,
+      title:
+        scope === 'self'
+          ? 'Total power of the leaf cells this scope directly contains.'
+          : 'Total power of every leaf cell under this scope.',
+    })
+  }
   return out
 })
 const physBars = computed(() => {
@@ -344,7 +380,7 @@ const physBars = computed(() => {
   const parent = physParent.value
   if (!block || !parent) return []
   const bars = []
-  const area = share(areaOf(block, 'subtree'), areaOf(parent, 'subtree'))
+  const area = share(areaOf(block), areaOf(parent))
   if (area !== null) {
     bars.push({
       label: 'area',
@@ -363,17 +399,6 @@ const physBars = computed(() => {
     })
   }
   return bars
-})
-// The self scope has one honest gap worth naming: ``self_area_um2``
-// is absent whenever subtracting the children's areas would have
-// been a guess (a blackbox child, a child the synthesis flattened
-// away). Silence there reads as "no area", so say which it is.
-const physScopeNote = computed(() => {
-  const block = phys.value
-  if (!block || physScopeLabel.value !== 'self') return ''
-  if (typeof block.area_um2 !== 'number') return ''
-  if (typeof block.self_area_um2 === 'number') return ''
-  return 'self area unavailable: a child module has no area row to subtract'
 })
 function share(value, total) {
   if (typeof value !== 'number' || typeof total !== 'number' || !(total > 0)) {
@@ -802,12 +827,6 @@ function sendToCov() {
 .phys-fig-value {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-}
-.phys-scope-note {
-  margin: 0.25rem 0 0;
-  font-size: 0.7rem;
-  font-style: italic;
-  color: var(--fg-faint);
 }
 .coverview-link {
   display: inline-block;

@@ -122,6 +122,26 @@ def _reroot(node: HierNode, path: str, *, inst_name: str | None = None) -> HierN
     return _node(path, node.module_name, inst_name=inst_name, children=children)
 
 
+def _with_modules(model, rows: dict[str, tuple[int, float]]):
+    """``model`` with its module half replaced by ``{name: (cells, area)}``.
+
+    Cheaper than a second fixture document for the cases that are
+    about the *join* rather than about the schema.
+    """
+    from dataclasses import replace
+
+    from rtl_buddy_view.phys_annotations import ModuleRow
+
+    return replace(
+        model,
+        top=None,
+        modules={
+            name: ModuleRow(name=name, cell_count=cells, area_um2=area)
+            for name, (cells, area) in rows.items()
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # loader
 # ---------------------------------------------------------------------------
@@ -246,6 +266,51 @@ def test_manifest_whose_model_pointer_resolves_to_nothing_errors(tmp_path):
         load_phys_model(path)
 
 
+def test_the_model_beside_the_manifest_wins_over_the_counted_root(tmp_path):
+    """Resolution order, and why it is that way round.
+
+    The project-root-relative pointer is only resolvable by *counting*
+    ``phys_dir`` back up from where the manifest was found, and that
+    count is wrong whenever the manifest is read through a different
+    route than it was written through — an ``artefacts/`` symlinked to
+    scratch, the layout the producer's own ``project_root_for``
+    documents. Getting it wrong does not fail: it silently resolves to
+    another run's model sitting at the same project-relative path,
+    which is a wrong answer where an unfound file would have been an
+    honest one. Two documents in one directory is the fact that cannot
+    be wrong, so it is tried first.
+
+    The layout below makes the counted root land on ``tmp_path`` and
+    puts a DIFFERENT design's model at exactly the pointer's path
+    under it, so only one of the two candidates can satisfy the
+    assertion.
+    """
+    run = tmp_path / "scratch" / "runs" / "nightly" / "out"
+    run.mkdir(parents=True)
+    doc = json.loads(MANIFEST.read_text())
+    # Four components, so the count walks `run` back up to tmp_path.
+    doc["phys_dir"] = "verif/blk/artefacts/nightly"
+    doc["model"] = "verif/blk/artefacts/nightly/phys-model.json"
+    (run / "phys-manifest.json").write_text(json.dumps(doc))
+    (run / "phys-model.json").write_text(MODEL.read_text())
+
+    decoy = tmp_path / "verif" / "blk" / "artefacts" / "nightly"
+    decoy.mkdir(parents=True)
+    other = json.loads(MODEL.read_text())
+    other["design"]["top"] = "someone_elses_design"
+    (decoy / "phys-model.json").write_text(json.dumps(other))
+    # Guard the guard: the counted root really does reach the decoy,
+    # so this test would fail if the order were reversed.
+    counted = run
+    for _ in Path(doc["phys_dir"]).parts:
+        counted = counted.parent
+    assert (counted / doc["model"]).is_file()
+
+    model = load_phys_model(run / "phys-manifest.json")
+    assert model.top == "phys_top"
+    assert model.source == str(run / "phys-model.json")
+
+
 def test_model_beside_the_manifest_is_the_last_fallback(tmp_path):
     """A manifest read from somewhere the project root can't be counted
     back to still finds its model — every producer writes the two
@@ -277,6 +342,9 @@ def test_a_synth_only_model_warns_and_contributes_area(tmp_path):
     # zeroes a viewer would paint as "this design burns nothing".
     assert "total_uw" not in block
     assert join.meta["halves"] == {"modules": True, "instances": False}
+    # …and neither does the envelope's roll-up: `total_uw: 0.0` there
+    # would read as a design that burns nothing.
+    assert join.meta["rollup"] == {"area_um2": pytest.approx(11.172)}
 
 
 def test_a_power_only_model_warns_and_contributes_power(tmp_path):
@@ -301,6 +369,41 @@ def test_unexpected_units_warn_rather_than_fail(tmp_path):
     assert len(model.notes) == 2
     assert any("'nm2'" in note for note in model.notes)
     assert any("'mW'" in note for note in model.notes)
+
+
+def test_an_unpaired_publication_is_noted(tmp_path):
+    """Exactly one token present: the producer refuses to merge onto
+    such a pair (``phys.publish._existing_pair``) because it is
+    evidence the last publish did not finish. A consumer cannot refuse
+    — the user named the path — so it says the pairing is unproven."""
+    doc = json.loads(MANIFEST.read_text())
+    doc["publication"] = None
+    (tmp_path / "phys-manifest.json").write_text(json.dumps(doc))
+    (tmp_path / "phys-model.json").write_text(MODEL.read_text())
+    model = load_phys_model(tmp_path / "phys-manifest.json")
+    assert any("unpaired publication" in note for note in model.notes)
+    assert any("the manifest carries no publication" in note for note in model.notes)
+
+    # …and the other way round.
+    other = tmp_path / "b"
+    other.mkdir()
+    model_doc = json.loads(MODEL.read_text())
+    model_doc["publication"] = None
+    (other / "phys-manifest.json").write_text(MANIFEST.read_text())
+    (other / "phys-model.json").write_text(json.dumps(model_doc))
+    flipped = load_phys_model(other / "phys-manifest.json")
+    assert any("the model carries no publication" in note for note in flipped.notes)
+
+    # Both absent is NOT unpaired — an rtl_buddy predating the token
+    # wrote neither, and there is nothing to be suspicious about.
+    both = tmp_path / "c"
+    both.mkdir()
+    man_doc = json.loads(MANIFEST.read_text())
+    man_doc["publication"] = None
+    (both / "phys-manifest.json").write_text(json.dumps(man_doc))
+    (both / "phys-model.json").write_text(json.dumps(model_doc))
+    quiet = load_phys_model(both / "phys-manifest.json")
+    assert not any("unpaired" in note for note in quiet.notes)
 
 
 def test_a_mismatched_publication_pair_is_noted(tmp_path):
@@ -385,28 +488,37 @@ def test_rolled_up_totals_match_the_models_own_within_half_a_percent():
     assert rollup["area_um2"] == pytest.approx(model.totals["area_um2"])
 
 
-def test_area_comes_from_the_module_row_and_self_area_is_derived():
+def test_area_comes_from_the_module_row_and_carries_no_self_figure():
     join = join_hierarchy(load_phys_model(MODEL), _design())
     top = join.blocks["phys_top"]
     assert top["cell_count"] == 3
     assert top["area_um2"] == pytest.approx(11.172)
-    # 11.172 − (5.586 + 4.522): what the top's own gates cost.
-    assert top["self_area_um2"] == pytest.approx(1.064)
-    # A leaf node's self area is its whole area.
-    leaf = join.blocks["phys_top.u_sub.u_leaf"]
-    assert leaf["self_area_um2"] == pytest.approx(leaf["area_um2"])
+    # No self area, in any node. See the next test for why.
+    for block in join.blocks.values():
+        assert "self_area_um2" not in block
 
 
-def test_self_area_is_omitted_when_a_child_has_no_row():
-    """Rather than subtracting nothing and reporting the subtree area
-    as the self area, which would read as a block that costs its
-    children's silicon."""
+def test_no_self_area_is_derived_because_arrays_would_over_report():
+    """The reason the key does not exist.
+
+    ``leafm u_arr [3:0]`` is ONE ``HierNode`` — the extractor carries
+    no multiplicity — where Yosys elaborated four. Subtracting the
+    children's module areas from the parent's roll-up would account
+    for one copy and report the other three as this scope's own
+    gates: 8.0 − 2.0 = 6.0 where the true self area is 0.0. The old
+    "negative remainder means we guessed" guard cannot catch it,
+    because over-reporting is the direction the error takes. Nothing
+    in the view can corroborate the subtraction, so the figure is not
+    emitted at all.
+    """
     model = load_phys_model(MODEL)
-    orphan = _node("phys_top.u_ip", "unmapped_ip", inst_name="u_ip")
-    design = _node("phys_top", "phys_top", children=(orphan,))
-    join = join_hierarchy(model, design)
-    block = join.blocks["phys_top"]
-    assert block["area_um2"] == pytest.approx(11.172)
+    array = _node("wrap.u_arr", "leafm", inst_name="u_arr")
+    design = _node("wrap", "wrap", children=(array,))
+    join = join_hierarchy(
+        _with_modules(model, {"wrap": (4, 8.0), "leafm": (1, 2.0)}), design
+    )
+    block = join.blocks["wrap"]
+    assert block["area_um2"] == pytest.approx(8.0)
     assert "self_area_um2" not in block
 
 
@@ -423,6 +535,67 @@ def test_all_instances_of_one_module_share_its_area_but_not_its_power():
     assert join.blocks["phys_top.u_sub"]["area_um2"] == pytest.approx(5.586)
     assert join.blocks["phys_top.u_sub2"]["area_um2"] == pytest.approx(5.586)
     assert join.blocks["phys_top.u_sub2"]["subtree_total_uw"] == pytest.approx(0.0)
+
+
+def test_module_rows_no_node_claimed_are_counted_and_explained():
+    """The `$paramod` case, which is the common one and not an error.
+
+    Yosys names a parameterized module ``$paramod\\sub\\W=32``, so it
+    matches no RTL module name the view carries and its area silently
+    goes missing. Counting the rows is how a surface can say "some
+    area is unaccounted for" rather than showing blocks that quietly
+    have none.
+    """
+    model = load_phys_model(MODEL)
+    # Only the top and u_sub are rendered; DFF_X1 and phys_leaf are not.
+    design = _node(
+        "phys_top",
+        "phys_top",
+        children=(_node("phys_top.u_sub", "phys_sub", inst_name="u_sub"),),
+    )
+    meta = join_hierarchy(model, design).meta
+    assert meta["unmatched_module_rows"] == 2
+    assert meta["unmatched_module_names"] == ["DFF_X1", "phys_leaf"]
+    note = next(n for n in meta["notes"] if "module row(s) matched no node" in n)
+    assert "DFF_X1, phys_leaf" in note
+    assert "$paramod" in note
+
+
+def test_unmatched_module_rows_are_not_re_explained_when_nothing_attached():
+    """With no anchor every row is unmatched by construction, and the
+    anchor note has already said why — so the count is reported and
+    the note is not."""
+    meta = join_hierarchy(load_phys_model(MODEL), _node("other", "other")).meta
+    assert meta["unmatched_module_rows"] == 4
+    assert not any("module row(s) matched no node" in n for n in meta["notes"])
+
+
+def test_the_rollup_omits_power_when_there_is_none_to_roll_up():
+    """``view-json-v1.md`` §6's rule applies to the envelope too:
+    omitted, never nulled — and never ``0.0``, which reads as a
+    measured zero."""
+    model = load_phys_model(MODEL)
+    # No anchor at all → nothing measured here, so nothing in rollup.
+    assert join_hierarchy(model, _node("other", "other")).meta["rollup"] == {}
+
+
+def test_a_materially_different_rollup_is_called_out():
+    """Both figures are already in the envelope, but a surface that
+    forgets to compare them shows a confident number with rows missing
+    behind it. 0.5% is the same tolerance the fixture is pinned to."""
+    model = load_phys_model(MODEL)
+    quiet = join_hierarchy(model, _design()).meta
+    assert not any("disagrees with the total" in n for n in quiet["notes"])
+
+    # Halve the scraped total: the roll-up of the rows is now ~100%
+    # above it, which is rows counted twice or a stale scrape.
+    from dataclasses import replace
+
+    skewed = replace(model, totals={**model.totals, "total_uw": 1.4})
+    meta = join_hierarchy(skewed, _design()).meta
+    note = next(n for n in meta["notes"] if "disagrees with the total" in n)
+    assert "104" in note or "103" in note
+    assert "0.5%" in note
 
 
 # ---------------------------------------------------------------------------
@@ -474,10 +647,23 @@ def test_a_wrapper_top_roots_the_join_at_the_models_own_top():
 
 
 def test_a_model_of_another_design_attaches_nothing_and_says_so():
+    """Including the AREA channel, which joins by name.
+
+    The hierarchy here deliberately instantiates ``phys_sub`` — a
+    module the foreign model has a row for — so a channel gated only
+    on the power anchor would paint 5.586 µm² on it while
+    ``attached: false`` and the notes said nothing was attached. A
+    block reading "measured" underneath an envelope saying "not this
+    design" is worse than no block: it is a measurement of a
+    different design, presented as this one's.
+    """
     model = load_phys_model(MODEL)
     other = _node(
-        "counter", "counter", children=(_node("counter.u_ff", "ff", inst_name="u_ff"),)
+        "counter",
+        "counter",
+        children=(_node("counter.u_sub", "phys_sub", inst_name="u_sub"),),
     )
+    assert "phys_sub" in model.modules  # the collision the gate has to survive
     join = join_hierarchy(model, other)
     assert not join.attached
     assert join.blocks == {}
@@ -607,7 +793,7 @@ def test_json_render_emits_per_node_blocks_and_the_meta_envelope():
     block = nodes["phys_top.u_sub"]["overlays"]["phys"]
     assert block["cell_count"] == 2
     assert block["area_um2"] == pytest.approx(5.586)
-    assert block["self_area_um2"] == pytest.approx(1.064)
+    assert "self_area_um2" not in block
     assert block["subtree_total_uw"] == pytest.approx(2.5154)
     meta = payload["overlay_meta"]["phys"]
     assert meta["model_top"] == "phys_top"
@@ -667,7 +853,6 @@ def test_the_documented_block_keys_are_the_emitted_ones():
         "internal_uw",
         "leaf_instances",
         "leakage_uw",
-        "self_area_um2",
         "subtree_dynamic_uw",
         "subtree_internal_uw",
         "subtree_leaf_instances",
@@ -690,6 +875,8 @@ def test_the_documented_block_keys_are_the_emitted_ones():
         "totals",
         "units",
         "unmatched_instance_rows",
+        "unmatched_module_names",
+        "unmatched_module_rows",
         "view_root",
     ]
 

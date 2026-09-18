@@ -15,6 +15,14 @@
 //   * An outer RING by total power, on the same sequential ramp. Cool
 //     (pale) to hot.
 //
+// The self-vs-subtree toggle is a POWER distinction only. A self area
+// would have to be derived by subtracting the children's from the
+// module's roll-up, and the view carries no instance multiplicity —
+// ``leafm u_arr [3:0]`` is one node where Yosys elaborated four — so
+// the subtraction over-reports with no way to detect it. The area
+// channel therefore shows the module's roll-up in both scopes; see
+// docs/phys-overlay.md §6.
+//
 // The ramp is the vendored hub tokens (``--heat-h/s/l0/l1``, the ones
 // the hub's ``/phy`` pane computes in CSS ``calc``), read through
 // ``palette.js`` — there is no page-local ramp here, per
@@ -42,7 +50,7 @@
 
 import { buildClockPalette, heatNoneColor, heatRampColor, saturateBy } from '../palette.js'
 
-/** The two scopes the self-vs-subtree toggle switches between. */
+/** The two scopes the self-vs-subtree toggle switches between (power). */
 export const PHYS_SCOPES = ['subtree', 'self']
 
 /** Default scope: a node stands for its subtree unless asked otherwise. */
@@ -67,27 +75,25 @@ export function physBlock(node) {
 }
 
 /**
- * The area figure for a scope.
+ * The area figure. **Scope-independent**, and the argument is accepted
+ * only so the two channel readers have one shape.
  *
- * ``area_um2`` is already a SUBTREE figure — the producer's module
- * area rolls its submodules up — so the subtree scope reads it
- * directly and the self scope reads the ``self_area_um2`` the Python
- * side derived. That key is absent whenever the subtraction would
- * have been a guess (a blackbox child, a child the synthesis has no
- * row for), and then the self scope has no area to show rather than a
- * wrong one.
+ * ``area_um2`` is the producer's module area, which already includes
+ * the submodules'. There is no self counterpart to switch to: see the
+ * note at the top of this module.
  */
-export function areaOf(block, scope) {
+export function areaOf(block, _scope) {
   if (!block) return null
-  const key = scope === 'self' ? 'self_area_um2' : 'area_um2'
-  const value = block[key]
+  const value = block.area_um2
   return typeof value === 'number' ? value : null
 }
 
 /**
- * The total-power figure for a scope. The opposite way round from
- * area: the model records leaf values only, so ``total_uw`` is this
- * node's own rows and ``subtree_total_uw`` is the roll-up.
+ * The total-power figure for a scope — the channel the toggle acts on.
+ * The model records leaf values only, so ``total_uw`` is the rows
+ * attributed to this node itself and ``subtree_total_uw`` is the
+ * roll-up. Both are counted rather than derived, which is why this
+ * distinction is sound where the area one is not.
  */
 export function powerOf(block, scope) {
   if (!block) return null
@@ -143,9 +149,18 @@ export function physFillNote(context) {
   return '(coverage owns the fill; phys shows the power ring only)'
 }
 
-/** Fill colour for an area fraction, composed with the clock hue. */
+/**
+ * Fill colour for an area fraction, composed with the clock hue.
+ *
+ * With no area to show, a node that the CLOCK overlay has an opinion
+ * about keeps the clock's colour untouched. Greying it would be this
+ * overlay overwriting a channel it has nothing to say about — and on
+ * a power-only model (``rb power`` without a synthesis in the same
+ * artefact directory) that is *every* node, so the whole diagram
+ * would go flat grey the moment both overlays were ticked.
+ */
 export function areaFill(fraction, clockColor) {
-  if (fraction === null) return heatNoneColor()
+  if (fraction === null) return clockColor || heatNoneColor()
   if (clockColor) {
     const composed = saturateBy(clockColor, fraction)
     if (composed) return composed
@@ -235,11 +250,13 @@ export const physOverlay = {
    * who never opens the key.
    */
   legend(graph, context = {}) {
-    const scope = physScope(context)
-    const suffix = scope === 'self' ? ' (self)' : ' (subtree)'
+    // The scope suffix rides on the POWER entries only — the area
+    // channel does not change with the toggle, and labelling it
+    // "(self)" would promise a figure that does not exist.
+    const suffix = physScope(context) === 'self' ? ' (self)' : ' (subtree)'
     return [
-      { label: `small area${suffix}`, swatch: heatRampColor(0), kind: 'fill' },
-      { label: `large area${suffix}`, swatch: heatRampColor(1), kind: 'fill' },
+      { label: 'small area', swatch: heatRampColor(0), kind: 'fill' },
+      { label: 'large area', swatch: heatRampColor(1), kind: 'fill' },
       { label: `low power${suffix}`, swatch: heatRampColor(0), kind: 'stroke' },
       { label: `high power${suffix}`, swatch: heatRampColor(1), kind: 'stroke' },
       { label: 'not measured', swatch: heatNoneColor(), kind: 'fill' },
