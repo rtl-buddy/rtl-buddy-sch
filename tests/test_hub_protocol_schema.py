@@ -224,6 +224,9 @@ def test_phys_may_hello_and_appear_in_welcome(
         {"target": "file:rtl/fifo.sv", "metric": "expression"},
         {"target": "file:rtl/fifo.sv", "metric": "cover"},
         {"target": "file:rtl/fifo.sv", "metric": "line"},
+        {"target": "module:fifo", "by": "source"},
+        {"target": "module:fifo", "by": "elaboration"},
+        {"target": "file:rtl/fifo.sv", "metric": "branch", "line": 42, "by": "source"},
     ],
 )
 def test_cov_focus_accepts_target_plus_optional_hints(
@@ -242,6 +245,10 @@ def test_cov_focus_accepts_target_plus_optional_hints(
         {"target": "file:rtl/fifo.sv", "file": "rtl/fifo.sv"},  # closed payload
         {"target": "file:rtl/fifo.sv", "item": ""},
         {"node": "module:fifo"},  # graph_focus's payload, not this one
+        {"target": "module:fifo", "by": "elab"},  # the pane's own spelling
+        {"target": "module:fifo", "by": "sources"},  # closed enum
+        {"target": "module:fifo", "by": ""},
+        {"target": "module:fifo", "by": None},  # omit it instead; no nullable fields
     ],
 )
 def test_cov_focus_rejects_malformed_payloads(
