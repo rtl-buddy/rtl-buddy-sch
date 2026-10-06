@@ -133,7 +133,7 @@ one whose `origin` matches the event's `origin` (see §6). `kind:
 | `source_focused`        | src → all       | `{ "file": "rtl/fifo.sv", "line": 42, "col": 5 }`                      | nvim's explicit `:RtlBuddyShow` broadcast — not on every cursor move (would spam the bus). Paths are absolute.                  |
 | `diagnostics_set`       | any → all       | `{ "source": "rtl-buddy-cdc", "items": [{file, line, severity, message, [instance_path], …}] }` | Full diagnostic set for the given `source`. Latest-writer-wins per source on the hub's cache. Empty `items` clears that source. Each item carries `file`+`line` for resolution and MAY carry an `instance_path` hint so consumers map directly to a view.json node without walking source ranges. |
 | `graph_focus`           | any → all       | `{ "node": "test:verif/dma#smoke" }`                                   | Focus the design-knowledge-graph pane (§4.8) on one node of `artefacts/graph/graph.json`. `node` is a graph node id — `module:<name>`, `inst:<top>/<dot.path>`, `test:<suite>#<name>`, the vocabulary of `docs/graph-json-v1.md` (design tier) and rtl_buddy's `docs/concepts/graph.md` (config + binding tiers). A node the pane's loaded graph does not contain is a soft miss: the pane reports it and keeps its current focus, the same way an unknown overlay name is handled. The hub caches the last one and replays it on registration, so `rb hub send graph-focus NODE` before the tab is open still lands. |
-| `cov_focus`             | any → all       | `{ "target": "file:rtl/fifo.sv", "metric": "branch", "line": 42, "item": "b3" }` | Focus the coverage pane (§4.9) on one target of the run's coverage model (`GET /cov.json`). `target` is prefixed — `file:<path>` (as `/cov.json` keys files; an absolute path is accepted), `module:<name>`, `test:<suite>#<name>` — and an unprefixed string is read as a file path. `metric` (`line`, `branch`, `toggle`, `expression`, `cover`), `line`, and `item` are optional narrowing hints; omitting `metric` leaves the pane's current selection alone, and `line` (1-based) applies to a `file:` target — or a `module:` target that resolves to a single file — and is ignored, not an error, for any other target. A target the pane's loaded model does not contain is a soft miss: the pane reports it and keeps its current focus, exactly like `graph_focus`. The hub caches the last one and replays it on registration, so `rb hub send cov-focus TARGET` before the tab is open still lands. |
+| `cov_focus`             | any → all       | `{ "target": "file:rtl/fifo.sv", "metric": "branch", "line": 42, "item": "b3", "by": "source" }` | Focus the coverage pane (§4.9) on one target of the run's coverage model (`GET /cov.json`). `target` is prefixed — `file:<path>` (as `/cov.json` keys files; an absolute path is accepted), `module:<name>`, `test:<suite>#<name>` — and an unprefixed string is read as a file path. `metric` (`line`, `branch`, `toggle`, `expression`, `cover`), `line`, and `item` are optional narrowing hints; omitting `metric` leaves the pane's current selection alone, and `line` (1-based) applies to a `file:` target — or a `module:` target that resolves to a single file — and is ignored, not an error, for any other target. `by` (`elaboration`, `source`) picks the figures the pane shows, as its `figures` picker does: per elaborated module (`totals`) or per source point (`source_totals`). Omitting it leaves the pane's current choice alone, and because it is a pane-wide setting rather than part of the focus it applies even on a miss. A target the pane's loaded model does not contain is a soft miss: the pane reports it and keeps its current focus, exactly like `graph_focus`. The hub caches the last one and replays it on registration, so `rb hub send cov-focus TARGET` before the tab is open still lands. |
 | `phys_focus`            | any → all       | `{ "target": "instance:top.u_fifo", "metric": "total" }` | Focus the phys pane (§4.10) on one target of the run's physical model (`GET /phy.json`). `target` is prefixed — `instance:<hierarchical path>` (the physical model's own rootless spelling, as `/phy.json` keys its per-instance power rows; a leading `view.json.top` segment is also accepted) or `module:<name>` (its synthesis row) — and an unprefixed string is read as an instance path. `metric` (`cells`, `area`, `leakage`, `dynamic`, `total`) is an optional narrowing hint; omitting it leaves the pane's current selection alone, and `dynamic` is internal + switching summed by the pane rather than a key of its own. A target the pane's loaded model does not contain is a soft miss: the pane reports it and keeps its current focus, exactly like `cov_focus`. The hub caches the last one and replays it on registration, so `rb hub send phys-focus TARGET` before the tab is open still lands. |
 | `view_changed`          | hub → all peers | `{ "model": "ip_dtnpu_dma", "models_file": "/abs/path/to/models.yaml", "view_url": "/view.json?model=ip_dtnpu_dma" }` | Broadcast by the hub (`origin: cli`) on every active-model change — driven by a SPA `?model=` switch on `GET /view.json`, or by future file-watch refresh. Consumers refetch model-scoped state.                                                                       |
 
@@ -536,7 +536,9 @@ User flow:
    type of its own in this direction.
 4. The reverse direction is `cov_focus` (§3): `rb hub send cov-focus
    TARGET`, or any peer, points the pane at a file, module, or test —
-   optionally narrowed to one `metric`, `line`, or `item`. A
+   optionally narrowed to one `metric`, `line`, or `item`, and
+   optionally switching the pane's figures with `by` (`rb hub send
+   cov-focus TARGET --by source`). A
    `selection_changed` arriving from the SPA or the editor highlights
    the matching file's coverage.
 
@@ -545,6 +547,14 @@ Because `cov_focus` is a state event the hub caches (like
 pane when it registers. Only the latest `cov_focus` is kept —
 latest-writer-wins, one slot, no history — so a late-joining pane
 opens on the most recent target rather than replaying a backlog.
+
+`by` was added to `cov_focus` after the type shipped, as an optional
+v1-additive field. A pane that predates it ignores the key and keeps
+its figures; a sender that predates it never sets it, which a current
+pane reads as "leave the figures alone". A hub that validates against
+an older copy of this schema rejects a payload carrying `by`
+(`additionalProperties: false`), so the hub and its senders move
+together, as they do in rtl_buddy.
 
 ### 4.10 Physical-metrics pane (`phys` client, browser)
 
