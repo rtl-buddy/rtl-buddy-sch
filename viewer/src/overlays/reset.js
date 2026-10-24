@@ -39,25 +39,32 @@ export const resetOverlay = {
     }
     for (const edge of graph.edges) {
       const ov = edge.overlays && edge.overlays.reset
-      const path = svgRoot.querySelector(
-        `[data-edge-from="${cssEscape(edge.from)}"][data-edge-to="${cssEscape(edge.to)}"] path`,
+      // Every rendered group for this edge — a multi-pair CDC edge is one
+      // DOT edge per clock pair, each routed to its own grid cell
+      // (rtl-buddy-sch#197). The group's FIRST path is the visible one;
+      // the hover hit twin is inserted after it.
+      const groups = svgRoot.querySelectorAll(
+        `[data-edge-from="${cssEscape(edge.from)}"][data-edge-to="${cssEscape(edge.to)}"]`,
       )
-      if (!path) continue
-      if (enabled && ov && ov.crossing) {
-        // Only claim the edge when the clock overlay hasn't (CDC red
-        // wins on dual-issue edges — same precedence as the dot
-        // renderer). The marker attribute is the test, not the
-        // stroke colour: the colours are tokens now, so a string
-        // compare would break on a theme flip.
-        if (!path.hasAttribute('data-overlay-clock')) {
-          path.style.stroke = token('--reset-bind')
-          path.setAttribute('stroke-dasharray', '6,3')
-          path.setAttribute('data-overlay-reset', 'crossing')
+      for (const group of groups) {
+        const path = group.querySelector('path')
+        if (!path) continue
+        if (enabled && ov && ov.crossing) {
+          // Only claim the edge when the clock overlay hasn't (CDC red
+          // wins on dual-issue edges — same precedence as the dot
+          // renderer). The marker attribute is the test, not the
+          // stroke colour: the colours are tokens now, so a string
+          // compare would break on a theme flip.
+          if (!path.hasAttribute('data-overlay-clock')) {
+            path.style.stroke = token('--reset-bind')
+            path.setAttribute('stroke-dasharray', '6,3')
+            path.setAttribute('data-overlay-reset', 'crossing')
+          }
+        } else if (path.getAttribute('data-overlay-reset') === 'crossing') {
+          path.style.stroke = ''
+          path.removeAttribute('stroke-dasharray')
+          path.removeAttribute('data-overlay-reset')
         }
-      } else if (path.getAttribute('data-overlay-reset') === 'crossing') {
-        path.style.stroke = ''
-        path.removeAttribute('stroke-dasharray')
-        path.removeAttribute('data-overlay-reset')
       }
     }
   },

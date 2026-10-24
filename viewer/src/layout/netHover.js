@@ -49,14 +49,75 @@ const ANCHOR_RE = /^_(in|out)_(.+)$/
  * (compass point dropped), ``"a:out_clk"`` → ``{node: 'a', port:
  * 'out_clk'}``, ``"a:out_clk:e"`` → the same. Instance paths never
  * contain ``:``, so the first colon is the node/port boundary.
+ *
+ * A DOT-quoted side (``"top.u_a":"in_clk"``, the way ``graphToDot``
+ * writes a port reference) is accepted too: the quotes are stripped
+ * and ``\"`` / ``\\`` unescaped, and a colon *inside* the quotes stays
+ * part of the id. viz.js writes titles unquoted today, so this is the
+ * belt to the first-colon rule's braces, not the common path.
  */
 export function parseEndpoint(raw) {
   const s = typeof raw === 'string' ? raw.trim() : ''
   if (!s) return { node: '', port: null }
-  const parts = s.split(':')
+  const parts = splitUnquoted(s, ':').map(unquote)
   const node = parts[0]
-  const port = parts.length > 1 && !COMPASS.has(parts[1]) ? parts[1] : null
+  const port = parts.length > 1 && parts[1] && !COMPASS.has(parts[1]) ? parts[1] : null
   return { node, port }
+}
+
+/**
+ * Parse a whole Graphviz edge title (``from[:port[:compass]]->to[…]``)
+ * into plain node ids plus ports. Null when there is no ``->`` or
+ * either end is empty.
+ *
+ * This is the one place the title format is understood: the hover
+ * records below and the ``data-edge-from`` / ``data-edge-to`` stamps
+ * (``stampEdgeEndpoints``) both go through it, so a port-routed CDC
+ * edge (``top.u_a->top.u_b:in_clk_a``, rtl-buddy-sch#197) is keyed by
+ * the same plain ids ``graph.edges`` uses.
+ */
+export function parseEdgeTitle(title) {
+  if (typeof title !== 'string') return null
+  const sides = splitUnquoted(title, '->')
+  if (sides.length !== 2) return null
+  const from = parseEndpoint(sides[0])
+  const to = parseEndpoint(sides[1])
+  if (!from.node || !to.node) return null
+  return { from: from.node, fromPort: from.port, to: to.node, toPort: to.port }
+}
+
+// Split ``s`` on every ``sep`` that sits outside a DOT double-quoted
+// string (``\"`` inside quotes does not close them). A quote only opens
+// a string at the start of a part, so a raw title that merely contains a
+// ``"`` (Graphviz writes ids unescaped) still splits normally.
+function splitUnquoted(s, sep) {
+  const out = []
+  let start = 0
+  let quoted = false
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (quoted) {
+      if (c === '\\') i++
+      else if (c === '"') quoted = false
+    } else if (c === '"' && s.slice(start, i).trim() === '') {
+      quoted = true
+    } else if (s.startsWith(sep, i)) {
+      out.push(s.slice(start, i))
+      i += sep.length - 1
+      start = i + 1
+    }
+  }
+  out.push(s.slice(start))
+  return out
+}
+
+// ``"a\"b"`` → ``a"b``; anything not wrapped in quotes is returned trimmed.
+function unquote(part) {
+  const t = part.trim()
+  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+    return t.slice(1, -1).replace(/\\(["\\])/g, '$1')
+  }
+  return t
 }
 
 /** The scope-port net a ``_in_<net>`` / ``_out_<net>`` anchor stands for, or null. */
@@ -80,29 +141,19 @@ export function isNetLabel(text) {
  * driver port on node ``a`` can never collide.
  */
 export function describeEdge({ id, title, labels = [] }) {
-  if (!id || typeof title !== 'string') return null
-  const arrow = title.indexOf('->')
-  if (arrow < 0) return null
-  const from = parseEndpoint(title.slice(0, arrow))
-  const to = parseEndpoint(title.slice(arrow + 2))
-  if (!from.node || !to.node) return null
+  if (!id) return null
+  const ends = parseEdgeTitle(title)
+  if (!ends) return null
   const nets = new Set()
-  for (const end of [from.node, to.node]) {
+  for (const end of [ends.from, ends.to]) {
     const net = anchorNet(end)
     if (net !== null) nets.add(`net:${net}`)
   }
   for (const line of labels) {
     if (isNetLabel(line)) nets.add(`net:${line.trim()}`)
   }
-  if (from.port) nets.add(`drv:${from.node}:${from.port}`)
-  return {
-    id,
-    from: from.node,
-    fromPort: from.port,
-    to: to.node,
-    toPort: to.port,
-    nets,
-  }
+  if (ends.fromPort) nets.add(`drv:${ends.from}:${ends.fromPort}`)
+  return { id, ...ends, nets }
 }
 
 /**
@@ -175,4 +226,35 @@ export function readEdgeDescriptors(svgRoot) {
     if (rec) out.push(rec)
   }
   return out
+}
+
+/**
+ * Stamp ``data-edge-from`` / ``data-edge-to`` (plain node ids) on every
+ * rendered ``g.edge``, plus ``data-edge-from-port`` /
+ * ``data-edge-to-port`` when the title names a port.
+ *
+ * The plain ids are what ``graph.edges`` holds, so edge selection
+ * (``edgeFromEvent``) and the clock / reset overlays' attribute
+ * selectors can match an edge ``graphToDot`` routed to a per-clock grid
+ * cell. Stamping the raw title halves left ``top.u_b:in_clk_a`` there
+ * and none of the three lookups matched (rtl-buddy-sch#197). A title
+ * that does not parse leaves the group unstamped (and any earlier stamp
+ * cleared), so it reads as decoration rather than a half-keyed edge.
+ */
+export function stampEdgeEndpoints(svgRoot) {
+  if (!svgRoot) return
+  for (const group of svgRoot.querySelectorAll('g.edge')) {
+    const titleEl = group.querySelector('title')
+    const ends = parseEdgeTitle(titleEl ? titleEl.textContent : null)
+    const attrs = {
+      'data-edge-from': ends ? ends.from : null,
+      'data-edge-to': ends ? ends.to : null,
+      'data-edge-from-port': ends ? ends.fromPort : null,
+      'data-edge-to-port': ends ? ends.toPort : null,
+    }
+    for (const [name, value] of Object.entries(attrs)) {
+      if (value) group.setAttribute(name, value)
+      else group.removeAttribute(name)
+    }
+  }
 }
