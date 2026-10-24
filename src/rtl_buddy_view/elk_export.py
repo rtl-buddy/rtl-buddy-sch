@@ -61,8 +61,8 @@ from rtl_buddy_view.connectivity import (
     _RESET_NAME_RE,
     Endpoint,
     NetEdge,
+    boundary_directions,
     instance_params,
-    port_direction,
     port_width,
     port_width_expr,
     resolve_interface_port,
@@ -400,14 +400,16 @@ def _ports(
             )
             for name in sorted(bound)
         ]
+    directions = boundary_directions(module, table)
     return [
         _port_entry(
             hier.instance_path,
             port.name,
-            # An interface port's direction is its modport's folded
-            # one (rtl-buddy-sch#194, docs § 3); a wire port's is
-            # what it declares.
-            port_direction(port, table),
+            # A wire port's direction is what it declares; an
+            # interface port's is its modport's folded one, or — with
+            # no modport to say — the child modports it binds to
+            # (rtl-buddy-sch#194/#195, docs § 3).
+            directions[port.name],
             port_width(port.type_text, params) if port.port_kind == "wire" else None,
             port_width_expr(port.type_text) if port.port_kind == "wire" else None,
             # The root has no binding site: it is the sheet boundary,
