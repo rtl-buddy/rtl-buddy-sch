@@ -183,8 +183,8 @@ uv run rtl-buddy-view \
 ### Overlays — `--overlay name=path`
 
 Every overlay is dispatched through a single repeatable flag. The
-built-ins today are `clock`, `clock-tb`, `reset`, `coverage`, `phys`,
-`wave`, `axi-perf` and `hints`:
+built-ins today are `clock`, `clock-tb`, `clock-colors`, `reset`,
+`coverage`, `phys`, `wave`, `axi-perf` and `hints`:
 
 ```bash
 uv run rtl-buddy-view --list-overlays
@@ -231,6 +231,28 @@ uv run rtl-buddy-view \
 
 Without `--overlay clock=…` (or with an empty map), output is
 byte-identical to the un-annotated case.
+
+Each clock in a figure gets a **distinct** pastel swatch, dealt in
+sorted clock-name order (the same rule the hub canvas uses), so two
+domains of one diagram never share a colour while swatches last;
+only a design with more than seven clocks falls back to a stable
+name hash. To *choose* colours — a document set where `s_clk` is
+always blue — pass a `clock-colors` overlay, or put
+`// rbsch: clock color=blue` on the clock's port:
+
+```bash
+cat > clock-colors.json <<'JSON'
+{"schema_version": "1.0", "clocks": {"s_clk": "blue", "f_clk": "#fde68a"}}
+JSON
+uv run rtl-buddy-view --top soc_top --filelist soc.f \
+    --overlay clock=domain_map.json --overlay clock-colors=clock-colors.json \
+    --format dot --block-diagram --clock-legend
+```
+
+Colours are a swatch name (`blue`, `green`, `yellow`, `pink`,
+`purple`, `orange`, `cyan`) or `#rrggbb`. The fills, cluster
+outlines, crossing cells, legend and `--format mermaid` styles of one
+figure all use the same assignment.
 
 ### Reset-domain overlay (consuming `--overlay reset=…`)
 
@@ -440,11 +462,12 @@ rtl-buddy-view [OPTIONS]
                         Parser frontend. [default: verible]
                         (slang activation is a Phase 2 follow-up.)
 --overlay name=path     Apply the named overlay. Repeatable.
-                        Built-ins: axi-perf, clock, clock-tb,
-                        coverage, hints, phys, reset, wave.
+                        Built-ins: axi-perf, clock, clock-colors,
+                        clock-tb, coverage, hints, phys, reset, wave.
                         Examples: --overlay clock=clock-map.json
                                   --overlay reset=reset-map.json
                                   --overlay phys=phys-manifest.json
+                                  --overlay clock-colors=colors.json
 --list-overlays         List registered overlays + their schema
                         versions and exit.
 --cdc-annotations PATH  (Deprecated; use --overlay clock=PATH.)
@@ -457,6 +480,18 @@ rtl-buddy-view [OPTIONS]
                         sibling dataflow — instead of the
                         instantiation tree. Warns and is ignored for
                         other formats.
+--prune-flags           With --block-diagram: draw no boundary flag
+                        for a root port no edge lands on (clock /
+                        reset ports whose edges the classifier
+                        drops). Flags an edge or CDC / RDC arrow
+                        names are always kept. Warns and is ignored
+                        without --block-diagram.
+--params [all|none]     Dot and mermaid: which parameter overrides
+                        each box shows. all (default) = every one,
+                        narrowed by `// rbsch: params=…` pragmas;
+                        none = no parameter rows anywhere. JSON / ELK
+                        payloads always carry every override. Warns
+                        and is ignored for other formats.
 --no-pragmas            Ignore in-source `// rbsch:` diagram pragmas
                         (leaf / collapse / hide / label=…), which are
                         otherwise scanned from the filelist's sources
@@ -484,7 +519,14 @@ module ip_cdc_sync #(parameter int STAGES = 2) (…);
 
 `leaf` / `collapse` / `hide` rewrite the hierarchy graph, so `tree`,
 `dot`, `mermaid` and `json` all agree on what exists; `label` retitles
-the box in the dot renderer. The same vocabulary loads from a JSON
+the box in the dot renderer.
+
+For integration tops, `params=none` / `params="W,DEPTH"` trims a
+box's parameter rows, `hide` on a root port drops its boundary flag,
+`bundle=apb` on a group of root ports draws them as one flag, and
+`// rbsch: clock color=blue` pins a clock's colour — together with
+`--params none` and `--prune-flags` they turn a generated
+`--block-diagram` into a document figure. The same vocabulary loads from a JSON
 sidecar for IP whose source can't carry comments, and wins on
 conflict:
 

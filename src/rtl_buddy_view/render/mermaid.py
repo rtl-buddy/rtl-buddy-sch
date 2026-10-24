@@ -23,6 +23,7 @@ labels so the slug is purely a layout-engine concern.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import IO
 
 from rtl_buddy_view.annotations import DomainMap
@@ -32,6 +33,7 @@ from rtl_buddy_view.render.dot import (
     _format_cdc_summary,
     _format_rdc_summary,
     _palette_color,
+    figure_clock_colors,
 )
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 
@@ -49,6 +51,7 @@ def render(
     *,
     domain_map: DomainMap | None = None,
     reset_map: ResetDomainMap | None = None,
+    clock_colors: Mapping[str, str] | None = None,
 ) -> None:
     """Render ``node`` and its subtree as a mermaid flowchart.
 
@@ -59,6 +62,11 @@ def render(
     Dual-issue (CDC + RDC) edges stay CDC-red on the stroke; the RDC
     marker rides on the label only — same precedence as the dot
     renderer.
+
+    Clock fills come from the same per-figure assignment as the dot
+    renderer (:func:`rtl_buddy_view.render.dot.figure_clock_colors`):
+    ``clock_colors`` pins the author's chosen colours, every other
+    clock gets a distinct swatch in sorted order (rtl-buddy-sch#196).
     """
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
     active_reset_map = reset_map if reset_map is not None else None
@@ -66,7 +74,8 @@ def render(
     out.write("flowchart TB\n")
     _emit_node(node, out, active_map, active_reset_map)
     _emit_edges(node, out, active_map, active_reset_map)
-    _emit_styles(node, out, active_map, active_reset_map)
+    with figure_clock_colors(active_map, clock_colors):
+        _emit_styles(node, out, active_map, active_reset_map)
     out.write("```\n")
 
 
@@ -93,8 +102,8 @@ def _label(
 ) -> str:
     inst_name = node.instance.name if node.instance is not None else node.module_name
     parts = [_escape(inst_name), _escape(node.module_name)]
-    if node.instance is not None and node.instance.param_overrides:
-        parts.append(_format_param_overrides(node.instance.param_overrides))
+    if node.shown_param_overrides:
+        parts.append(_format_param_overrides(node.shown_param_overrides))
     if domain_map is not None:
         clock = domain_map.predominant_clock(node.instance_path)
         if clock is not None:

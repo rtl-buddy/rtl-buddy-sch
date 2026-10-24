@@ -12,7 +12,9 @@ describes.
 > ships this vocabulary in five phases: abstraction control and
 > semantic labels (1), net classification (2), named bundles (3),
 > layout hints (4) and blackbox pin pinning (5) — all documented
-> below.
+> below. [#196](https://github.com/rtl-buddy/rtl-buddy-sch/issues/196)
+> added the block-diagram presentation words (`params=`, `hide` and
+> `bundle=` on root ports, `color=` on clocks).
 
 ## The `rb` prefix convention
 
@@ -46,7 +48,8 @@ every other tool.
   `hide`), the **net** vocabulary classifies wires (`clock`,
   `reset`, `data`, `main`, `side`).
 - `key=value` words carry a value: `label="CSR block (PeakRDL)"`,
-  `rank=2` and `group=frontend` (box), `bundle=cmd_bus` (net).
+  `rank=2`, `group=frontend` and `params=W,DEPTH` (box),
+  `bundle=cmd_bus` and `color=blue` (net).
   Quoting follows shell rules (single or double quotes), so a value
   with spaces must be quoted.
 - Only `//` line comments are scanned; `/* rbsch: … */`
@@ -109,6 +112,13 @@ Two net-specific refinements:
 - Ports are net targets too: a clock is very often a port of the
   scope being drawn, and a trailing `// rbsch: clock` on the port
   declaration is the natural spelling.
+- `hide` is a box word, but it can also name a **port** (#196). It
+  keeps every binding it has always had — the instance on its line,
+  or the next module / instance below it even past a plain `logic`
+  declaration — and binds to a port instead only where a port
+  declaration is the nearer target: on the pragma's own line with no
+  module or instance starting there, or, for a standalone pragma, the
+  next declaration below it before any module or instance starts.
 - So are **interfaces** — an interface instance (`cfg_if cfg ();`)
   or an interface port of the scope. The block diagram treats each
   member an instance binds (`.en(cfg.a_en)`, `.sta(q[1].c_sta)`) as
@@ -329,6 +339,108 @@ edge. `in=` / `out=` recover what the author knows:
 - Deliberately no `inout`: the hint exists to recover a *dataflow*
   direction, and a bidirectional claim recovers nothing.
 
+## Presentation vocabulary — integration tops (#196)
+
+An integration top passes most parameters explicitly and has dozens
+of ports, so a raw `--block-diagram` of one is boxes full of
+parameter tables framed by two long columns of flags, many with
+nothing attached. These words, plus the `--params` and
+`--prune-flags` CLI flags, trim it to a figure fit for a document.
+
+| pragma | valid on | effect |
+|---|---|---|
+| `params=none` / `params=all` / `params="W,DEPTH"` | module or instance | which parameter overrides the box shows: none, all, or just the named ones |
+| `hide` | port of the diagram root | no boundary flag for the port, and no edge to it |
+| `bundle=<name>` | ports of the diagram root | the ports render as **one** flag labelled `<name>` |
+| `color=<name or #rrggbb>` | clock net or port | the clock's fill / legend colour |
+
+```systemverilog
+module soc_top (
+    // rbsch: bundle=s_dom
+    input  logic        s_clk,    // rbsch: clock color=blue
+    input  logic        s_rst_n,
+
+    // rbsch: bundle=apb
+    input  logic        psel,
+    input  logic [11:0] paddr,
+    input  logic [31:0] pwdata,
+    output logic [31:0] prdata,
+    output logic        pready,
+
+    input  logic        dbg_en,   // rbsch: hide
+    …
+);
+  apb_regs #(.AW(12), .DW(32), .DEPTH(16)) u_regs (…);  // rbsch: params=none
+```
+
+### `params=`
+
+- `none` hides every parameter row, `all` shows every one (the
+  default), and a comma-separated name list keeps just those rows in
+  the source's override order. A name list drops positional
+  overrides: they have no name to match.
+- On a module it covers every placement; an instance's own `params=`
+  wins, like `label`. A name the module doesn't declare warns (and is
+  kept, in case the module comes from a different filelist next run).
+- Display only. `Instance.param_overrides`, the JSON nodes' contract
+  `param_overrides` and the ELK payload keep every override. The dot
+  renderer (every mode, including the JSON-embedded layout) and the
+  mermaid renderer honour it.
+- The CLI's `--params none` (dot and mermaid) is the figure-wide
+  switch: no parameter rows anywhere, whatever the pragmas say.
+  `--params all`, the default, is the pre-#196 output narrowed only
+  by `params=` pragmas.
+
+### Root ports: `hide`, `bundle=` and `--prune-flags`
+
+Both words act on the **block diagram's root frame** (`--block-diagram`),
+the one place ports draw as boundary flags; on a port of any other
+module they are inert until that module is the root.
+
+- `hide` drops the flag, every dataflow edge to it, and any CDC / RDC
+  overlay arrow out of it (the destination keeps its `⚠CDC` / `⚠RDC`
+  summary). The edges go too, so no edge can name a flag that
+  doesn't exist.
+- Ports sharing a `bundle=` name — an APB group, a domain's clock and
+  reset — render as **one** flag labelled with the bundle name, placed
+  where its first member is declared. It uses the net `bundle=`
+  semantics: the flag faces the bundle's payload direction (more bits
+  wins, port count when a member's width is unknown; a tie is a `↔`
+  flag), the member edges to one block merge into one thick edge
+  labelled with the bundle name, and its return path (`prdata`,
+  `pready`) folds into the data direction. Overlay arrows out of a
+  bundled port leave the bundle's flag.
+- `--prune-flags` (CLI, block diagram only) drops every root flag no
+  edge lands on — the clock and reset ports whose groups the
+  classifier drops are the usual case. A flag any edge or CDC / RDC
+  arrow names is kept. It is opt-in: a flag with no edge still
+  documents the block's interface, and the default output stays
+  byte-identical for existing figures.
+- The ELK export (`--format elk`) still lists every root pin: it is
+  the schematic canvas's data, not the document figure.
+
+### `color=`
+
+- `// rbsch: clock color=blue` on a clock's port (or net) of the
+  diagram root — or of the clock map's `design_top` — pins that
+  clock's colour. It colours the clock of the same name and every
+  clock whose `ports` list names the net.
+- Values are a swatch name (`blue`, `green`, `yellow`, `pink`,
+  `purple`, `orange`, `cyan` — the palette's pastels, not X11's
+  saturated colours) or `#rrggbb`. Anything else warns and is
+  dropped. `color=` on a net the same pragma calls `data` or `reset`
+  warns: only clocks are coloured.
+- The `clock-colors` overlay (`--overlay clock-colors=map.json`) does
+  the same keyed by clock name, for a document set whose figures must
+  agree; it wins over a pragma.
+- Every clock without a chosen colour gets a **distinct** swatch:
+  the swatches are dealt in sorted clock-name order, skipping any a
+  chosen colour took. Only a figure with more clocks than free
+  swatches falls back to the stable name hash. The node fills,
+  cluster outlines, two-tone crossing fills, crossing grid cells,
+  signal edges and `--clock-legend` of one dot figure all read the
+  same assignment, as does `--format mermaid`.
+
 ## Sidecar JSON
 
 Vendor and generated IP can't take a comment. The same vocabulary
@@ -342,21 +454,22 @@ rtl-buddy-view --top demo_tiny_alu_subsys_top \
 
 ```json
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "modules": {
     "ip_cdc_sync": { "leaf": true },
     "demo_tiny_alu_subsys_csr": { "label": "CSR block (PeakRDL)" },
-    "vendor_rom": { "in": ["addr"], "out": ["q"] }
+    "vendor_rom": { "in": ["addr"], "out": ["q"], "params": "none" }
   },
   "instances": {
-    "demo_tiny_alu_subsys_top.u_afifo": { "collapse": true },
+    "demo_tiny_alu_subsys_top.u_afifo": { "collapse": true, "params": ["DEPTH"] },
     "demo_tiny_alu_subsys_top.u_dbg_tap": { "hide": true },
     "demo_tiny_alu_subsys_top.u_compute": { "label": "ALU datapath", "rank": 2 }
   },
   "nets": {
-    "demo_tiny_alu_subsys_top.tick": { "classification": "clock" },
+    "demo_tiny_alu_subsys_top.tick": { "classification": "clock", "color": "blue" },
     "demo_tiny_alu_subsys_top.result_bus": { "emphasis": "main" },
-    "demo_tiny_alu_subsys_top.cmd_valid": { "bundle": "cmd_bus" }
+    "demo_tiny_alu_subsys_top.cmd_valid": { "bundle": "cmd_bus" },
+    "demo_tiny_alu_subsys_top.dbg_en": { "hide": true }
   }
 }
 ```
@@ -369,7 +482,12 @@ rtl-buddy-view --top demo_tiny_alu_subsys_top \
   one of `"clock"` / `"reset"` / `"data"`, `"emphasis"` is `"main"`
   or `"side"` (invalid values raise — they would otherwise silently
   classify nothing), and `"bundle"` is the wire-group name, where
-  `""` is the explicit revoke of an in-source membership.
+  `""` is the explicit revoke of an in-source membership. `"hide"`
+  (a boolean) hides a root port's flag, and `"color"` is a clock
+  colour in the pragma's spellings (`""` revokes; anything else that
+  isn't a colour raises).
+- `"params"` (modules and instances, schema 1.2) is `"all"`,
+  `"none"` or an array of parameter names; `[]` means `"none"`.
 - Every entry field is optional. An absent field means "says
   nothing", which is what lets a sidecar `"leaf": false` *revoke* an
   in-source `leaf` (or `"classification": "data"` revoke an

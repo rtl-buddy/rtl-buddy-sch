@@ -30,21 +30,33 @@ graph; goldens diff cleanly across runs.
 
 from __future__ import annotations
 
-import hashlib
+import dataclasses
+import io
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import IO
 
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.axi_perf_annotations import AxiPerfMap
+from rtl_buddy_view.clock_colors import (
+    CLOCK_PALETTE,
+    assign_clock_colors,
+    domain_map_clocks,
+    hash_color,
+)
 from rtl_buddy_view.connectivity import (
     _CLOCK_NAME_RE,
     _RESET_NAME_RE,
     Endpoint,
     NetEdge,
+    _fold_bundle_returns,
     boundary_directions,
+    module_param_defaults,
+    port_width,
     scope_connectivity,
 )
 from rtl_buddy_view.extractor import (
@@ -66,21 +78,44 @@ entries followed by ``…(+N more)`` so the diagram stays readable on
 wide bus interfaces. The data model itself is untouched."""
 
 # A small palette of distinct pastel fills tuned for legibility on
-# both light and dark backgrounds. Hash-mapped to clock names so the
-# same clock always lands in the same color across runs — handy when
-# diffing diagrams across SDC edits. Pinned to seven entries: more
-# would dilute legibility, and an RTL with eight or more distinct
-# clocks is realistically going to need a hierarchical overlay
-# anyway (filed as a Phase 3 follow-up).
-_CLOCK_PALETTE: tuple[str, ...] = (
-    "#dbeafe",  # blue
-    "#dcfce7",  # green
-    "#fef9c3",  # yellow
-    "#fce7f3",  # pink
-    "#ede9fe",  # purple
-    "#fed7aa",  # orange
-    "#cffafe",  # cyan
+# both light and dark backgrounds, now owned by
+# :mod:`rtl_buddy_view.clock_colors`. A figure deals the swatches out
+# to its clocks (chosen colours first, the rest in sorted order) so no
+# two domains of one figure collide; the name hash is the fallback
+# for a figure with more clocks than swatches (rtl-buddy-sch#196).
+_CLOCK_PALETTE: tuple[str, ...] = CLOCK_PALETTE
+
+#: The clock → colour assignment of the figure being rendered, set by
+#: :func:`figure_clock_colors` for the duration of one ``render`` call.
+#: Render-scoped context rather than a parameter on every helper: a
+#: clock is coloured from a dozen places (fills, cluster outlines, the
+#: two-tone crossings, grid cells, signal edges, the legend), and they
+#: must all read the *same* assignment. A context variable is reset on
+#: exit, so a nested render (``json_render`` embeds one) can't leak.
+_FIGURE_COLORS: ContextVar[Mapping[str, str] | None] = ContextVar(
+    "_FIGURE_COLORS", default=None
 )
+
+
+@contextmanager
+def figure_clock_colors(
+    domain_map: DomainMap | None, chosen: Mapping[str, str] | None = None
+) -> Iterator[None]:
+    """Fix one figure's clock colours for the duration of the block.
+
+    Shared by the dot and mermaid renderers so both assign the same
+    way: ``chosen`` (author-picked, see
+    :func:`rtl_buddy_view.clock_colors.chosen_clock_colors`) first,
+    then every other clock the domain map names, dealt the swatches in
+    sorted order.
+    """
+    clocks = domain_map_clocks(domain_map) if domain_map is not None else ()
+    token = _FIGURE_COLORS.set(assign_clock_colors(clocks, chosen))
+    try:
+        yield
+    finally:
+        _FIGURE_COLORS.reset(token)
+
 
 _DEFAULT_FILL = "#f5f5f5"
 _BLACKBOX_FILL = "#fff8e0"
@@ -111,6 +146,8 @@ def render(
     block_diagram: bool = False,
     module_table: ModuleTable | None = None,
     hints: HintMap | None = None,
+    clock_colors: Mapping[str, str] | None = None,
+    prune_flags: bool = False,
 ) -> None:
     """Render ``node`` and its subtree as a Graphviz ``.dot`` digraph.
 
@@ -167,8 +204,49 @@ def render(
     - A dashed-orange RDC edge / arrow for crossings — distinct from
       the dashed-red CDC marker so a node that is both a CDC and RDC
       destination reads at a glance.
+
+    ``clock_colors`` maps clock name → colour for the clocks the author
+    chose a colour for (rtl-buddy-sch#196); every other clock in the
+    domain map is dealt a distinct swatch in sorted order
+    (:func:`figure_clock_colors`). Only consulted with a domain map.
+
+    ``prune_flags`` (block diagram only, rtl-buddy-sch#196) drops every
+    root boundary flag that no edge in the figure lands on — clock and
+    reset ports whose edges the dataflow classifier dropped are the
+    usual case. A flag any edge or overlay arrow names is always kept.
     """
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
+    with figure_clock_colors(active_map, clock_colors):
+        _render_figure(
+            node,
+            out,
+            active_map,
+            reset_map,
+            axi_perf_map=axi_perf_map,
+            with_legend=with_legend,
+            as_cluster_tree=as_cluster_tree,
+            block_diagram=block_diagram,
+            module_table=module_table,
+            hints=hints,
+            prune_flags=prune_flags,
+        )
+
+
+def _render_figure(
+    node: HierNode,
+    out: IO[str],
+    active_map: DomainMap | None,
+    reset_map: ResetDomainMap | None,
+    *,
+    axi_perf_map: AxiPerfMap | None,
+    with_legend: bool,
+    as_cluster_tree: bool,
+    block_diagram: bool,
+    module_table: ModuleTable | None,
+    hints: HintMap | None,
+    prune_flags: bool,
+) -> None:
+    """:func:`render`'s body, inside the figure's clock-colour scope."""
     active_reset_map = reset_map if reset_map is not None else None
     if block_diagram and module_table is not None:
         # An interface instance is the wire between the blocks bound
@@ -231,6 +309,7 @@ def render(
         block_diagram=block_diagram,
         module_table=module_table,
         hints=hints,
+        prune_flags=prune_flags,
     )
     if with_legend and active_map is not None:
         _emit_legend(active_map, out)
@@ -247,8 +326,17 @@ def _emit_top_frame(
     block_diagram: bool = False,
     module_table: ModuleTable | None = None,
     hints: HintMap | None = None,
+    prune_flags: bool = False,
 ) -> None:
-    """Emit the top module as a titled cluster with port-rank anchors."""
+    """Emit the top module as a titled cluster with port-rank anchors.
+
+    In block-diagram mode the root's boundary flags are
+    :func:`_root_flags` — one per visible port, or one per root-port
+    ``bundle=`` — and the edges are written to a buffer first, so
+    ``prune_flags`` can keep exactly the flags they name. The buffer is
+    written back at the same place in the output, so the bytes are
+    unchanged when nothing is pruned.
+    """
     title = _escape(top.module_name)
     clocks_in_subtree = (
         _clocks_under(top.instance_path, domain_map) if domain_map is not None else ()
@@ -282,9 +370,37 @@ def _emit_top_frame(
     # would inflate every cluster.
     out.write('    margin="20,20";\n')
 
-    _emit_port_anchors(
-        top, out, module_table=module_table, bundle_interfaces=block_diagram
-    )
+    flags: tuple[_RootFlag, ...] = ()
+    edge_text = ""
+    if block_diagram:
+        flags = _root_flags(top, module_table, hints)
+        edge_buf = io.StringIO()
+        _emit_connectivity_edges(top, edge_buf, module_table, hints, flags=flags)
+        flag_ids = _flag_ids_by_port(flags, top)
+        _emit_top_cdc_arrows(
+            top,
+            edge_buf,
+            domain_map,
+            as_cluster_tree=as_cluster_tree,
+            flag_ids=flag_ids,
+        )
+        if reset_map is not None:
+            _emit_top_rdc_arrows(
+                top,
+                edge_buf,
+                reset_map,
+                as_cluster_tree=as_cluster_tree,
+                flag_ids=flag_ids,
+            )
+        edge_text = edge_buf.getvalue()
+        if prune_flags:
+            referenced = {
+                end for pair in _EDGE_LINE_RE.findall(edge_text) for end in pair
+            }
+            flags = tuple(f for f in flags if f.node_id in referenced)
+        _emit_root_flags(flags, out)
+    else:
+        _emit_port_anchors(top, out, module_table=module_table)
 
     # The grid packer (#138) only has a job in cluster-tree mode: the
     # box-and-arrow tree has parent→child edges to rank by, and the
@@ -296,9 +412,7 @@ def _emit_top_frame(
         # The port anchors flank the child grid: one rank of them on
         # the left, one on the right. Their combined width and their
         # (taller of the two) height are what the packer sizes against.
-        inputs, outputs = _split_ports(
-            top, module_table=module_table, bundle_interfaces=block_diagram
-        )
+        inputs, outputs = _split_ports(top, module_table=module_table)
         in_w, in_h = _port_anchor_extent([p.name for p in inputs])
         out_w, out_h = _port_anchor_extent([p.name for p in outputs])
         pack_frame = _PackFrame(
@@ -347,15 +461,19 @@ def _emit_top_frame(
         # connectivity analyzer already reaches top ports as
         # first-class endpoints, and it traces slices, field selects
         # and assign aliases that the bare-identifier match cannot.
-        # Running both would double every port edge.
-        _emit_connectivity_edges(top, out, module_table, hints)
-    else:
-        # Port → child signal-flow edges: when a child's port connection
-        # has a bare-identifier net that matches a top input/output port
-        # name, draw a thin clock-keyed edge between the port anchor and
-        # the child. Clock and reset ports are skipped (they fan out to
-        # nearly every flop and bury the data flow).
-        _emit_port_signal_edges(top, out, domain_map, as_cluster_tree=as_cluster_tree)
+        # Running both would double every port edge. The dataflow,
+        # CDC and RDC edges were rendered into ``edge_text`` above, in
+        # this same order.
+        out.write(edge_text)
+        out.write("  }\n")
+        return
+
+    # Port → child signal-flow edges: when a child's port connection
+    # has a bare-identifier net that matches a top input/output port
+    # name, draw a thin clock-keyed edge between the port anchor and
+    # the child. Clock and reset ports are skipped (they fan out to
+    # nearly every flop and bury the data flow).
+    _emit_port_signal_edges(top, out, domain_map, as_cluster_tree=as_cluster_tree)
 
     # CDC arrow: dashed-red overlay edge from input port anchor to
     # the child carrying an async crossing. Drawn AFTER the
@@ -543,8 +661,15 @@ def _emit_connectivity_edges(
     out: IO[str],
     module_table: ModuleTable | None,
     hints: HintMap | None = None,
+    *,
+    flags: Sequence[_RootFlag] | None = None,
 ) -> None:
     """Emit block-diagram dataflow edges for every resolved scope.
+
+    ``flags`` are the root frame's :func:`_root_flags`; the top scope's
+    port endpoints resolve to them (a hidden port's edges drop, a
+    bundled port's edges land on its bundle flag). ``None`` computes
+    them.
 
     Walks the whole tree, not just the top: a cluster with children of
     its own is a scope in its own right, and its internal wiring is
@@ -557,7 +682,9 @@ def _emit_connectivity_edges(
     """
     if module_table is None:
         return
-    _emit_scope_connectivity(top, out, module_table, hints, is_top=True)
+    if flags is None:
+        flags = _root_flags(top, module_table, hints)
+    _emit_scope_connectivity(top, out, module_table, hints, is_top=True, flags=flags)
 
 
 def _emit_scope_connectivity(
@@ -567,6 +694,7 @@ def _emit_scope_connectivity(
     hints: HintMap | None,
     *,
     is_top: bool,
+    flags: Sequence[_RootFlag] = (),
 ) -> None:
     """Emit one scope's sibling edges, then recurse into its children."""
     if node.module is not None and node.children:
@@ -575,8 +703,8 @@ def _emit_scope_connectivity(
             for child in node.children
             if child.instance is not None
         }
-        port_directions = (
-            _boundary_directions(node, table)
+        port_directions: Mapping[str, str | None] = (
+            {f.key: f.direction for f in flags}
             if is_top
             else {p.name: p.direction for p in node.module.ports}
         )
@@ -584,9 +712,17 @@ def _emit_scope_connectivity(
             hints.nets_for_module(node.module_name) if hints is not None else None
         )
         pin_hints = hints.pin_directions_for(node.module) if hints is not None else None
-        for edge in scope_connectivity(
+        edges: Sequence[NetEdge] = scope_connectivity(
             node.module, table, net_hints=net_hints, pin_hints=pin_hints
-        ):
+        )
+        if is_top:
+            port_keys: dict[str, str | None] = {p.name: None for p in node.module.ports}
+            for flag in flags:
+                for member in flag.members:
+                    port_keys[member] = flag.key
+            if any(port_keys[p] != p for p in port_keys):
+                edges = _regroup_root_edges(edges, port_keys)
+        for edge in edges:
             src = _endpoint_ref(edge.src, children, port_directions, is_top=is_top)
             dst = _endpoint_ref(edge.dst, children, port_directions, is_top=is_top)
             if src is None or dst is None or src[0] == dst[0]:
@@ -631,9 +767,9 @@ def _endpoint_ref(
     if direction in ("output", "inout"):
         return (f"_out_{name}", None)
     # Inputs and undecided ports (bidirectional flags) both anchor on
-    # the source rank. ``port_directions`` is the same
-    # :func:`_boundary_directions` map :func:`_split_ports` sorts the
-    # flags by, so every id returned here is a declared flag.
+    # the source rank. At the top, ``port_directions`` is keyed by the
+    # same :func:`_root_flags` the flag emitter draws, so every id
+    # returned here is a declared flag.
     return (f"_in_{name}", None)
 
 
@@ -728,29 +864,20 @@ def _split_ports(
     top: HierNode,
     *,
     module_table: ModuleTable | None,
-    bundle_interfaces: bool,
 ) -> tuple[list[Port], list[Port]]:
     """The top module's port anchors, split into source / sink ranks.
 
-    Shared by :func:`_emit_port_anchors` (which draws them) and
-    :func:`_emit_top_frame` (which needs their extent to size the
-    child grid) so the two can never disagree about what an anchor is.
+    The box-and-arrow and cluster-tree frames' anchors (interface ports
+    flattened per signal); the block diagram's flags are
+    :func:`_root_flags`. Shared by :func:`_emit_port_anchors` (which
+    draws them) and :func:`_emit_top_frame` (which needs their extent
+    to size the child grid) so the two can never disagree about what
+    an anchor is.
     """
     if top.module is None or not top.module.ports:
         return ([], [])
-    if bundle_interfaces:
-        # Every port gets a flag (rtl-buddy-sch#195): an interface port
-        # on the side its boundary direction says, and a port nothing
-        # settles on the source rank as a bidirectional flag — never
-        # an undeclared node an edge would conjure up as a stray box.
-        directions = _boundary_directions(top, module_table)
-        ports = top.module.ports
-        inputs = [p for p in ports if directions[p.name] not in ("output", "inout")]
-        outputs = [p for p in ports if directions[p.name] in ("output", "inout")]
-        return (inputs, outputs)
-    else:
-        ports = flatten_interface_ports(top.module, module_table)
-        inputs = [p for p in ports if p.direction == "input"]
+    ports = flatten_interface_ports(top.module, module_table)
+    inputs = [p for p in ports if p.direction == "input"]
     outputs = [p for p in ports if p.direction in ("output", "inout")]
     return (inputs, outputs)
 
@@ -784,9 +911,11 @@ def _emit_port_anchors(
     out: IO[str],
     *,
     module_table: ModuleTable | None = None,
-    bundle_interfaces: bool = False,
 ) -> None:
     """Emit input/output port markers in source/sink rank groups.
+
+    The box-and-arrow and cluster-tree frames' anchors; the block
+    diagram draws :func:`_root_flags` instead (:func:`_emit_root_flags`).
 
     Input ports anchor to ``rank=source`` (left edge under LR), output
     and inout ports to ``rank=sink`` (right edge). Anchors are
@@ -804,59 +933,291 @@ def _emit_port_anchors(
     ``direction=None``, which excludes them from the input/output
     filters) — matching the pre-#105 behaviour for back-compat with
     callers that don't have a table on hand. (#105.)
-
-    ``bundle_interfaces`` (block-diagram mode) suppresses that
-    flattening: an interface port stays one anchor, because a block
-    diagram's terminal for an APB port is the bus, not its eleven
-    constituent wires — and the connectivity analyzer treats the
-    bundle as a single endpoint. Its side comes from its boundary
-    direction (rtl-buddy-sch#195): ``bus_if.src out_bus`` is an
-    ``_out_`` flag on the sink rank, ``bus_if gen`` bound to a ``snk``
-    child an ``_in_`` flag, and a port nothing orients a bidirectional
-    ``↔`` flag on the source rank. Every port is declared, so no edge
-    can name a node Graphviz would invent as a stray box.
     """
-    inputs, outputs = _split_ports(
-        top, module_table=module_table, bundle_interfaces=bundle_interfaces
+    inputs, outputs = _split_ports(top, module_table=module_table)
+    _write_flag_ranks(
+        [(p.name, p.name, "▶") for p in inputs],
+        [(p.name, p.name, "▶") for p in outputs],
+        out,
     )
-    if not inputs and not outputs:
-        return
 
-    directions = _boundary_directions(top, module_table) if bundle_interfaces else {}
+
+def _write_flag_ranks(
+    inputs: Sequence[tuple[str, str, str]],
+    outputs: Sequence[tuple[str, str, str]],
+    out: IO[str],
+) -> None:
+    """Write the source / sink rank groups of ``(key, label, glyph)`` flags.
+
+    Input flags are ``_in_<key>``, output flags ``_out_<key>``. An empty
+    rank writes nothing, so a frame with no flags emits no rank group.
+    """
     if inputs:
         # Right-edge alignment: pad each name on the LEFT to the max
         # name width so all ``▶`` glyphs land in the same column under
         # the monospace font. Padding has to be applied after
         # ``_escape`` since the escape pass would otherwise collapse
         # the padding spaces.
-        escaped = {p.name: _escape(p.name) for p in inputs}
-        max_w = max((len(s) for s in escaped.values()), default=0)
+        max_w = max(len(_escape(label)) for _, label, _ in inputs)
         out.write("    { rank=source;\n")
-        for p in inputs:
-            padded = escaped[p.name].rjust(max_w)
-            glyph = (
-                _BIDIR_GLYPH
-                if bundle_interfaces and directions.get(p.name) is None
-                else "▶"
-            )
+        for key, label, glyph in inputs:
+            padded = _escape(label).rjust(max_w)
             out.write(
-                f'      "_in_{p.name}" '
+                f'      "_in_{key}" '
                 f'[shape=plaintext, label="{padded} {glyph}", fontsize=9];\n'
             )
         out.write("    }\n")
     if outputs:
         # Left-edge alignment: pad each name on the RIGHT instead, so
         # the ``▶`` glyph leading each output label forms a column.
-        escaped = {p.name: _escape(p.name) for p in outputs}
-        max_w = max((len(s) for s in escaped.values()), default=0)
+        max_w = max(len(_escape(label)) for _, label, _ in outputs)
         out.write("    { rank=sink;\n")
-        for p in outputs:
-            padded = escaped[p.name].ljust(max_w)
+        for key, label, glyph in outputs:
+            padded = _escape(label).ljust(max_w)
             out.write(
-                f'      "_out_{p.name}" '
-                f'[shape=plaintext, label="▶ {padded}", fontsize=9];\n'
+                f'      "_out_{key}" '
+                f'[shape=plaintext, label="{glyph} {padded}", fontsize=9];\n'
             )
         out.write("    }\n")
+
+
+@dataclass(frozen=True)
+class _RootFlag:
+    """One boundary flag on a block diagram's root frame.
+
+    ``key`` is the endpoint name the flag answers to: the port's own
+    name, or ``$<bundle>`` for a flag standing for a root-port
+    ``bundle=`` group — ``$`` can't start an SV identifier, so a bundle
+    flag can never take a port's id. ``members`` are the ports it
+    stands for, in declaration order.
+    """
+
+    key: str
+    label: str
+    direction: str | None
+    members: tuple[str, ...]
+
+    @property
+    def is_output(self) -> bool:
+        return self.direction in ("output", "inout")
+
+    @property
+    def node_id(self) -> str:
+        return f"_out_{self.key}" if self.is_output else f"_in_{self.key}"
+
+
+#: An edge line of this renderer's own output: ``"a" -> "b"``. The
+#: same grammar ``tests/test_dot_declared_nodes.py`` checks.
+_EDGE_LINE_RE = re.compile(r'^\s*"([^"]+)"\s*->\s*"([^"]+)"', re.M)
+
+
+def _root_flags(
+    top: HierNode, module_table: ModuleTable | None, hints: HintMap | None
+) -> tuple[_RootFlag, ...]:
+    """The root frame's boundary flags in block-diagram mode.
+
+    Every port gets a flag (rtl-buddy-sch#195) on the side its
+    :func:`_boundary_directions` entry says, with a port nothing
+    settles drawn as a bidirectional ``↔`` flag on the source rank —
+    never an undeclared node an edge would conjure up as a stray box.
+    Two root-port hints reshape that (rtl-buddy-sch#196):
+
+    * ``hide`` drops the port's flag; the edge resolver drops every
+      edge to it, so nothing can name the missing flag.
+    * Ports sharing a ``bundle=`` name share one flag, labelled with
+      the bundle name and placed where its first member is declared.
+      It faces the way the bundle's payload does — the same rule a
+      net ``bundle=`` uses to fold a return path (bits when every
+      voting member's width is known, port count otherwise); a tie,
+      or no member with a direction, is a ``↔`` flag.
+
+    Without root-port hints the result is exactly the pre-#196 flag
+    list, one per port, in declaration order.
+    """
+    if top.module is None or not top.module.ports:
+        return ()
+    directions = _boundary_directions(top, module_table)
+    port_hints = hints.nets_for_module(top.module_name) if hints is not None else {}
+    ports = [p for p in top.module.ports if not _hint_attr(port_hints, p.name, "hide")]
+    bundles: dict[str, list[Port]] = {}
+    for p in ports:
+        name = _hint_attr(port_hints, p.name, "bundle")
+        if name:
+            bundles.setdefault(name, []).append(p)
+    bundle_keys = _bundle_flag_keys(sorted(bundles))
+    params = module_param_defaults(top.module)
+    flags: list[_RootFlag] = []
+    placed: set[str] = set()
+    for p in ports:
+        name = _hint_attr(port_hints, p.name, "bundle")
+        if not name:
+            flags.append(
+                _RootFlag(
+                    key=p.name,
+                    label=p.name,
+                    direction=directions.get(p.name),
+                    members=(p.name,),
+                )
+            )
+            continue
+        if name in placed:
+            continue
+        placed.add(name)
+        members = bundles[name]
+        flags.append(
+            _RootFlag(
+                key=bundle_keys[name],
+                label=name,
+                direction=_bundle_flag_direction(members, directions, params),
+                members=tuple(m.name for m in members),
+            )
+        )
+    return tuple(flags)
+
+
+def _hint_attr(port_hints: Mapping[str, object], port: str, attr: str):
+    """One field of a root port's net hint, or ``None``."""
+    hint = port_hints.get(port)
+    return getattr(hint, attr, None) if hint is not None else None
+
+
+def _bundle_flag_keys(names: Sequence[str]) -> dict[str, str]:
+    """``$<sanitised name>`` endpoint keys for root-port bundle flags.
+
+    Sanitised to identifier characters so the node id is a plain
+    quoted string; two names that sanitise alike (``a-b`` / ``a_b``)
+    get a numeric suffix in sorted-name order, so each bundle keeps a
+    flag of its own.
+    """
+    keys: dict[str, str] = {}
+    used: set[str] = set()
+    for name in names:
+        base = "$" + re.sub(r"[^A-Za-z0-9_]", "_", name)
+        key, n = base, 2
+        while key in used:
+            key, n = f"{base}_{n}", n + 1
+        used.add(key)
+        keys[name] = key
+    return keys
+
+
+def _bundle_flag_direction(
+    members: Sequence[Port],
+    directions: Mapping[str, str | None],
+    params: Mapping[str, str],
+) -> str | None:
+    """Which way a root-port bundle's flag faces: its payload's way.
+
+    Inputs vote against outputs (``inout`` counts as output, the side
+    an ``inout`` flag already sits on), weighted in bits when every
+    voting member's width is known and by port count otherwise — the
+    comparison :func:`~rtl_buddy_view.connectivity._fold_bundle_returns`
+    uses to pick a bundle's data direction. A tie abstains: ``None``,
+    drawn as a ``↔`` flag.
+    """
+    voters = [(m, directions.get(m.name)) for m in members]
+    voters = [(m, d) for m, d in voters if d is not None]
+    if not voters:
+        return None
+    widths = [port_width(m.type_text, params) for m, _ in voters]
+    if all(w is not None for w in widths):
+        weights = [w or 0 for w in widths]
+    else:
+        weights = [1] * len(voters)
+    inward = sum(w for (_, d), w in zip(voters, weights) if d == "input")
+    outward = sum(w for (_, d), w in zip(voters, weights) if d != "input")
+    if inward > outward:
+        return "input"
+    if outward > inward:
+        return "output"
+    return None
+
+
+def _emit_root_flags(flags: Sequence[_RootFlag], out: IO[str]) -> None:
+    """Write the block diagram's root flags into their rank groups."""
+
+    def glyph(flag: _RootFlag) -> str:
+        return _BIDIR_GLYPH if flag.direction is None else "▶"
+
+    _write_flag_ranks(
+        [(f.key, f.label, glyph(f)) for f in flags if not f.is_output],
+        [(f.key, f.label, glyph(f)) for f in flags if f.is_output],
+        out,
+    )
+
+
+def _flag_ids_by_port(
+    flags: Sequence[_RootFlag], top: HierNode
+) -> dict[str, str | None]:
+    """Root port name → the flag node id it draws as (``None``: hidden)."""
+    ids: dict[str, str | None] = {}
+    if top.module is not None:
+        ids = {p.name: None for p in top.module.ports}
+    for flag in flags:
+        for member in flag.members:
+            ids[member] = flag.node_id
+    return ids
+
+
+def _regroup_root_edges(
+    edges: Sequence[NetEdge], port_keys: Mapping[str, str | None]
+) -> list[NetEdge]:
+    """Re-point root-port endpoints at the flags they draw as.
+
+    ``port_keys`` maps each root port to its flag's endpoint key, or to
+    ``None`` for a hidden port, whose edges are dropped. Ports re-keyed
+    to one bundle flag can leave several edges between the same pair of
+    endpoints; they merge into one (nets and pins unioned, ``main``
+    beating ``side``, the bundle name kept only when every merged edge
+    carries it). A bundle's return path then folds into its data
+    direction exactly as a net ``bundle=`` does
+    (:func:`~rtl_buddy_view.connectivity._fold_bundle_returns`), so an
+    APB port group reads as one thick ``apb`` edge.
+    """
+
+    def remap(end: Endpoint) -> Endpoint | None:
+        kind, name = end
+        if kind != "port":
+            return end
+        key = port_keys.get(name, name)
+        return None if key is None else ("port", key)
+
+    grouped: dict[tuple[Endpoint, Endpoint], list[NetEdge]] = {}
+    for edge in edges:
+        src, dst = remap(edge.src), remap(edge.dst)
+        if src is None or dst is None:
+            continue
+        grouped.setdefault((src, dst), []).append(
+            dataclasses.replace(edge, src=src, dst=dst)
+        )
+    merged = [_merge_parallel(group) for _, group in sorted(grouped.items())]
+    if any(e.bundle for e in merged):
+        merged = _fold_bundle_returns(merged)
+    return merged
+
+
+def _merge_parallel(group: Sequence[NetEdge]) -> NetEdge:
+    """One edge for several between the same pair of endpoints."""
+    if len(group) == 1:
+        return group[0]
+    first = group[0]
+    bits = [e.bits for e in group]
+    emphases = {e.emphasis for e in group}
+    bundles = {e.bundle for e in group}
+    return dataclasses.replace(
+        first,
+        nets=tuple(sorted({n for e in group for n in e.nets})),
+        src_pins=tuple(sorted({p for e in group for p in e.src_pins})),
+        dst_pins=tuple(sorted({p for e in group for p in e.dst_pins})),
+        bits=sum(b for b in bits if b is not None)
+        if all(b is not None for b in bits)
+        else None,
+        bits_expr=None,
+        emphasis="main"
+        if "main" in emphases
+        else ("side" if "side" in emphases else None),
+        bundle=first.bundle if len(bundles) == 1 else None,
+    )
 
 
 def _emit_top_cdc_arrows(
@@ -865,6 +1226,7 @@ def _emit_top_cdc_arrows(
     domain_map: DomainMap | None,
     *,
     as_cluster_tree: bool = False,
+    flag_ids: Mapping[str, str | None] | None = None,
 ) -> None:
     """Emit a dashed-red arrow from an input-port anchor to a child with
     a CDC crossing in. The src_clock must be the name of one of the
@@ -874,6 +1236,11 @@ def _emit_top_cdc_arrows(
     ``as_cluster_tree`` gates ``lhead`` for the same reason it does in
     :func:`_emit_port_signal_edges`: the cluster it names only exists
     in cluster mode.
+
+    ``flag_ids`` (block diagram) maps each root port to the flag it
+    draws as: a bundled clock port's arrow leaves its bundle flag, and
+    a hidden one's arrow is not drawn (the destination still carries
+    its ``⚠CDC`` summary).
     """
     if domain_map is None:
         return
@@ -894,13 +1261,16 @@ def _emit_top_cdc_arrows(
         for c in domain_map.crossings_into(child.instance_path):
             if c.src_clock not in input_names:
                 continue
+            tail = _arrow_tail(c.src_clock, flag_ids)
+            if tail is None:
+                continue
             key = (c.src_clock, c.dst_clock)
             if key in seen:
                 continue
             seen.add(key)
             label = f"⚠CDC: {_escape(c.src_clock)}→{_escape(c.dst_clock)}"
             out.write(
-                f'    "_in_{c.src_clock}" -> "{child.instance_path}" '
+                f'    "{tail}" -> "{child.instance_path}" '
                 f'[label="{label}", color="#dc2626", '
                 f'style="dashed", fontcolor="#dc2626", tailport=e{lhead}];\n'
             )
@@ -1752,21 +2122,18 @@ def _html_compact_label(
             f'<TR><TD COLSPAN="2" ALIGN="LEFT">{cell_text(node.module_name)}</TD></TR>',
         )
     )
-    if node.instance is not None and node.instance.param_overrides:
-        for ov in node.instance.param_overrides:
-            value = f'<FONT POINT-SIZE="10">{cell_text(ov.value_text)}</FONT>'
-            if ov.param_name is None:
-                # Positional override — no name column to fill.
-                rows.append(f'<TR><TD COLSPAN="2" ALIGN="LEFT">{value}</TD></TR>')
-            else:
-                name = (
-                    f'<FONT POINT-SIZE="10">{cell_text(ov.param_name)}&nbsp;&nbsp;'
-                    "</FONT>"
-                )
-                rows.append(
-                    f'<TR><TD ALIGN="LEFT">{name}</TD>'
-                    f'<TD ALIGN="LEFT">{value}</TD></TR>'
-                )
+    for ov in node.shown_param_overrides:
+        value = f'<FONT POINT-SIZE="10">{cell_text(ov.value_text)}</FONT>'
+        if ov.param_name is None:
+            # Positional override — no name column to fill.
+            rows.append(f'<TR><TD COLSPAN="2" ALIGN="LEFT">{value}</TD></TR>')
+        else:
+            name = (
+                f'<FONT POINT-SIZE="10">{cell_text(ov.param_name)}&nbsp;&nbsp;</FONT>'
+            )
+            rows.append(
+                f'<TR><TD ALIGN="LEFT">{name}</TD><TD ALIGN="LEFT">{value}</TD></TR>'
+            )
     tags: list[str] = []
     if domain_map is not None:
         clocks = _clocks_under(node.instance_path, domain_map)
@@ -1862,10 +2229,10 @@ def _label_text_lines(
         # leads, so the multi-crossing grid form doesn't silently
         # drop a label the plain box would show.
         lines.insert(0, node.display_label)
-    if node.instance is not None and node.instance.param_overrides:
+    if node.shown_param_overrides:
         # Param block already carries ``\l`` separators; flatten to a
         # list of bare lines for HTML conversion.
-        block = _format_param_overrides(node.instance.param_overrides)
+        block = _format_param_overrides(node.shown_param_overrides)
         # Re-split on the ``\l`` markers; each is a literal two-char
         # ``\\l`` in the formatter output.
         lines.extend(s for s in block.split(r"\l") if s)
@@ -1983,14 +2350,20 @@ def _crossing_direction(
 
 
 def _palette_color(clock_name: str) -> str:
-    """Deterministic clock→palette mapping via stable digest.
+    """The colour of ``clock_name`` in the figure being rendered.
 
-    Using a hash (not Python's ``hash()``) keeps colors stable across
-    Python processes and PYTHONHASHSEED values — important when the
-    output is checked into golden files or feeding visual diff tools.
+    Read from the assignment :func:`figure_clock_colors` fixed for this
+    render, so every place one figure colours a clock agrees. Outside a
+    render, or for a clock the assignment doesn't know, the stable name
+    hash (:func:`rtl_buddy_view.clock_colors.hash_color`) — deterministic
+    across processes and ``PYTHONHASHSEED`` values either way.
     """
-    digest = hashlib.sha256(clock_name.encode("utf-8")).digest()
-    return _CLOCK_PALETTE[digest[0] % len(_CLOCK_PALETTE)]
+    colors = _FIGURE_COLORS.get()
+    if colors is not None:
+        color = colors.get(clock_name)
+        if color is not None:
+            return color
+    return hash_color(clock_name)
 
 
 def _clocks_under(instance_path: str, domain_map: DomainMap) -> tuple[str, ...]:
@@ -2141,6 +2514,7 @@ def _emit_top_rdc_arrows(
     reset_map: ResetDomainMap,
     *,
     as_cluster_tree: bool = False,
+    flag_ids: Mapping[str, str | None] | None = None,
 ) -> None:
     """Emit a dashed-orange arrow from a reset-port anchor to a child with
     an RDC crossing in. The reset name must match one of the top's
@@ -2148,7 +2522,8 @@ def _emit_top_rdc_arrows(
     the destination child's label suffix.
 
     ``as_cluster_tree`` gates ``lhead`` — see
-    :func:`_emit_port_signal_edges`.
+    :func:`_emit_port_signal_edges`. ``flag_ids`` re-points the tail at
+    a block diagram's flags — see :func:`_emit_top_cdc_arrows`.
     """
     if top.module is None:
         return
@@ -2164,16 +2539,26 @@ def _emit_top_rdc_arrows(
         for c in reset_map.crossings_into(child.instance_path):
             if c.reset not in input_names:
                 continue
+            tail = _arrow_tail(c.reset, flag_ids)
+            if tail is None:
+                continue
             key = (c.reset, c.kind)
             if key in seen:
                 continue
             seen.add(key)
             label = f"⚠RDC: {_escape(c.reset)}:{_escape(c.kind)}"
             out.write(
-                f'    "_in_{c.reset}" -> "{child.instance_path}" '
+                f'    "{tail}" -> "{child.instance_path}" '
                 f'[label="{label}", color="{_RDC_COLOR}", '
                 f'style="dashed", fontcolor="{_RDC_COLOR}", tailport=e{lhead}];\n'
             )
+
+
+def _arrow_tail(port: str, flag_ids: Mapping[str, str | None] | None) -> str | None:
+    """The node an overlay arrow from root input ``port`` leaves from."""
+    if flag_ids is None:
+        return f"_in_{port}"
+    return flag_ids.get(port, f"_in_{port}")
 
 
 def _format_cdc_summary(child: HierNode, domain_map: DomainMap | None) -> str:
@@ -2274,8 +2659,8 @@ def _label_for(
     lines = [_escape(inst_name), _escape(node.module_name)]
     if node.display_label:
         lines.insert(0, _escape(node.display_label))
-    if node.instance is not None and node.instance.param_overrides:
-        lines.append(_format_param_overrides(node.instance.param_overrides))
+    if node.shown_param_overrides:
+        lines.append(_format_param_overrides(node.shown_param_overrides))
     if domain_map is not None:
         clocks = _clocks_under(node.instance_path, domain_map)
         if clocks:

@@ -232,9 +232,7 @@ def test_children_are_chained_off_the_first_port_anchor() -> None:
 
 
 def _plan_for(top: HierNode) -> dict[str, dot_render._ScopePack]:
-    inputs, outputs = dot_render._split_ports(
-        top, module_table=None, bundle_interfaces=False
-    )
+    inputs, outputs = dot_render._split_ports(top, module_table=None)
     in_w, in_h = dot_render._port_anchor_extent([p.name for p in inputs])
     out_w, out_h = dot_render._port_anchor_extent([p.name for p in outputs])
     frame = dot_render._PackFrame(

@@ -581,9 +581,9 @@ def test_public_constants_document_the_vocabulary() -> None:
     """The docs table and the warning text both derive from these."""
     assert hints_mod.PRAGMA_PREFIX == "rbsch"
     assert hints_mod.KNOWN_FLAGS == ("collapse", "hide", "leaf")
-    assert hints_mod.KNOWN_KEYS == ("group", "in", "label", "out", "rank")
+    assert hints_mod.KNOWN_KEYS == ("group", "in", "label", "out", "params", "rank")
     assert hints_mod.KNOWN_NET_FLAGS == ("clock", "data", "main", "reset", "side")
-    assert hints_mod.KNOWN_NET_KEYS == ("bundle",)
+    assert hints_mod.KNOWN_NET_KEYS == ("bundle", "color")
 
 
 # --- phase 2: net vocabulary ------------------------------------------------

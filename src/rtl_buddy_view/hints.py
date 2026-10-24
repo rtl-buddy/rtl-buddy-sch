@@ -42,6 +42,13 @@ consumed by :func:`rtl_buddy_view.connectivity.scope_connectivity`
 (classification, emphasis) and styled by the dot renderer
 (emphasis).
 
+Presentation words for integration tops (rtl-buddy-sch#196):
+``params=`` (module / instance) narrows the parameter rows a box shows
+via :attr:`rtl_buddy_view.graph.HierNode.display_params`; ``hide`` and
+``bundle=`` on a root port reshape the block diagram's boundary flags;
+and ``color=`` on a clock net pins its colour
+(:mod:`rtl_buddy_view.clock_colors`).
+
 Unknown vocabulary never raises. A typo'd key is collected as a warning
 naming the known set (the self-correcting-typo pattern the overlay
 registry uses for unknown overlay names) so a bad pragma degrades to
@@ -57,6 +64,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
 
+from rtl_buddy_view.clock_colors import color_spelling_help, parse_color
 from rtl_buddy_view.extractor import Module, ModuleTable
 from rtl_buddy_view.graph import HierNode
 
@@ -68,7 +76,7 @@ PRAGMA_PREFIX = "rbsch"
 
 #: Sidecar schema version this loader emits/accepts. Same
 #: major-must-match / minor-may-drift rule as the clock-domain map.
-SIDECAR_SCHEMA_VERSION = "1.1"
+SIDECAR_SCHEMA_VERSION = "1.2"
 SUPPORTED_SCHEMA_MAJOR = 1
 
 #: Valueless pragma words that shape a *box* (module or instance).
@@ -86,7 +94,7 @@ KNOWN_NET_FLAGS: tuple[str, ...] = ("clock", "data", "main", "reset", "side")
 #: column order so left→right reads as pipeline order, and
 #: ``group=<name>`` draws a dashed container around related sibling
 #: instances that aren't a hierarchy level.
-KNOWN_KEYS: tuple[str, ...] = ("group", "in", "label", "out", "rank")
+KNOWN_KEYS: tuple[str, ...] = ("group", "in", "label", "out", "params", "rank")
 
 #: The box keys that only mean something on an instance.
 INSTANCE_ONLY_KEYS: tuple[str, ...] = ("group", "rank")
@@ -105,7 +113,7 @@ PIN_DIRECTION_KEYS: tuple[str, ...] = ("in", "out")
 #: name between one pair of endpoints renders as a single named edge,
 #: and a return path (valid/ready style) folds into the data
 #: direction.
-KNOWN_NET_KEYS: tuple[str, ...] = ("bundle",)
+KNOWN_NET_KEYS: tuple[str, ...] = ("bundle", "color")
 
 #: Flags that only mean something on a module declaration.
 MODULE_ONLY_FLAGS: tuple[str, ...] = ("leaf",)
@@ -125,6 +133,12 @@ Classification = Literal["clock", "data", "reset"]
 
 #: What a net's ``emphasis`` may resolve to.
 Emphasis = Literal["main", "side"]
+
+#: What a ``params=`` hint resolves to (rtl-buddy-sch#196): ``"all"``
+#: shows every parameter override in the box, ``"none"`` shows none,
+#: and a tuple of parameter names keeps just those (sorted; display
+#: order stays the source's override order).
+ParamsHint = Literal["all", "none"] | tuple[str, ...]
 
 #: What a hinted blackbox pin may resolve to. Deliberately no
 #: ``inout``: a hint exists to recover a *dataflow* direction, and a
@@ -337,6 +351,9 @@ class ModuleHints:
     label: str | None = None
     in_pins: tuple[str, ...] | None = None
     out_pins: tuple[str, ...] | None = None
+    #: Which parameter overrides every placement's box shows
+    #: (rtl-buddy-sch#196); an instance's own ``params=`` wins.
+    params: ParamsHint | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -345,6 +362,7 @@ class ModuleHints:
             and self.label is None
             and self.in_pins is None
             and self.out_pins is None
+            and self.params is None
         )
 
 
@@ -367,6 +385,7 @@ class InstanceHints:
     group: str | None = None
     in_pins: tuple[str, ...] | None = None
     out_pins: tuple[str, ...] | None = None
+    params: ParamsHint | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -378,6 +397,7 @@ class InstanceHints:
             and self.group is None
             and self.in_pins is None
             and self.out_pins is None
+            and self.params is None
         )
 
 
@@ -407,6 +427,16 @@ class NetHints:
     #: is the explicit revoke, and every consumer treats it as "no
     #: bundle" (the truthiness check they all share).
     bundle: str | None = None
+    #: ``hide`` on a **port** (rtl-buddy-sch#196): the block diagram
+    #: draws no boundary flag for it, and no edge to one. Only the
+    #: rendered root's ports have flags, so on any other net it is
+    #: inert.
+    hide: bool | None = None
+    #: The colour of the clock this net names (rtl-buddy-sch#196),
+    #: normalised by :func:`rtl_buddy_view.clock_colors.parse_color`.
+    #: ``""`` — reachable only through a sidecar — is the explicit
+    #: revoke.
+    color: str | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -414,6 +444,8 @@ class NetHints:
             self.classification is None
             and self.emphasis is None
             and self.bundle is None
+            and self.hide is None
+            and self.color is None
         )
 
 
@@ -509,6 +541,9 @@ class _Decl:
     module: str  # defining module, or the enclosing module otherwise
     instance: str | None = None
     net: str | None = None
+    #: A ``net`` declaration that is one of the module's ports — the
+    #: only net a ``hide`` can bind to (rtl-buddy-sch#196).
+    is_port: bool = False
 
 
 _KIND_ORDER = {"instance": 0, "module": 1, "net": 2}
@@ -589,6 +624,7 @@ def _declaration_index(table: ModuleTable) -> dict[str, tuple[_Decl, ...]]:
                     kind="net",
                     module=module.name,
                     net=port.name,
+                    is_port=True,
                 ),
             )
     return {
@@ -673,6 +709,34 @@ def _associate_nets(
     return tuple(covered)
 
 
+def _associate_port_hide(pragma: Pragma, decls: Sequence[_Decl]) -> tuple[_Decl, ...]:
+    """The port declarations a ``hide`` binds to, or ``()`` for the box rule.
+
+    ``hide`` is a box word, so it keeps every binding it had: an
+    instance on the pragma's line (trailing), or the next box
+    declaration below it (standalone), even past a plain ``logic``
+    declaration. It binds to **ports** instead only where a port
+    declaration is the nearer target — on the pragma's own line with
+    no box declaration there, or (standalone) on the line below the
+    pragma before the next box declaration starts. A standalone
+    ``hide`` above a port used to fall through to the first instance
+    in the module body, which no author meant.
+    """
+    box_lines = [d.line for d in decls if d.kind != "net"]
+    nets = [d for d in decls if d.kind == "net"]
+    if not pragma.own_line:
+        if pragma.line in box_lines:
+            return ()
+        return tuple(d for d in nets if d.line == pragma.line and d.is_port)
+    below = [d for d in nets if d.line > pragma.line]
+    if not below or not below[0].is_port:
+        return ()
+    next_box = min((line for line in box_lines if line > pragma.line), default=None)
+    if next_box is not None and next_box <= below[0].line:
+        return ()
+    return tuple(d for d in below if d.line == below[0].line and d.is_port)
+
+
 def _describe(decl: _Decl) -> str:
     if decl.kind == "instance":
         return f"instance {decl.instance!r} in module {decl.module!r}"
@@ -715,8 +779,21 @@ def resolve_hints(pragmas: Sequence[Pragma], table: ModuleTable) -> HintMap:
         net_options = tuple(
             (k, v) for k, v in pragma.payload.options if k in KNOWN_NET_KEYS
         )
+        if "hide" in box_flags:
+            ports = _associate_port_hide(pragma, decls)
+            if ports:
+                # ``hide`` on a port declaration hides that port's
+                # boundary flag (rtl-buddy-sch#196) — the port is the
+                # nearer declaration, so the word is about it.
+                box_flags = tuple(f for f in box_flags if f != "hide")
+                for decl in ports:
+                    assert decl.net is not None
+                    port_key = (decl.module, decl.net)
+                    nets[port_key] = replace(nets.get(port_key, NetHints()), hide=True)
         if box_flags or box_options:
-            _resolve_box(pragma, where, box_flags, decls, modules, instances, warnings)
+            _resolve_box(
+                pragma, where, box_flags, decls, modules, instances, warnings, table
+            )
         if net_flags or net_options:
             _resolve_nets(pragma, where, net_flags, net_options, decls, nets, warnings)
 
@@ -765,6 +842,65 @@ def _parse_pin_lists(
     return in_pins, out_pins
 
 
+def _instance_module(table: ModuleTable | None, decl: _Decl) -> Module | None:
+    """The module an instance declaration places, when the table has it."""
+    if table is None:
+        return None
+    parent = table.modules_by_name.get(decl.module)
+    if parent is None:
+        return None
+    for inst in parent.instances:
+        if inst.name == decl.instance:
+            return table.modules_by_name.get(inst.module_name)
+    return None
+
+
+def parse_params_value(text: str) -> ParamsHint | None:
+    """``params=`` value → hint: ``all``, ``none`` or a name list.
+
+    ``None`` when the value names nothing (``params=`` or ``params=,``).
+    """
+    value = text.strip()
+    if value in ("all", "none"):
+        return cast(ParamsHint, value)
+    names = tuple(sorted({n.strip() for n in value.split(",") if n.strip()}))
+    return names or None
+
+
+def _parse_params(
+    pragma: Pragma,
+    where: str,
+    warnings: list[str],
+    module: Module | None,
+    target: str,
+) -> ParamsHint | None:
+    """Parse one pragma's ``params=``, warning on names the module lacks.
+
+    An unknown name is kept — the module might come from a sibling
+    filelist next run — but warned about, since a typo would otherwise
+    silently hide the parameter the author meant to keep.
+    """
+    raw = pragma.option("params")
+    if raw is None:
+        return None
+    hint = parse_params_value(raw)
+    if hint is None:
+        warnings.append(
+            f'{where}: params needs all, none or a parameter list (write params="W,DEPTH"); ignored'
+        )
+        return None
+    if isinstance(hint, tuple) and module is not None:
+        known = {p.name for p in module.parameters}
+        unknown = [name for name in hint if name not in known]
+        if unknown:
+            warnings.append(
+                f"{where}: params names {', '.join(unknown)}, not a parameter "
+                f"of module {module.name!r} ({target}); known: "
+                f"{', '.join(sorted(known)) or '(none)'}"
+            )
+    return hint
+
+
 def _resolve_box(
     pragma: Pragma,
     where: str,
@@ -773,6 +909,7 @@ def _resolve_box(
     modules: dict[str, ModuleHints],
     instances: dict[tuple[str, str], InstanceHints],
     warnings: list[str],
+    table: ModuleTable | None = None,
 ) -> None:
     """Apply one pragma's box vocabulary (phase-1 body, unchanged rules)."""
     decl = _associate_box(pragma, decls)
@@ -826,6 +963,11 @@ def _resolve_box(
             current = replace(current, in_pins=in_pins)
         if out_pins is not None:
             current = replace(current, out_pins=out_pins)
+        params = _parse_params(
+            pragma, where, warnings, _instance_module(table, decl), _describe(decl)
+        )
+        if params is not None:
+            current = replace(current, params=params)
         instances[key] = current
     else:
         current_m = modules.get(decl.module, ModuleHints())
@@ -851,6 +993,15 @@ def _resolve_box(
             current_m = replace(current_m, in_pins=in_pins)
         if out_pins is not None:
             current_m = replace(current_m, out_pins=out_pins)
+        params = _parse_params(
+            pragma,
+            where,
+            warnings,
+            table.modules_by_name.get(decl.module) if table is not None else None,
+            _describe(decl),
+        )
+        if params is not None:
+            current_m = replace(current_m, params=params)
         modules[decl.module] = current_m
 
 
@@ -865,6 +1016,7 @@ def _resolve_nets(
 ) -> None:
     """Apply one pragma's net vocabulary to its covered declarators."""
     bundle: str | None = None
+    color: str | None = None
     for key, value in net_options:
         if key == "bundle":
             if value:
@@ -872,6 +1024,13 @@ def _resolve_nets(
             else:
                 warnings.append(
                     f"{where}: bundle needs a name (write bundle=…); ignored"
+                )
+        elif key == "color":
+            color = parse_color(value)
+            if color is None:
+                warnings.append(
+                    f"{where}: color {value!r} is not a colour; use "
+                    f"{color_spelling_help()}; ignored"
                 )
     # A bundle is a statement about a group, so its standalone form
     # covers the contiguous declaration run — and the other net words
@@ -912,7 +1071,15 @@ def _resolve_nets(
         )
     elif emphases:
         emphasis = cast(Emphasis, emphases[0])
-    if classification is None and emphasis is None and bundle is None:
+    if color is not None and classification in ("data", "reset"):
+        # Only clocks are coloured; a colour on a net the same pragma
+        # calls data or a reset would silently do nothing.
+        warnings.append(
+            f"{where}: color applies to clocks, not a net classified "
+            f"{classification!r}; color dropped"
+        )
+        color = None
+    if classification is None and emphasis is None and bundle is None and color is None:
         return
 
     for decl in targets:
@@ -925,6 +1092,8 @@ def _resolve_nets(
             current = replace(current, emphasis=emphasis)
         if bundle is not None:
             current = replace(current, bundle=bundle)
+        if color is not None:
+            current = replace(current, color=color)
         nets[net_key] = current
 
 
@@ -945,6 +1114,7 @@ def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
             label=current.label if hints.label is None else hints.label,
             in_pins=current.in_pins if hints.in_pins is None else hints.in_pins,
             out_pins=current.out_pins if hints.out_pins is None else hints.out_pins,
+            params=current.params if hints.params is None else hints.params,
         )
     instances = dict(base.instances)
     for key, inst_hints in override.instances.items():
@@ -967,6 +1137,9 @@ def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
                 if inst_hints.out_pins is None
                 else inst_hints.out_pins
             ),
+            params=(
+                current_i.params if inst_hints.params is None else inst_hints.params
+            ),
         )
     nets = dict(base.nets)
     for net_key, net_hints in override.nets.items():
@@ -981,6 +1154,8 @@ def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
                 current_n.emphasis if net_hints.emphasis is None else net_hints.emphasis
             ),
             bundle=(current_n.bundle if net_hints.bundle is None else net_hints.bundle),
+            hide=current_n.hide if net_hints.hide is None else net_hints.hide,
+            color=current_n.color if net_hints.color is None else net_hints.color,
         )
     return HintMap(
         modules=dict(sorted(modules.items())),
@@ -1038,6 +1213,19 @@ def _require_int(value: object, *, where: str, key: str) -> int:
     return value
 
 
+def _require_params(value: object, *, where: str) -> ParamsHint:
+    """``"all"`` / ``"none"`` / an array of parameter names (``[]`` = none)."""
+    if value in ("all", "none"):
+        return cast(ParamsHint, value)
+    if isinstance(value, list) and all(isinstance(x, str) for x in value):
+        names = tuple(sorted({x.strip() for x in value if x.strip()}))
+        return names if names else "none"
+    raise HintsError(
+        f'{where}: \'params\' must be "all", "none" or an array of '
+        f"parameter names, got {value!r}"
+    )
+
+
 def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
     """Validate a decoded sidecar document into a :class:`HintMap`.
 
@@ -1082,6 +1270,8 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
                 hints = replace(
                     hints, out_pins=_require_pin_list(value, where=where, key=key)
                 )
+            elif key == "params":
+                hints = replace(hints, params=_require_params(value, where=where))
             else:
                 warnings.append(f"{where}: {_unknown_word_warning(key)}")
         if not hints.is_empty:
@@ -1130,6 +1320,10 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
                 inst_hints = replace(
                     inst_hints, out_pins=_require_pin_list(value, where=where, key=name)
                 )
+            elif name == "params":
+                inst_hints = replace(
+                    inst_hints, params=_require_params(value, where=where)
+                )
             else:
                 warnings.append(f"{where}: {_unknown_word_warning(name)}")
         if not inst_hints.is_empty:
@@ -1176,6 +1370,20 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
                 net_hints = replace(
                     net_hints, bundle=_require_str(value, where=where, key=name)
                 )
+            elif name == "hide":
+                net_hints = replace(
+                    net_hints, hide=_require_bool(value, where=where, key=name)
+                )
+            elif name == "color":
+                text = _require_str(value, where=where, key=name)
+                # ``""`` is the explicit revoke of an in-source colour.
+                normalised = parse_color(text) if text else ""
+                if normalised is None:
+                    raise HintsError(
+                        f"{where}: color {text!r} is not a colour; use "
+                        f"{color_spelling_help()}"
+                    )
+                net_hints = replace(net_hints, color=normalised)
             else:
                 warnings.append(f"{where}: {_unknown_word_warning(name)}")
         if not net_hints.is_empty:
@@ -1257,6 +1465,43 @@ def apply_hints(
     return replace(root, children=children, display_label=label)
 
 
+def _display_params(
+    inst_hints: InstanceHints | None, module_hints: ModuleHints | None
+) -> tuple[str, ...] | None:
+    """:attr:`HierNode.display_params` from the node's ``params=`` hints.
+
+    The instance's word beats the module's, like ``label``.
+    """
+    hint: ParamsHint | None = None
+    if inst_hints is not None and inst_hints.params is not None:
+        hint = inst_hints.params
+    elif module_hints is not None:
+        hint = module_hints.params
+    if hint is None or hint == "all":
+        return None
+    if hint == "none":
+        return ()
+    return hint
+
+
+def hide_all_params(root: HierNode) -> HierNode:
+    """``--params none``: no node shows a parameter row.
+
+    The CLI's figure-wide switch, applied after :func:`apply_hints`
+    so it overrides every ``params=`` pragma. A graph edit for the same
+    reason ``label`` is one: the renderers just read
+    :attr:`HierNode.display_params`. Untouched subtrees are returned
+    by identity.
+    """
+    children = tuple(hide_all_params(c) for c in root.children)
+    params = root.display_params
+    if root.instance is not None and root.instance.param_overrides:
+        params = ()
+    if params == root.display_params and children == root.children:
+        return root
+    return replace(root, children=children, display_params=params)
+
+
 def _apply_children(
     node: HierNode, hints: HintMap, sink: MutableSequence[str]
 ) -> tuple[HierNode, ...]:
@@ -1296,6 +1541,7 @@ def _apply_node(
         module_hints is not None and module_hints.leaf
     )
     children = () if collapse else _apply_children(node, hints, sink)
-    if label is None and children == node.children:
+    params = _display_params(inst_hints, module_hints)
+    if label is None and params is None and children == node.children:
         return node
-    return replace(node, children=children, display_label=label)
+    return replace(node, children=children, display_label=label, display_params=params)
