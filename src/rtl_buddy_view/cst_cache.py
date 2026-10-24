@@ -17,6 +17,17 @@ Bumping Verible naturally invalidates everything by switching the
 versioned subdirectory; users can also nuke the entire cache root
 with ``rm -rf`` without breaking anything.
 
+Entry shape: every entry holds the **bare CST tree** (the value of
+Verible's ``"tree"`` key), never the raw ``--export_json`` envelope
+``{"<path>": {"tree": ...}}``. Several tools share one cache root and
+one key per file content, so a single shape is the contract: view and
+axi-profiler hand ``get_or_compute`` the bare tree, while older
+rtl-buddy-xeno releases hand it the envelope. :func:`get_or_compute`
+unwraps an envelope wherever it sees one — on the value it is about to
+store, and on an entry it reads back (rewriting that entry in place) —
+so callers always get the bare tree whatever wrote the entry
+(rtl-buddy-sch#186).
+
 Cache root resolution (decreasing precedence):
 
 1. ``override`` argument to :func:`cache_root` (caller-injected,
@@ -194,21 +205,58 @@ def get_or_compute(
     ``cache_dir`` overrides the cache-root resolution (see
     :func:`cache_root`). Defaults to ``None`` to preserve the env / XDG
     fallback behaviour for callers that don't inject a path.
+
+    The return value is always the bare CST tree: a raw Verible
+    envelope ``{"<path>": {"tree": ...}}`` — from ``compute`` or from
+    an entry another tool wrote — is unwrapped first (see
+    :func:`_unwrap_envelope`), and an envelope-shaped entry is
+    rewritten in the canonical shape on read.
     """
     if is_disabled():
-        return compute(verible_binary, sv_path)
+        return _unwrap_envelope(compute(verible_binary, sv_path))
     cache_path = _cache_path_for(verible_binary, sv_path, cache_dir)
     if cache_path.exists():
         try:
             with cache_path.open("r") as f:
-                return json.load(f)
+                cached = json.load(f)
         except (OSError, json.JSONDecodeError):
             # Corrupt entry — fall through to a recompute and the
             # subsequent atomic-write will overwrite it.
             pass
-    result = compute(verible_binary, sv_path)
+        else:
+            tree = _unwrap_envelope(cached)
+            if tree is not cached:
+                # Heal the entry so every reader sees the canonical
+                # shape from now on. Best effort: a read-only cache
+                # still returns the unwrapped tree.
+                try:
+                    _atomic_write_json(cache_path, tree)
+                except OSError:
+                    pass
+            return tree
+    result = _unwrap_envelope(compute(verible_binary, sv_path))
     _atomic_write_json(cache_path, result)
     return result
+
+
+def _unwrap_envelope(payload: dict) -> dict:
+    """Return the bare CST tree when ``payload`` is a raw Verible envelope.
+
+    ``verible-verilog-syntax --export_json`` wraps each file's tree as
+    ``{"<path>": {"tree": {...}, ...}}``. A payload of exactly that
+    shape — one key whose value is a dict carrying a dict ``"tree"`` —
+    is unwrapped; anything else (a bare tree, whose root carries
+    ``"tag"`` / ``"children"``, or an envelope with no tree) is returned
+    unchanged, so the identity check in :func:`get_or_compute` tells a
+    rewrite from a pass-through.
+    """
+    if isinstance(payload, dict) and len(payload) == 1:
+        (only,) = payload.values()
+        if isinstance(only, dict):
+            tree = only.get("tree")
+            if isinstance(tree, dict):
+                return tree
+    return payload
 
 
 def _cache_path_for(binary: Path, path: Path, cache_dir: Path | None) -> Path:

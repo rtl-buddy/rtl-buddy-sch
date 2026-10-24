@@ -648,6 +648,8 @@ If only the legacy `<xdg-cache>/rtl-buddy-view/cst/` directory exists on disk, i
 
 `RTL_BUDDY_NO_CACHE=1` disables caching entirely (useful for CI and Verible-overhead measurement); `RTL_BUDDY_VIEW_NO_CACHE` is honoured as a deprecated alias.
 
+Every entry holds the **bare CST tree**, never Verible's raw `--export_json` envelope `{"<path>": {"tree": ...}}`. Because all tools share one key per file content, `get_or_compute` enforces that shape itself: it unwraps an envelope returned by a `compute` callback before storing it, and an envelope-shaped entry written by an older tool reads back as the bare tree and is rewritten in place ([rtl-buddy-sch#186](https://github.com/rtl-buddy/rtl-buddy-sch/issues/186)). As a backstop, the Verible frontend raises a parse error — rather than returning an empty module table — when a file's CST holds no module but its source has an unconditional `module` declaration.
+
 ## Versioning & compatibility
 
 Two contracts are versioned independently:
