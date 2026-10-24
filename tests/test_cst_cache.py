@@ -148,6 +148,103 @@ def test_corrupt_cache_falls_through_to_recompute(
     assert json.loads(cache_file.read_text())["calls_seen"] == 2
 
 
+# --- entry shape: the raw Verible envelope is unwrapped (sch#186) -------------
+
+_TREE: dict[str, Any] = {"tag": "kDescriptionList", "children": [{"tag": "x"}]}
+
+
+def _envelope(key: str = "/tmp/rtl-buddy-xeno/sv-0123.sv") -> dict[str, Any]:
+    """The ``--export_json`` shape older rtl-buddy-xeno releases cached."""
+    return {key: {"tree": _TREE, "errors": []}}
+
+
+def _entry_for(src: Path) -> Path:
+    return cst_cache.cache_root() / "v0.0-test" / f"{cst_cache.content_hash(src)}.json"
+
+
+def test_envelope_entry_is_unwrapped_and_rewritten(
+    fake_binary: Path, tmp_path: Path
+) -> None:
+    """A xeno-written envelope entry reads back as the bare tree — no
+    recompute — and is rewritten in the canonical shape."""
+    compute, state = _counted()
+    src = _write(tmp_path, "a.sv", "module a; endmodule\n")
+    entry = _entry_for(src)
+    entry.parent.mkdir(parents=True)
+    entry.write_text(json.dumps(_envelope()))
+
+    result = cst_cache.get_or_compute(src, verible_binary=fake_binary, compute=compute)
+
+    assert result == _TREE
+    assert state["calls"] == 0
+    assert json.loads(entry.read_text()) == _TREE
+
+
+def test_envelope_from_compute_is_stored_bare(
+    fake_binary: Path, tmp_path: Path
+) -> None:
+    """A caller whose ``compute`` returns the envelope still stores — and
+    gets back — the bare tree, on the miss and on the later hit alike."""
+    calls = {"n": 0}
+
+    def compute(_binary: Path, path: Path) -> dict[str, Any]:
+        calls["n"] += 1
+        return _envelope(str(path))
+
+    src = _write(tmp_path, "a.sv", "module a; endmodule\n")
+    first = cst_cache.get_or_compute(src, verible_binary=fake_binary, compute=compute)
+    second = cst_cache.get_or_compute(src, verible_binary=fake_binary, compute=compute)
+    assert first == second == _TREE
+    assert calls["n"] == 1
+    assert json.loads(_entry_for(src).read_text()) == _TREE
+
+
+def test_envelope_unwrapped_when_cache_disabled(
+    fake_binary: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The returned shape doesn't depend on whether the cache is on."""
+    monkeypatch.setenv("RTL_BUDDY_NO_CACHE", "1")
+    src = _write(tmp_path, "a.sv", "module a; endmodule\n")
+    result = cst_cache.get_or_compute(
+        src, verible_binary=fake_binary, compute=lambda _b, _p: _envelope()
+    )
+    assert result == _TREE
+
+
+def test_envelope_rewrite_failure_still_returns_tree(
+    fake_binary: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read-only cache can't be healed, but the read still unwraps."""
+    compute, state = _counted()
+    src = _write(tmp_path, "a.sv", "module a; endmodule\n")
+    entry = _entry_for(src)
+    entry.parent.mkdir(parents=True)
+    entry.write_text(json.dumps(_envelope()))
+
+    def refuse(_dest: Path, _payload: dict) -> None:
+        raise PermissionError("read-only cache")
+
+    monkeypatch.setattr(cst_cache, "_atomic_write_json", refuse)
+    result = cst_cache.get_or_compute(src, verible_binary=fake_binary, compute=compute)
+    assert result == _TREE
+    assert state["calls"] == 0
+    assert "errors" in entry.read_text()  # untouched
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(_TREE, id="bare-tree"),
+        pytest.param({"only": {"errors": ["x"]}}, id="envelope-without-tree"),
+        pytest.param({"only": {"tree": None}}, id="envelope-null-tree"),
+        pytest.param({"a": {"tree": {}}, "b": {"tree": {}}}, id="two-files"),
+        pytest.param({"only": "tree"}, id="non-dict-value"),
+    ],
+)
+def test_unwrap_envelope_passes_other_shapes_through(payload: dict) -> None:
+    assert cst_cache._unwrap_envelope(payload) is payload
+
+
 # --- cache_root resolution ladder --------------------------------------------
 
 

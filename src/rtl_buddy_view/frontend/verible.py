@@ -20,11 +20,12 @@ extractor coverage are tracked separately in
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
 from rtl_buddy_view._verible_install import find_binary
-from rtl_buddy_view.cst_cache import get_or_compute
+from rtl_buddy_view.cst_cache import cache_root, get_or_compute
 from rtl_buddy_view.offsets import OffsetIndex
 from rtl_buddy_view.extractor import (
     Assign,
@@ -90,9 +91,12 @@ def parse(files: list[Path]) -> ModuleTable:
             verible_binary=binary,
             compute=_run_verible,
         )
-        for mod in _walk_modules(
+        modules = _walk_modules(
             cst, file=str(path), offsets=offsets, source=source_bytes
-        ):
+        )
+        if not modules:
+            _check_no_module_declared(path, text)
+        for mod in modules:
             if mod.name in table.modules_by_name:
                 raise VeribleParseError(
                     f"Duplicate module definition {mod.name!r}: already "
@@ -115,6 +119,88 @@ def parse(files: list[Path]) -> ModuleTable:
 
 
 # --- internals ---------------------------------------------------------------
+
+
+def _check_no_module_declared(path: Path, text: str) -> None:
+    """Raise if the source plainly declares a module the CST walk missed.
+
+    A CST walk that yields zero modules is normal for a package /
+    interface / macro-only file, so it can't be an error on its own.
+    It is wrong when the source carries an unconditional ``module``
+    declaration — that means the CST isn't the tree we expect (a
+    wrong-shape cache entry, rtl-buddy-sch#186) and the design would
+    otherwise fail much later with a misleading ``Known modules: []``.
+    """
+    found = _find_module_declaration(text)
+    if found is None:
+        return
+    line_no, name = found
+    raise VeribleParseError(
+        f"Verible CST for {path} yields no module declarations, but the "
+        f"source declares module {name!r} at line {line_no}. The CST is "
+        "probably a wrong-shape or stale cache entry: re-run with "
+        "RTL_BUDDY_NO_CACHE=1, or delete the cache under "
+        f"{cache_root()}."
+    )
+
+
+# Strings first so a ``//`` inside a string isn't read as a comment,
+# and comments next so a quote inside a comment isn't read as a string.
+_STRIP_RE = re.compile(r'"(?:\\.|[^"\\\n])*"|/\*.*?\*/|//[^\n]*', re.DOTALL)
+# ``module <ident>`` opening a line, after optional ``(* attr *)``s.
+# Deliberately narrow: ``macromodule`` (a different CST tag),
+# ``extern module`` (a prototype, not a declaration) and macro-named
+# modules (``module `NAME``) don't match, so they can never trip the
+# check.
+_MODULE_DECL_RE = re.compile(
+    r"^\s*(?:\(\*.*?\*\)\s*)*module\s+(?:(?:static|automatic)\s+)?"
+    r"([A-Za-z_][A-Za-z0-9_$]*)"
+)
+_COND_OPEN_RE = re.compile(r"^\s*`(?:ifdef|ifndef)\b")
+_COND_CLOSE_RE = re.compile(r"^\s*`endif\b")
+_DEFINE_RE = re.compile(r"^\s*`define\b")
+
+
+def _find_module_declaration(text: str) -> tuple[int, str] | None:
+    """Return ``(line, name)`` of the first unconditional module declaration.
+
+    Conservative by design — it only has to be right when it answers,
+    so anything it can't judge cheaply is skipped:
+
+    - comments and string literals are blanked first (newlines kept,
+      so line numbers stay true);
+    - lines inside any `` `ifdef`` / `` `ifndef`` block are skipped,
+      since which branch Verible parses depends on its macro defaults;
+    - `` `define`` bodies (including ``\\`` continuation lines) are
+      skipped, since a macro that expands to a module isn't one until
+      it is used.
+    """
+
+    def _blank(m: re.Match[str]) -> str:
+        return re.sub(r"[^\n]", " ", m.group(0))
+
+    stripped = _STRIP_RE.sub(_blank, text)
+    depth = 0
+    in_define = False
+    for line_no, line in enumerate(stripped.splitlines(), start=1):
+        if in_define:
+            in_define = line.rstrip().endswith("\\")
+            continue
+        if _DEFINE_RE.match(line):
+            in_define = line.rstrip().endswith("\\")
+            continue
+        if _COND_OPEN_RE.match(line):
+            depth += 1
+            continue
+        if _COND_CLOSE_RE.match(line):
+            depth = max(depth - 1, 0)
+            continue
+        if depth:
+            continue
+        m = _MODULE_DECL_RE.match(line)
+        if m:
+            return line_no, m.group(1)
+    return None
 
 
 def _run_verible(binary: Path, path: Path) -> dict:
