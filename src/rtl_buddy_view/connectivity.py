@@ -67,7 +67,7 @@ Remaining limits, all downstream of not running an elaborator:
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import dataclasses
 from dataclasses import dataclass
 from typing import Literal, TypeVar
@@ -495,11 +495,29 @@ def modport_direction(modport: Modport) -> Literal["input", "output"] | None:
     unresolvable here); the count is the documented, predictable
     rule.
     """
-    voters = [(name, "input") for name in modport.inputs] + [
-        (name, "output") for name in modport.outputs
+    return _fold_votes(
+        [(name, "input") for name in modport.inputs]
+        + [(name, "output") for name in modport.outputs]
+    )
+
+
+def _fold_votes(
+    votes: Sequence[tuple[str, str]],
+) -> Literal["input", "output"] | None:
+    """Fold ``(signal name, direction)`` votes into one direction.
+
+    The rule :func:`modport_direction` documents: clock/reset names
+    out, handshake names out while anything else is left, then the
+    majority by count of ``"input"`` / ``"output"``; anything else
+    (``inout``, a tie, no votes) abstains. An empty name is a vote with
+    no name to judge (a whole-interface binding) and is always kept.
+    """
+    voters = [
+        (n, d)
+        for n, d in votes
+        if d in ("input", "output") and not (n and _is_clock_or_reset_name(n))
     ]
-    voters = [(n, d) for n, d in voters if not _is_clock_or_reset_name(n)]
-    data = [(n, d) for n, d in voters if not _is_handshake_name(n)]
+    data = [(n, d) for n, d in voters if not (n and _is_handshake_name(n))]
     pool = data or voters
     outputs = sum(1 for _, d in pool if d == "output")
     inputs = len(pool) - outputs
@@ -598,6 +616,73 @@ def port_direction(port: Port, table: ModuleTable) -> _Direction | None:
         return port.direction
     binding = interface_binding(port, table)
     return binding.direction if binding is not None else None
+
+
+def boundary_directions(
+    module: Module, table: ModuleTable
+) -> dict[str, _Direction | None]:
+    """Which way each of ``module``'s ports faces, seen from outside.
+
+    The direction a block diagram's boundary flag and an ELK root pin
+    need (rtl-buddy-sch#195):
+
+    * a wire port: what it declares (``None`` when it declares
+      nothing);
+    * an interface port with a modport: the modport's folded direction
+      (:func:`modport_direction`) — ``bus_if.src out_bus`` is an
+      ``"output"``;
+    * an interface port with no modport (``bus_if gen``), or one whose
+      modport ties: **the child modports it binds to**. ``gen`` bound
+      to a ``snk`` feeds that child, so it is an ``"input"``; bound to
+      a ``src`` it is an ``"output"``. Whole bindings vote first; with
+      none, member selects (``gen.a_en``) vote by their pins'
+      directions under the same fold. ``None`` when that is still
+      undecided — the caller draws a bidirectional flag.
+    """
+    module = _resolved_ports(module, table)
+    return _boundary_directions(module, table, None)
+
+
+def _boundary_directions(
+    module: Module, table: ModuleTable, pins: tuple[_Pin, ...] | None
+) -> dict[str, _Direction | None]:
+    """:func:`boundary_directions` over already-resolved ports / pins."""
+    out: dict[str, _Direction | None] = {}
+    for port in module.ports:
+        direction = port_direction(port, table)
+        if direction is None and port.port_kind == "interface":
+            if pins is None:
+                pins = _collect_pins(
+                    module,
+                    table,
+                    None,
+                    interface_roots(module, table),
+                    _interface_modports(module, table),
+                )
+            direction = _direction_from_children(port.name, pins)
+        out[port.name] = direction
+    return out
+
+
+def _direction_from_children(
+    name: str, pins: tuple[_Pin, ...]
+) -> Literal["input", "output"] | None:
+    """A scope interface port's direction, read off the pins bound to it.
+
+    A child pin that reads the bus (``"input"``) is fed by the port, so
+    the port is an input of the scope, and the other way round.
+    """
+    whole = [("", p.direction) for p in pins if name in p.roots and p.direction]
+    if whole:
+        return _fold_votes(whole)
+    members = [
+        (root.rsplit(".", 1)[-1], p.direction)
+        for p in pins
+        if p.direction
+        for root in p.roots
+        if _is_member_key(root) and _key_root(root) == name
+    ]
+    return _fold_votes(members)
 
 
 def port_width(
@@ -856,7 +941,14 @@ def scope_connectivity(
             for rhs in rhs_roots:
                 flow.connect(rhs, lhs)
 
-    groups = _build_groups(module, pins, flow, members)
+    groups = _build_groups(
+        module,
+        pins,
+        flow,
+        members,
+        _boundary_directions(module, table, raw_pins),
+        table,
+    )
     widths, exprs = _net_width_info(module, pins, scope_params)
 
     # (src, dst) -> (net names, src formals, dst formals), accumulated
@@ -1483,8 +1575,17 @@ def _build_groups(
     pins: tuple[_Pin, ...],
     flow: _FlowGraph,
     members: Mapping[str, tuple[str, ...]] | None = None,
+    port_dirs: Mapping[str, _Direction | None] | None = None,
+    table: ModuleTable | None = None,
 ) -> dict[str, _Group]:
-    """Bucket pins and module ports into their flow components."""
+    """Bucket pins and module ports into their flow components.
+
+    A scope port joins as its :func:`boundary_directions` say (an
+    ``"input"`` drives the scope's nets, an ``"output"`` reads them);
+    an interface port's selected members take the modport's
+    per-signal direction where it has one. Whatever stays undecided
+    joins the bidirectional ``interfaces`` bucket.
+    """
     groups: dict[str, _Group] = {}
 
     def group_for(root: str) -> _Group:
@@ -1505,11 +1606,17 @@ def _build_groups(
 
     for port in module.ports:
         endpoint: Endpoint = ("port", port.name)
+        whole = port_dirs.get(port.name) if port_dirs is not None else port.direction
+        binding = interface_binding(port, table) if table is not None else None
+        signals = dict(binding.members) if binding is not None else {}
         for key in _port_keys(port, members or {}):
             group = group_for(key)
-            if port.direction == "input":
+            direction = whole
+            if key != port.name:
+                direction = signals.get(key.rsplit(".", 1)[-1])
+            if direction == "input":
                 bucket = group.drivers
-            elif port.direction in ("output", "inout"):
+            elif direction in ("output", "inout"):
                 bucket = group.sinks
             else:
                 bucket = group.interfaces

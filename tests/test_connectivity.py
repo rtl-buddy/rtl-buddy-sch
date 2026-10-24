@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from rtl_buddy_view.connectivity import (
     NetEdge,
+    boundary_directions,
     instance_params,
     interface_binding,
     interface_roots,
@@ -2181,3 +2182,104 @@ def test_interface_instances_are_not_endpoints() -> None:
         ),
     )
     assert scope_connectivity(top, _bus_table(top, _SRC)) == ()
+
+
+# --- scope (root) interface ports (rtl-buddy-sch#195) ------------------------
+
+
+def test_boundary_directions_of_modport_and_wire_ports() -> None:
+    top = _module(
+        "top",
+        ports=(
+            _port("clk", "input", "logic"),
+            _bus_port("in_bus", "snk"),
+            _bus_port("out_bus", "src"),
+            _port("done", "output", "logic"),
+        ),
+    )
+    assert boundary_directions(top, _bus_table(top)) == {
+        "clk": "input",
+        "in_bus": "input",
+        "out_bus": "output",
+        "done": "output",
+    }
+
+
+def test_a_generic_root_port_reads_its_direction_off_the_child_modports() -> None:
+    top = _module(
+        "top",
+        ports=(
+            _port("gen_in", None, "bus_if"),
+            _port("gen_out", None, "bus_if"),
+            _port("gen_both", None, "bus_if"),
+            _port("gen_free", None, "bus_if"),
+            _bus_port("tied", "half"),
+        ),
+        instances=(
+            _inst("u_c", "consumer", _conn("i", "gen_in")),
+            _inst("u_p", "producer", _conn("o", "gen_out")),
+            _inst("u_p2", "producer", _conn("o", "gen_both")),
+            _inst("u_c2", "consumer", _conn("i", "gen_both")),
+            _inst("u_c3", "consumer", _conn("i", "tied")),
+        ),
+    )
+    assert boundary_directions(top, _bus_table(top)) == {
+        "gen_in": "input",
+        "gen_out": "output",
+        "gen_both": None,
+        "gen_free": None,
+        "tied": "input",
+    }
+
+
+def test_a_generic_root_port_with_only_member_selects_votes_by_member() -> None:
+    top = _module(
+        "top",
+        ports=(_port("gen", None, "bus_if"),),
+        instances=(
+            _inst("u_v", "blk_in", _conn("en", "gen.v")),
+            _inst("u_d", "blk_in", _conn("en", "gen.d")),
+            _inst("u_r", "ready_src", _conn("rdy", "gen.r")),
+        ),
+    )
+    # ``r`` is the return path; the data members are read: an input.
+    assert boundary_directions(top, _bus_table(top, _BLK_IN)) == {"gen": "input"}
+
+
+def test_root_interface_port_edges_follow_their_boundary_directions() -> None:
+    top = _module(
+        "top",
+        ports=(_port("gen", None, "bus_if"), _bus_port("out_bus", "src")),
+        instances=(
+            _inst("u_k", "consumer", _conn("i", "gen")),
+            _inst("u_s", "producer", _conn("o", "out_bus")),
+        ),
+    )
+    edges = scope_connectivity(top, _bus_table(top))
+    assert [(e.src, e.dst, e.nets, e.bits) for e in edges] == [
+        (("inst", "u_s"), ("port", "out_bus"), ("out_bus",), None),
+        (("port", "gen"), ("inst", "u_k"), ("gen",), None),
+    ]
+
+
+def test_a_root_modport_port_meets_its_members_per_signal() -> None:
+    """``in_bus`` is a ``snk``: ``v`` enters the scope, ``r`` leaves it.
+
+    A child reading ``in_bus.r`` is not fed by the port — the modport
+    says the scope drives ``r`` — so no edge runs from the flag to it.
+    """
+    top = _module(
+        "top",
+        ports=(_bus_port("in_bus", "snk"),),
+        instances=(
+            _inst("u_v", "blk_in", _conn("en", "in_bus.v")),
+            _inst("u_rd", "blk_in", _conn("en", "in_bus.r")),
+            _inst("u_rs", "ready_src", _conn("rdy", "in_bus.r")),
+        ),
+    )
+    edges = scope_connectivity(top, _bus_table(top, _BLK_IN))
+    assert [(e.src[1], e.dst[1], e.nets) for e in edges] == [
+        ("u_rs", "u_rd", ("in_bus.r",)),
+        ("u_rs", "in_bus", ("in_bus.r",)),
+        ("in_bus", "u_v", ("in_bus.v",)),
+    ]

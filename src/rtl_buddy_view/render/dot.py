@@ -44,6 +44,7 @@ from rtl_buddy_view.connectivity import (
     _RESET_NAME_RE,
     Endpoint,
     NetEdge,
+    boundary_directions,
     scope_connectivity,
 )
 from rtl_buddy_view.extractor import (
@@ -574,7 +575,11 @@ def _emit_scope_connectivity(
             for child in node.children
             if child.instance is not None
         }
-        port_directions = {p.name: p.direction for p in node.module.ports}
+        port_directions = (
+            _boundary_directions(node, table)
+            if is_top
+            else {p.name: p.direction for p in node.module.ports}
+        )
         net_hints = (
             hints.nets_for_module(node.module_name) if hints is not None else None
         )
@@ -625,9 +630,10 @@ def _endpoint_ref(
     direction = port_directions.get(name)
     if direction in ("output", "inout"):
         return (f"_out_{name}", None)
-    # Inputs and interface bundles both anchor on the source rank;
-    # ``bundle_interfaces`` in :func:`_emit_port_anchors` guarantees an
-    # interface port keeps its unflattened ``_in_<name>`` anchor.
+    # Inputs and undecided ports (bidirectional flags) both anchor on
+    # the source rank. ``port_directions`` is the same
+    # :func:`_boundary_directions` map :func:`_split_ports` sorts the
+    # flags by, so every id returned here is a declared flag.
     return (f"_in_{name}", None)
 
 
@@ -733,15 +739,44 @@ def _split_ports(
     if top.module is None or not top.module.ports:
         return ([], [])
     if bundle_interfaces:
+        # Every port gets a flag (rtl-buddy-sch#195): an interface port
+        # on the side its boundary direction says, and a port nothing
+        # settles on the source rank as a bidirectional flag — never
+        # an undeclared node an edge would conjure up as a stray box.
+        directions = _boundary_directions(top, module_table)
         ports = top.module.ports
-        inputs = [
-            p for p in ports if p.direction == "input" or p.port_kind == "interface"
-        ]
+        inputs = [p for p in ports if directions[p.name] not in ("output", "inout")]
+        outputs = [p for p in ports if directions[p.name] in ("output", "inout")]
+        return (inputs, outputs)
     else:
         ports = flatten_interface_ports(top.module, module_table)
         inputs = [p for p in ports if p.direction == "input"]
     outputs = [p for p in ports if p.direction in ("output", "inout")]
     return (inputs, outputs)
+
+
+#: Glyph on a boundary flag whose direction nothing settles — a
+#: modport-less interface port no child binding orients, or a port
+#: that declares no direction. It sits on the source rank.
+_BIDIR_GLYPH = "↔"
+
+
+def _boundary_directions(
+    top: HierNode, module_table: ModuleTable | None
+) -> dict[str, str | None]:
+    """The direction each top port's flag faces in a block diagram.
+
+    :func:`~rtl_buddy_view.connectivity.boundary_directions` when the
+    table is at hand (modport-typed and modport-less interface ports
+    resolved), the declared directions otherwise. Shared by the flag
+    emitter and the edge resolver so a flag and the edges landing on
+    it always agree on its id.
+    """
+    if top.module is None:
+        return {}
+    if module_table is None:
+        return {p.name: p.direction for p in top.module.ports}
+    return dict(boundary_directions(top.module, module_table))
 
 
 def _emit_port_anchors(
@@ -771,11 +806,15 @@ def _emit_port_anchors(
     callers that don't have a table on hand. (#105.)
 
     ``bundle_interfaces`` (block-diagram mode) suppresses that
-    flattening: an interface port stays one anchor on the source rank,
-    because a block diagram's terminal for an APB port is the bus, not
-    its eleven constituent wires. It also keeps the anchor name
-    (``_in_<port>``) addressable by the connectivity analyzer, which
-    treats the bundle as a single endpoint.
+    flattening: an interface port stays one anchor, because a block
+    diagram's terminal for an APB port is the bus, not its eleven
+    constituent wires — and the connectivity analyzer treats the
+    bundle as a single endpoint. Its side comes from its boundary
+    direction (rtl-buddy-sch#195): ``bus_if.src out_bus`` is an
+    ``_out_`` flag on the sink rank, ``bus_if gen`` bound to a ``snk``
+    child an ``_in_`` flag, and a port nothing orients a bidirectional
+    ``↔`` flag on the source rank. Every port is declared, so no edge
+    can name a node Graphviz would invent as a stray box.
     """
     inputs, outputs = _split_ports(
         top, module_table=module_table, bundle_interfaces=bundle_interfaces
@@ -783,6 +822,7 @@ def _emit_port_anchors(
     if not inputs and not outputs:
         return
 
+    directions = _boundary_directions(top, module_table) if bundle_interfaces else {}
     if inputs:
         # Right-edge alignment: pad each name on the LEFT to the max
         # name width so all ``▶`` glyphs land in the same column under
@@ -794,9 +834,14 @@ def _emit_port_anchors(
         out.write("    { rank=source;\n")
         for p in inputs:
             padded = escaped[p.name].rjust(max_w)
+            glyph = (
+                _BIDIR_GLYPH
+                if bundle_interfaces and directions.get(p.name) is None
+                else "▶"
+            )
             out.write(
                 f'      "_in_{p.name}" '
-                f'[shape=plaintext, label="{padded} ▶", fontsize=9];\n'
+                f'[shape=plaintext, label="{padded} {glyph}", fontsize=9];\n'
             )
         out.write("    }\n")
     if outputs:
