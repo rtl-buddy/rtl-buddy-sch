@@ -24,7 +24,8 @@ from rtl_buddy_view import elk_export
 from rtl_buddy_view._filelist import parse_filelist
 from rtl_buddy_view._verible_install import find_binary
 from rtl_buddy_view.frontend import Frontend, parse_to_modules
-from rtl_buddy_view.graph import build_hierarchy
+from rtl_buddy_view.graph import build_hierarchy, without_interface_instances
+from rtl_buddy_view.query import walk as walk_hier
 from rtl_buddy_view.render import dot as dot_render
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "iface_modport_edges"
@@ -155,6 +156,48 @@ def test_elk_keeps_the_interface_instance_nodes() -> None:
     payload = elk_export.export_elk(build_hierarchy(table, "top"), table)
     ids = {child["id"] for child in payload["children"]}
     assert {"top.shared", "top.mid"} <= ids
+
+
+@pytest.mark.parametrize("top", ["top", "top_generic", "top_member"])
+def test_elk_marks_interface_instances_and_no_edge_touches_them(top: str) -> None:
+    """#205: the canvases skip ``rb.is_interface`` nodes, which is only
+    safe because no edge lands on one — the wire runs between the
+    siblings bound to it (#194). Checked at every scope, against the
+    node id and every one of its port ids."""
+    table = _table()
+    payload = elk_export.export_elk(build_hierarchy(table, top), table)
+
+    def walk(node: dict):
+        yield node
+        for child in node["children"]:
+            yield from walk(child)
+
+    nodes = list(walk(payload))
+    flagged = {n["id"] for n in nodes if n["rb"]["is_interface"]}
+    # Exactly the interface instances the dot block diagram prunes.
+    pruned = without_interface_instances(build_hierarchy(table, top), table)
+    kept = {n.instance_path for n in walk_hier(pruned)}
+    assert flagged == {n["id"] for n in nodes} - kept
+    assert flagged, f"{top}: fixture should carry an interface instance"
+
+    refs = {
+        ref
+        for n in nodes
+        for edge in n["edges"]
+        for ref in edge["sources"] + edge["targets"]
+    }
+    for ref in refs:
+        owner = ref.split(":", 1)[0]
+        assert owner not in flagged, f"{top}: edge endpoint {ref} is an interface"
+
+
+def test_elk_flags_the_named_interface_instances() -> None:
+    table = _table()
+    payload = elk_export.export_elk(build_hierarchy(table, "top"), table)
+    flags = {c["id"]: c["rb"]["is_interface"] for c in payload["children"]}
+    assert flags["top.shared"] is True
+    assert flags["top.mid"] is True
+    assert flags["top.u_prod"] is False
 
 
 def test_elk_reports_no_width_for_a_modport_less_interface_port() -> None:

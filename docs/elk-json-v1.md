@@ -43,6 +43,7 @@ node, which is what
     "instance_name": null,
     "module_name": "demo_tiny_alu_subsys_top",
     "is_blackbox": false,
+    "is_interface": false,
     "param_overrides": [],
     "clock": null,
     "export": {
@@ -90,6 +91,7 @@ Per **node**:
 | `instance_name` | string \| null | The refdes (`u_afifo`). `null` on the root, which is not instantiated. |
 | `module_name` | string | The type name, drawn centred inside the box. |
 | `is_blackbox` | bool | The module was never declared in the parsed sources. |
+| `is_interface` | bool | The node is an **interface instance** (`bus_if shared (.clk(clk));`), not a block (#205). It stays in the tree because its parameters do (`param_overrides`), but it is the wire between the blocks bound to it and never an edge endpoint — a dataflow canvas skips it (§ 4.1). Because an interface is not in the module table, such a node also reads `is_blackbox: true`; this flag is what tells the two apart. `false` on every other node. |
 | `param_overrides` | array | `[[name, value], …]` in **declaration order**. `name` is `null` for a positional override on a declaration we couldn't resolve. |
 | `clock` | string \| null | Predominant clock from the `clock` overlay; `null` without one. |
 | `export` | object | Root only — see § 1. |
@@ -213,8 +215,11 @@ with no outputs counts as one too. Edges into a monitor carry
 
 An interface **instance** is still a node (it has parameters, and the
 node set is the hierarchy), but it is never an edge endpoint: it is
-the wire. A consumer drawing a dataflow sheet may skip it — the
-`--block-diagram` dot output does.
+the wire. It carries `rb.is_interface: true` (§ 2) so a consumer
+drawing a dataflow sheet can skip it without re-deriving which types
+are interfaces — the `--block-diagram` dot output drops it, and so
+does the SPA's schematic canvas. Nothing in `edges` references the
+node or its ports, so skipping it never leaves a wire dangling.
 
 Why the degradation: one edge may stand for two pins at once
 (`wr_en` *and* `wr_data` from the same driver). There is no single

@@ -631,6 +631,35 @@ def test_positional_overrides_resolve_through_the_declaration() -> None:
     assert nodes["top.u_if"]["rb"]["param_overrides"] == [["AW", "8"]]
 
 
+def test_an_interface_instance_is_marked_and_stays_in_the_payload() -> None:
+    """#205: flagged for the canvases to skip, but never dropped — the
+    #165 parameter contract above reads it off the same node."""
+    table = _positional_table()
+    nodes = _by_id(elk_export.export_elk(build_hierarchy(table, "top"), table))
+    assert nodes["top.u_if"]["rb"]["is_interface"] is True
+    # It is not in the module table, so it also reads as a blackbox —
+    # the new flag is what tells the two apart.
+    assert nodes["top.u_if"]["rb"]["is_blackbox"] is True
+    assert nodes["top.u_leaf"]["rb"]["is_interface"] is False
+    assert nodes["top"]["rb"]["is_interface"] is False
+
+
+def test_a_type_that_is_both_module_and_interface_is_not_an_interface() -> None:
+    """Same rule ``without_interface_instances`` prunes on: a declared
+    module of that name wins, and the node is an ordinary block."""
+    table = _positional_table()
+    table.modules_by_name["test_if"] = Module(
+        name="test_if", ports=(), parameters=(), instances=(), location=None
+    )
+    nodes = _by_id(elk_export.export_elk(build_hierarchy(table, "top"), table))
+    assert nodes["top.u_if"]["rb"]["is_interface"] is False
+
+
+def test_only_interface_instances_are_marked(payload: dict) -> None:
+    """The synthetic design has interface *ports*, no interface instance."""
+    assert not any(node["rb"]["is_interface"] for node in _by_id(payload).values())
+
+
 # --- algebraic widths -------------------------------------------------------
 #
 # The shape the demo design has: a synchroniser whose pins are typed
