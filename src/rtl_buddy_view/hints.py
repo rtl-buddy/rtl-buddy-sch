@@ -548,6 +548,20 @@ def _declaration_index(table: ModuleTable) -> dict[str, tuple[_Decl, ...]]:
                     instance=inst.name,
                 ),
             )
+            # An interface instance is also a *net* target: it is the
+            # wire its members ride on, and connectivity keys those
+            # members under its name (rtl-buddy-sch#193), so a net
+            # pragma on ``cfg_if cfg ();`` speaks for every ``cfg.*``.
+            if inst.module_name in table.interfaces_by_name:
+                _add(
+                    iloc.file,
+                    _Decl(
+                        line=iloc.start_line,
+                        kind="net",
+                        module=module.name,
+                        net=inst.name,
+                    ),
+                )
         # Nets: body declarations and ports both — a clock is very
         # often a port of the scope being drawn, and both carry the
         # SourceLocation association needs.
