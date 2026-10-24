@@ -177,6 +177,9 @@ both directions, and lets the author say which wires *matter*:
   endpoints. The bundle is emphasized when any of its nets is, and
   `main` beats `side` within one bundle — the author called part of
   it the money path, and thinning the whole edge would hide that.
+- An edge into a **monitor modport** (all inputs, listening to both
+  halves of a handshake; see `docs/elk-json-v1.md` § 4.1) is `side`
+  by default. Any hinted emphasis on its nets wins over that default.
 - Net hints are consumed by the **dataflow** analyses only — the
   `--block-diagram` dot mode and the ELK export (so the SPA canvas
   and the figure agree on what exists). Tree, mermaid and JSON

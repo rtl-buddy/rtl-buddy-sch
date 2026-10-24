@@ -20,6 +20,7 @@ Phase 1 scope:
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 
 from rtl_buddy_view.extractor import Instance, Module, ModuleTable
@@ -129,6 +130,34 @@ def find_tb_top(table: ModuleTable, dut_top: str) -> str | None:
 
     # ``dut_top`` isn't a module — fall back to the sole root module.
     return roots[0] if len(roots) == 1 else None
+
+
+def without_interface_instances(node: HierNode, table: ModuleTable) -> HierNode:
+    """``node``'s subtree with every interface instance pruned.
+
+    An interface instance (``bus_if shared (.clk(clk));``) is a child
+    in the elaborated hierarchy, but on a **dataflow** drawing it is
+    the wire between the blocks bound to it, not a block of its own
+    (rtl-buddy-sch#194). The connectivity analyzer already routes the
+    edges through it; the block diagram and the ELK schematic use this
+    to stop drawing it as an orphan blackbox box. An instance counts
+    as an interface when its type is in ``table.interfaces_by_name``
+    and not also a module. Unchanged subtrees are returned as-is.
+    """
+    kept = tuple(
+        without_interface_instances(child, table)
+        for child in node.children
+        if not (
+            child.module is None
+            and child.module_name in table.interfaces_by_name
+            and child.module_name not in table.modules_by_name
+        )
+    )
+    if len(kept) == len(node.children) and all(
+        a is b for a, b in zip(kept, node.children)
+    ):
+        return node
+    return dataclasses.replace(node, children=kept)
 
 
 def _build(

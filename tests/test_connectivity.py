@@ -11,10 +11,15 @@ from __future__ import annotations
 from rtl_buddy_view.connectivity import (
     NetEdge,
     instance_params,
+    interface_binding,
     interface_roots,
+    is_observer_modport,
+    modport_direction,
     net_keys,
+    port_direction,
     port_width,
     port_width_expr,
+    resolve_interface_port,
     root_identifiers,
     scope_connectivity,
 )
@@ -23,6 +28,7 @@ from rtl_buddy_view.extractor import (
     Instance,
     Interface,
     InterfaceSignal,
+    Modport,
     Module,
     ModuleTable,
     NetDecl,
@@ -1931,3 +1937,247 @@ def test_a_member_keyed_hint_beats_the_interface_hint() -> None:
     assert by_pair[("u_csr", "u_peer")].bundle == "cfg_bus"
     assert by_pair[("u_peer", "u_csr")].bundle is None
     assert by_pair[("u_peer", "u_csr")].emphasis == "side"
+
+
+# --- whole-interface (modport) bindings (rtl-buddy-sch#194) -----------------
+
+
+def _mp(
+    name: str, *, i: tuple[str, ...] = (), o: tuple[str, ...] = (), io=()
+) -> Modport:
+    return Modport(name=name, inputs=i, outputs=o, inouts=io)
+
+
+_BUS_IF = Interface(
+    name="bus_if",
+    parameters=(),
+    signals=tuple(
+        InterfaceSignal(name=n, type_text="logic", location=None)
+        for n in ("v", "d", "r")
+    ),
+    modports=(
+        _mp("src", o=("v", "d"), i=("r",)),
+        _mp("snk", i=("v", "d"), o=("r",)),
+        _mp("tap", i=("v", "d", "r")),
+        _mp("half", o=("v",), i=("d",)),
+    ),
+    location=None,
+)
+
+
+def _bus_port(name: str, modport: str | None) -> Port:
+    return _port(
+        name,
+        None,
+        f"bus_if.{modport}" if modport else "bus_if",
+        port_kind="interface",
+        interface_type="bus_if",
+        modport=modport,
+    )
+
+
+_PRODUCER = _module("producer", ports=(_bus_port("o", "src"),))
+_CONSUMER = _module("consumer", ports=(_bus_port("i", "snk"),))
+_TAPPER = _module("tapper", ports=(_bus_port("m", "tap"),))
+_GENERIC = _module("generic", ports=(_port("b", None, "bus_if"),))
+_READY = _module("ready_src", ports=(_port("rdy", "output", "logic"),))
+
+
+def _bus_table(*modules: Module) -> ModuleTable:
+    table = _table(*modules, _PRODUCER, _CONSUMER, _TAPPER, _GENERIC, _READY)
+    table.interfaces_by_name["bus_if"] = _BUS_IF
+    return table
+
+
+def test_modport_direction_of_a_unanimous_modport() -> None:
+    assert modport_direction(_mp("a", o=("x", "y"))) == "output"
+    assert modport_direction(_mp("b", i=("x", "y"))) == "input"
+
+
+def test_modport_direction_drops_the_handshake_return_path() -> None:
+    assert modport_direction(_mp("src", o=("v", "d"), i=("ready",))) == "output"
+    assert modport_direction(_mp("snk", i=("v", "d"), o=("ready",))) == "input"
+    # Every spelling of the return path: AXI, AHB, active-low, acks.
+    for name in ("tready", "awready", "hreadyout", "rdy_n", "wb_ack", "gnt", "stall"):
+        assert modport_direction(_mp("m", o=("data",), i=(name,))) == "output", name
+
+
+def test_modport_direction_ignores_clocks_and_resets() -> None:
+    mp = _mp("src", i=("clk", "rst_n", "aclk"), o=("data",))
+    assert modport_direction(mp) == "output"
+
+
+def test_modport_direction_takes_the_majority_by_count() -> None:
+    req = _mp("req", o=("addr", "wdata", "valid"), i=("rdata", "rvalid"))
+    assert modport_direction(req) == "output"
+
+
+def test_modport_direction_abstains_on_a_tie_or_nothing_to_vote() -> None:
+    assert modport_direction(_mp("half", o=("v",), i=("d",))) is None
+    assert modport_direction(_mp("pins", io=("sda", "scl"))) is None
+    assert modport_direction(_mp("empty")) is None
+
+
+def test_a_handshake_only_modport_still_votes() -> None:
+    assert modport_direction(_mp("rsp", o=("ready",))) == "output"
+
+
+def test_an_observer_reads_a_reply_some_sink_drives() -> None:
+    tap = _BUS_IF.modports[2]
+    assert is_observer_modport(_BUS_IF, tap)
+    assert not is_observer_modport(_BUS_IF, _BUS_IF.modports[1])  # snk
+    assert not is_observer_modport(_BUS_IF, _BUS_IF.modports[0])  # src
+
+
+def test_a_plain_all_input_sink_is_not_an_observer() -> None:
+    """valid/data with no ready: the all-input modport *is* the consumer."""
+    iface = Interface(
+        name="vd_if",
+        parameters=(),
+        signals=(),
+        modports=(_mp("src", o=("v", "d")), _mp("snk", i=("v", "d"))),
+        location=None,
+    )
+    assert not is_observer_modport(iface, iface.modports[1])
+
+
+def test_an_observer_by_name() -> None:
+    iface = Interface(
+        name="vd_if",
+        parameters=(),
+        signals=(),
+        modports=(_mp("src", o=("v", "d")), _mp("monitor", i=("v", "d"))),
+        location=None,
+    )
+    assert is_observer_modport(iface, iface.modports[1])
+
+
+def test_port_direction_folds_the_modport() -> None:
+    table = _bus_table()
+    assert port_direction(_bus_port("o", "src"), table) == "output"
+    assert port_direction(_bus_port("i", "snk"), table) == "input"
+    assert port_direction(_bus_port("h", "half"), table) is None
+    assert port_direction(_bus_port("g", None), table) is None
+    assert port_direction(_bus_port("x", "nope"), table) is None
+    assert port_direction(_port("q", "output", "logic"), table) == "output"
+
+
+def test_a_bare_interface_typed_port_is_an_interface_port() -> None:
+    table = _bus_table()
+    gen = resolve_interface_port(_port("gen", None, "bus_if"), table)
+    assert (gen.port_kind, gen.interface_type, gen.modport) == (
+        "interface",
+        "bus_if",
+        None,
+    )
+    # A typed net port, or one with a direction, is left alone.
+    for port in (_port("s", None, "pair_t"), _port("d", "input", "bus_if")):
+        assert resolve_interface_port(port, table) is port
+    assert interface_binding(_port("w", "input", "logic"), table) is None
+
+
+def test_whole_bindings_take_their_modports_directions() -> None:
+    top = _module(
+        "top",
+        instances=(
+            _inst("shared", "bus_if"),
+            _inst("u_prod", "producer", _conn("o", "shared")),
+            _inst("u_cons", "consumer", _conn("i", "shared")),
+            _inst("u_tap", "tapper", _conn("m", "shared")),
+        ),
+    )
+    edges = scope_connectivity(top, _bus_table(top))
+    assert [(e.src[1], e.dst[1], e.nets, e.emphasis) for e in edges] == [
+        ("u_prod", "u_cons", ("shared",), None),
+        ("u_prod", "u_tap", ("shared",), "side"),
+    ]
+    assert {e.bits for e in edges} == {None}
+
+
+def test_an_author_emphasis_beats_the_observer_default() -> None:
+    top = _module(
+        "top",
+        instances=(
+            _inst("shared", "bus_if"),
+            _inst("u_prod", "producer", _conn("o", "shared")),
+            _inst("u_tap", "tapper", _conn("m", "shared")),
+        ),
+    )
+    hints = _hints(shared=_net_hint(emphasis="main"))
+    (edge,) = scope_connectivity(top, _bus_table(top), net_hints=hints)
+    assert edge.emphasis == "main"
+
+
+def test_a_generic_pin_reads_a_source_and_feeds_a_sink() -> None:
+    top = _module(
+        "top",
+        instances=(
+            _inst("a", "bus_if"),
+            _inst("b", "bus_if"),
+            _inst("u_p", "producer", _conn("o", "a")),
+            _inst("u_g1", "generic", _conn("b", "a")),
+            _inst("u_g2", "generic", _conn("b", "b")),
+            _inst("u_c", "consumer", _conn("i", "b")),
+        ),
+    )
+    edges = scope_connectivity(top, _bus_table(top))
+    assert [(e.src[1], e.dst[1], e.nets) for e in edges] == [
+        ("u_g2", "u_c", ("b",)),
+        ("u_p", "u_g1", ("a",)),
+    ]
+
+
+def test_two_generic_pins_alone_draw_nothing() -> None:
+    top = _module(
+        "top",
+        instances=(
+            _inst("a", "bus_if"),
+            _inst("u_g1", "generic", _conn("b", "a")),
+            _inst("u_g2", "generic", _conn("b", "a")),
+        ),
+    )
+    assert scope_connectivity(top, _bus_table(top)) == ()
+
+
+def test_a_whole_binding_meets_member_selects_per_signal() -> None:
+    top = _module(
+        "top",
+        instances=(
+            _inst("bus", "bus_if"),
+            _inst("u_p", "producer", _conn("o", "bus")),
+            _inst("u_r", "ready_src", _conn("rdy", "bus.r")),
+            _inst("u_k", "blk_in", _conn("en", "bus.v")),
+        ),
+    )
+    edges = scope_connectivity(top, _bus_table(top, _BLK_IN))
+    assert [(e.src[1], e.dst[1], e.nets, e.bits) for e in edges] == [
+        ("u_p", "u_k", ("bus.v",), None),
+        ("u_r", "u_p", ("bus.r",), 1),
+    ]
+
+
+def test_a_modport_select_binds_the_whole_interface() -> None:
+    top = _module(
+        "top",
+        instances=(
+            _inst("bus", "bus_if"),
+            _inst("u_p", "producer", _conn("o", "bus.src")),
+            _inst("u_c", "consumer", _conn("i", "bus.snk")),
+        ),
+    )
+    edges = scope_connectivity(top, _bus_table(top))
+    assert [(e.src[1], e.dst[1], e.nets) for e in edges] == [
+        ("u_p", "u_c", ("bus",)),
+    ]
+
+
+def test_interface_instances_are_not_endpoints() -> None:
+    """``bus_if shared (.v(x))`` feeds the bundle; it is not a block."""
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_s", "src", _conn("q", "x")),
+            _inst("shared", "bus_if", _conn("v", "x")),
+        ),
+    )
+    assert scope_connectivity(top, _bus_table(top, _SRC)) == ()

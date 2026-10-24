@@ -29,7 +29,8 @@ The algorithm is deliberately structural rather than semantic:
    ``input`` pins are sinks; the enclosing module's own ports join in
    from the outside (``input`` port = driver, ``output`` / ``inout``
    port = sink). A driver **sources** its roots; a sink **reads**
-   its roots.
+   its roots. A pin on an interface port takes its modport's folded
+   direction (:func:`modport_direction`, rtl-buddy-sch#194).
 4. A driver reaches a sink when one of its sourced roots reaches one
    of the sink's read roots under reflexive-transitive closure of the
    flow graph. Those pairs become edges (labelled with the reached
@@ -55,6 +56,9 @@ Remaining limits, all downstream of not running an elaborator:
 * Procedural assignments (``always`` blocks) contribute no flow edges;
   only continuous assignments do — both the ``assign`` statement and
   the ``wire w = expr;`` declaration form.
+* A whole-interface binding's single direction is a heuristic fold
+  of its modport (handshake names out, majority by signal count); a
+  tie leaves it unresolved rather than guessed.
 * Clock/reset filtering is name-shaped, applied to the **weakly**
   connected components of the flow graph (see
   :func:`_is_clock_or_reset_group`).
@@ -68,7 +72,14 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 
-from rtl_buddy_view.extractor import Module, ModuleTable, ParameterOverride, Port
+from rtl_buddy_view.extractor import (
+    Interface,
+    Modport,
+    Module,
+    ModuleTable,
+    ParameterOverride,
+    Port,
+)
 from rtl_buddy_view.hints import NetHints, PinDirection
 from rtl_buddy_view.width_expr import (
     IDENT_RE,
@@ -105,6 +116,24 @@ _RESET_NAME_RE = re.compile(r"(?i)(?:^|_)(rst|reset)(?:$|_)")
 #: patterns, so their output is unchanged.
 _BLOCK_EXTRA_CLOCK_RE = re.compile(r"(?i)^[^_]*(clk|clock)$")
 _BLOCK_EXTRA_RESET_RE = re.compile(r"(?i)^[^_]*(rst|reset)_?n[ib]?$")
+
+#: One underscore-delimited token of a signal name that marks it as a
+#: **return path** — the handshake half of an interface that flows
+#: against its data (``ready``/``rdy`` in any prefixed or suffixed
+#: spelling: ``tready``, ``awready``, ``hreadyout``, ``rdy_n``; and
+#: the bare ``ack`` / ``gnt`` / ``grant`` / ``credit`` / ``stall`` /
+#: ``wait`` family). Consulted only by :func:`modport_direction`,
+#: which votes on a modport's data signals and leaves these out.
+_HANDSHAKE_TOKEN_RE = re.compile(
+    r"(?i)^(?:.*(?:ready|rdy)(?:out|in|o|i|n)?"
+    r"|ack|gnt|grant|credits?|stall|wait|waitrequest)$"
+)
+
+#: Modport names that declare a passive observer outright. The
+#: structural test in :func:`is_observer_modport` catches the rest.
+_OBSERVER_MODPORT_NAMES = frozenset(
+    {"mon", "monitor", "obs", "observer", "passive", "snoop", "sniff"}
+)
 
 #: The leading ``[msb:lsb]`` of a packed range, integer bounds only.
 #: A parameterised bound (``[PTR_W-1:0]``) deliberately fails to
@@ -250,6 +279,37 @@ def root_identifiers(expr_text: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def resolve_interface_port(port: Port, table: ModuleTable) -> Port:
+    """``port``, reclassified as an interface port when it is one.
+
+    Verible cannot tell a **modport-less interface port** (``bus_if
+    gen``) from a net port of a user-defined type: both are a type
+    name followed by an identifier, so the frontend reports a ``wire``
+    port with no direction and ``type_text == "bus_if"``. The filelist
+    settles it — when that type text is exactly the name of an
+    interface the frontend parsed, the port is an interface port with
+    no modport, which is how this returns it. Anything else (a
+    declared direction, a type with dimensions or a package scope, a
+    type that names no parsed interface) comes back unchanged.
+    """
+    if port.port_kind != "wire" or port.direction is not None:
+        return port
+    type_name = (port.type_text or "").strip()
+    if type_name not in table.interfaces_by_name:
+        return port
+    return dataclasses.replace(
+        port, port_kind="interface", interface_type=type_name, modport=None
+    )
+
+
+def _resolved_ports(module: Module, table: ModuleTable) -> Module:
+    """``module`` with :func:`resolve_interface_port` applied to its ports."""
+    ports = tuple(resolve_interface_port(p, table) for p in module.ports)
+    if all(a is b for a, b in zip(ports, module.ports)):
+        return module
+    return dataclasses.replace(module, ports=ports)
+
+
 def interface_roots(module: Module, table: ModuleTable) -> frozenset[str]:
     """Names in ``module``'s scope that denote an interface, not a net.
 
@@ -306,15 +366,46 @@ def net_keys(
     return _scan_refs(expr_text, interfaces)[0]
 
 
+def _interface_modports(
+    module: Module, table: ModuleTable
+) -> dict[str, frozenset[str]]:
+    """Interface name in ``module``'s scope -> its type's modport names.
+
+    What lets ``.m(u_if.sub)`` — a binding of the ``sub`` modport of
+    ``u_if`` — read as a whole-interface binding rather than as a
+    member net called ``sub``.
+    """
+    types = {
+        inst.name: inst.module_name
+        for inst in module.instances
+        if inst.module_name in table.interfaces_by_name
+    }
+    types.update(
+        (p.name, p.interface_type or "")
+        for p in module.ports
+        if p.port_kind == "interface"
+    )
+    out: dict[str, frozenset[str]] = {}
+    for name, type_name in types.items():
+        iface = table.interfaces_by_name.get(type_name)
+        if iface is not None and iface.modports:
+            out[name] = frozenset(mp.name for mp in iface.modports)
+    return out
+
+
 def _scan_refs(
-    expr_text: str, interfaces: frozenset[str] | set[str]
+    expr_text: str,
+    interfaces: frozenset[str] | set[str],
+    modports: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(keys, whole)`` for one expression slice.
 
     ``keys`` is :func:`net_keys`. ``whole`` lists the whole-interface
     references among them as their select prefix (``cfg``, ``q[1]``),
     so the caller can attach such a binding to the member nets it
-    spans (see :func:`_expand_whole`).
+    spans (see :func:`_expand_whole`). ``modports`` names each
+    interface's modports (:func:`_interface_modports`): a select of
+    one (``u_if.sub``) is a whole-interface reference too.
     """
     keys: dict[str, None] = {}
     whole: dict[str, None] = {}
@@ -333,6 +424,9 @@ def _scan_refs(
             continue
         indices = _WS_RE.sub("", tail.group(1))
         member = tail.group(2)
+        if member is not None and modports and member in modports.get(name, ()):
+            members_at.add(tail.start(2))
+            member = None
         if member is None:
             keys.setdefault(name, None)
             whole.setdefault(name + indices, None)
@@ -351,6 +445,159 @@ def _key_root(key: str) -> str:
 def _is_member_key(key: str) -> bool:
     """True for an interface member path rather than a plain net name."""
     return "." in key
+
+
+def _is_handshake_name(name: str) -> bool:
+    """True when any token of ``name`` reads as a return-path signal."""
+    return any(_HANDSHAKE_TOKEN_RE.match(tok) for tok in name.split("_") if tok)
+
+
+def _is_clock_or_reset_name(name: str) -> bool:
+    """The block-diagram clock/reset name test, on one bare name."""
+    return bool(
+        _CLOCK_NAME_RE.search(name)
+        or _RESET_NAME_RE.search(name)
+        or _BLOCK_EXTRA_CLOCK_RE.search(name)
+        or _BLOCK_EXTRA_RESET_RE.search(name)
+    )
+
+
+def modport_direction(modport: Modport) -> Literal["input", "output"] | None:
+    """Which way a modport's traffic flows, as one port direction.
+
+    A whole-interface binding (``.o(shared)``) is one wire on a block
+    diagram, so it needs one direction. The modport says it per
+    signal; this folds those into one answer
+    (rtl-buddy-sch#194):
+
+    1. Clock- and reset-named signals are dropped — an ``input clk``
+       sits in every modport of a synchronous interface and says
+       nothing about which way the data goes.
+    2. **Return-path signals are dropped** when anything else is
+       left: handshake names (``ready``/``rdy`` in any spelling,
+       ``ack``, ``gnt``, ``credit``, ``stall``, ``wait``; see
+       :data:`_HANDSHAKE_TOKEN_RE`). ``modport src (output v, output
+       d, input r)`` is a source — its ``r`` is the reply, the way
+       ``bundle=`` folds a valid/ready return path into the data
+       direction.
+    3. The **majority by signal count** of what remains wins:
+       ``"output"`` when outputs outnumber inputs, ``"input"`` the
+       other way round. All-output and all-input modports are the
+       unanimous case of the same rule; a request/response modport
+       (``output addr, wdata, input rdata``) takes its request side.
+    4. A **tie**, or a modport with no input or output left to vote
+       (all ``inout``, or empty), is ``None`` — unresolved. Callers
+       treat that like a modport-less interface port rather than
+       guess an arrow.
+
+    ``inout`` signals never vote: they are bidirectional by
+    declaration. Width is not weighed (it is often parameterised and
+    unresolvable here); the count is the documented, predictable
+    rule.
+    """
+    voters = [(name, "input") for name in modport.inputs] + [
+        (name, "output") for name in modport.outputs
+    ]
+    voters = [(n, d) for n, d in voters if not _is_clock_or_reset_name(n)]
+    data = [(n, d) for n, d in voters if not _is_handshake_name(n)]
+    pool = data or voters
+    outputs = sum(1 for _, d in pool if d == "output")
+    inputs = len(pool) - outputs
+    if outputs > inputs:
+        return "output"
+    if inputs > outputs:
+        return "input"
+    return None
+
+
+def is_observer_modport(iface: Interface, modport: Modport) -> bool:
+    """True for a passive monitor modport: it reads, and only reads.
+
+    A modport with no outputs or inouts is a sink — but so is the
+    consumer of a valid/data interface with no ready. What makes it a
+    **monitor** is that it listens to *both* halves of a handshake:
+    it reads a signal that a sink-side modport of the same interface
+    drives (``mon`` reads ``r``, which ``snk`` drives). No real
+    consumer reads its own reply. A modport *named* like an observer
+    (``mon``, ``monitor``, ``passive``, ``snoop``, …) with no outputs
+    counts too.
+
+    The block diagram draws a monitor's tap as ``side`` emphasis: the
+    dataflow into it is real (and is why the monitor has outputs),
+    but it is not the path the reader follows.
+    """
+    if modport.outputs or modport.inouts or not modport.inputs:
+        return False
+    if modport.name.lower() in _OBSERVER_MODPORT_NAMES:
+        return True
+    reads = set(modport.inputs)
+    return any(
+        other.name != modport.name
+        and modport_direction(other) == "input"
+        and reads.intersection(other.outputs)
+        for other in iface.modports
+    )
+
+
+@dataclass(frozen=True)
+class InterfaceBinding:
+    """What a port's interface type and modport say about its traffic.
+
+    ``direction`` is :func:`modport_direction` (``None`` when the
+    modport is missing, unparsed, or a tie). ``members`` maps each
+    signal the modport exposes to its declared direction, sorted by
+    name. ``observer`` is :func:`is_observer_modport`.
+    """
+
+    direction: Literal["input", "output"] | None
+    members: tuple[tuple[str, _Direction], ...] = ()
+    observer: bool = False
+
+
+def interface_binding(port: Port, table: ModuleTable) -> InterfaceBinding | None:
+    """Resolve an interface port's modport, or ``None`` for a wire port.
+
+    An interface port whose type the filelist doesn't define, or which
+    names no modport (``bus_if b``), or a modport the interface
+    doesn't declare, resolves to an empty binding: no direction, no
+    members.
+    """
+    port = resolve_interface_port(port, table)
+    if port.port_kind != "interface":
+        return None
+    iface = table.interfaces_by_name.get(port.interface_type or "")
+    if iface is None or port.modport is None:
+        return InterfaceBinding(direction=None)
+    modport = next((mp for mp in iface.modports if mp.name == port.modport), None)
+    if modport is None:
+        return InterfaceBinding(direction=None)
+    members: dict[str, _Direction] = {}
+    for direction, names in (
+        ("input", modport.inputs),
+        ("output", modport.outputs),
+        ("inout", modport.inouts),
+    ):
+        for name in names:
+            members.setdefault(name, direction)  # type: ignore[arg-type]
+    return InterfaceBinding(
+        direction=modport_direction(modport),
+        members=tuple(sorted(members.items())),
+        observer=is_observer_modport(iface, modport),
+    )
+
+
+def port_direction(port: Port, table: ModuleTable) -> _Direction | None:
+    """A port's declared direction, or its modport's folded one.
+
+    A wire port reports what it declares. An interface port has no
+    declared direction; its modport's (:func:`modport_direction`) is
+    the best one-word answer there is, and ``None`` when the modport
+    can't decide.
+    """
+    if port.direction is not None:
+        return port.direction
+    binding = interface_binding(port, table)
+    return binding.direction if binding is not None else None
 
 
 def port_width(
@@ -518,12 +765,25 @@ def scope_connectivity(
       joins every member net the scope selects, so it keeps the edges
       it had before members were split; so does a scope interface
       port. Net hints on the interface apply to all its members.
-    * An interface port has no direction, so it joins its group as a
-      driver when the group has known sinks and as a sink when it has
-      known drivers — both when it has both, since an interface bundle
-      genuinely carries traffic in both directions. With neither it
-      defaults to a driver (an unconsumed bundle still reads as an
-      input to the block).
+    * A child pin whose formal is an interface port with a **modport**
+      (``bus_if.src o``) takes the modport's folded direction
+      (:func:`modport_direction`): ``.o(shared)`` drives ``shared``
+      and ``.i(shared)`` on a ``snk`` reads it, so the two siblings get
+      one edge labelled ``shared`` (rtl-buddy-sch#194). Its member
+      nets, where the scope selects any, take the modport's
+      per-signal directions instead. A modport-less (or undecidable)
+      interface formal faces the known pins: it reads when the group
+      has a driver and drives when the group has only readers. An
+      edge whose every destination pin is a passive monitor modport
+      (:func:`is_observer_modport`) is ``side`` emphasis unless a
+      hint says otherwise. Interface *instances* are not endpoints
+      at all: they are the wire.
+    * A scope's own interface port has no direction, so it joins its
+      group as a driver when the group has known sinks and as a sink
+      when it has known drivers — both when it has both, since an
+      interface bundle genuinely carries traffic in both directions.
+      With neither it defaults to a driver (an unconsumed bundle still
+      reads as an input to the block).
     * A driver only reaches a sink whose root is reachable from the
       driver's root along the assign flow graph (reflexively, so a
       shared net needs no assign at all). A pin driving the *left*
@@ -567,8 +827,11 @@ def scope_connectivity(
     ``assign`` drives is still measured, from its own declaration.
     """
     scope_params = params if params is not None else module_param_defaults(module)
+    module = _resolved_ports(module, table)
     interfaces = interface_roots(module, table)
-    raw_pins = _collect_pins(module, table, pin_hints, interfaces)
+    raw_pins = _collect_pins(
+        module, table, pin_hints, interfaces, _interface_modports(module, table)
+    )
     assign_keys = [
         (net_keys(a.lhs_text, interfaces), net_keys(a.rhs_text, interfaces))
         for a in module.assigns
@@ -577,7 +840,7 @@ def scope_connectivity(
         [key for pin in raw_pins for key in pin.roots]
         + [key for lhs, rhs in assign_keys for key in (*lhs, *rhs)]
     )
-    pins = tuple(_expand_whole(pin, members) for pin in raw_pins)
+    pins = tuple(split for pin in raw_pins for split in _expand_whole(pin, members))
     # Pins first so their roots exist as flow-graph nodes before the
     # assign pass wires them; isolated roots still need a component of
     # their own for the direct same-net case.
@@ -609,6 +872,7 @@ def scope_connectivity(
             slot[1].update(src_pins)
             slot[2].update(dst_pins)
 
+    observers = {(pin.endpoint, pin.formal) for pin in pins if pin.observer}
     edges = [
         NetEdge(
             src=src,
@@ -618,7 +882,8 @@ def scope_connectivity(
             dst_pins=tuple(sorted(dst_pins)),
             bits=_bundle_bits(nets, widths),
             bits_expr=_bundle_bits_expr(nets, widths, exprs),
-            emphasis=_bundle_emphasis(nets, net_hints),
+            emphasis=_bundle_emphasis(nets, net_hints)
+            or _observer_emphasis(dst, dst_pins, observers),
             bundle=_bundle_name(nets, net_hints),
         )
         for (src, dst), (nets, src_pins, dst_pins) in sorted(bundled.items())
@@ -654,6 +919,19 @@ class _Pin:
     #: Whole-interface references in the binding, as select prefixes
     #: (``cfg``, ``q[1]``) — see :func:`_expand_whole`.
     whole: tuple[str, ...] = ()
+    #: The formal is an interface port (rtl-buddy-sch#194). Its
+    #: direction, when set, is the modport's folded one, and it lends
+    #: no width: an interface bundle has none.
+    iface: bool = False
+    #: An interface formal whose direction the modport could not
+    #: settle (no modport, an unparsed one, or a tie). Joins its group
+    #: opposite to the known pins — see :meth:`_Group.edges`.
+    generic: bool = False
+    #: The modport's per-signal directions, for splitting a whole
+    #: binding onto the member nets the scope selects.
+    modport_signals: tuple[tuple[str, _Direction], ...] = ()
+    #: A passive-monitor modport (:func:`is_observer_modport`).
+    observer: bool = False
 
 
 #: ``endpoint -> net root -> formal pin names``. One bucket per role
@@ -764,6 +1042,7 @@ class _Group:
         self.sinks: _Bucket = {}
         self.unknown: _Bucket = {}
         self.interfaces: _Bucket = {}
+        self.generic: _Bucket = {}
 
     def add(
         self,
@@ -803,6 +1082,14 @@ class _Group:
                 _merge_bucket(sinks, {endpoint: roots})
         if drivers:
             _merge_bucket(sinks, self.unknown)
+            _merge_bucket(sinks, self.generic)
+        elif sinks:
+            # A modport-less interface pin facing only readers is
+            # their source: it takes the direction opposite to the
+            # modport pins it meets (rtl-buddy-sch#194). Facing
+            # drivers it reads, like any unknown pin; facing nothing
+            # known it stays undrawn rather than invent an arrow.
+            _merge_bucket(drivers, self.generic)
         out: list[tuple[Endpoint, Endpoint, set[str], set[str], set[str]]] = []
         for src, src_roots in drivers.items():
             downstream_of = {root: flow.reachable_from(root) for root in src_roots}
@@ -831,6 +1118,7 @@ def _collect_pins(
     table: ModuleTable,
     pin_hints: Mapping[str, Mapping[str, PinDirection]] | None = None,
     interfaces: frozenset[str] = frozenset(),
+    modports: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[_Pin, ...]:
     """Resolve every named child-instance pin into a :class:`_Pin`.
 
@@ -838,14 +1126,22 @@ def _collect_pins(
     empty (an unresolved child, or a pin the child's port list
     doesn't know) — the declaration always beats the hint.
     ``interfaces`` names the scope's interfaces, whose member selects
-    key on the member path (:func:`net_keys`).
+    key on the member path (:func:`net_keys`); ``modports`` lets a
+    modport select (``.m(u_if.sub)``) bind the whole interface.
     """
     pins: list[_Pin] = []
     for inst in module.instances:
+        if inst.module_name in table.interfaces_by_name:
+            # An interface instance is the wire, not an endpoint: its
+            # own port list (``.clk(clk)``) feeds the bundle, and the
+            # block diagram draws no box for it (rtl-buddy-sch#194).
+            continue
         hinted: Mapping[str, PinDirection] = (
             pin_hints.get(inst.name, {}) if pin_hints is not None else {}
         )
         child = table.modules_by_name.get(inst.module_name)
+        if child is not None:
+            child = _resolved_ports(child, table)
         directions: dict[str, _Direction | None] = (
             {p.name: p.direction for p in child.ports} if child is not None else {}
         )
@@ -854,6 +1150,12 @@ def _collect_pins(
             if child is not None
             else {}
         )
+        bindings: dict[str, InterfaceBinding] = {}
+        if child is not None:
+            for p in child.ports:
+                binding = interface_binding(p, table)
+                if binding is not None:
+                    bindings[p.name] = binding
         params = tuple(sorted(instance_params(child, inst.param_overrides).items()))
         endpoint: Endpoint = ("inst", inst.name)
         for conn in inst.port_connections:
@@ -864,11 +1166,14 @@ def _collect_pins(
             # Implicit ``.name`` shorthand: the elaborator binds it to
             # the same-named net, so that is what we resolve it to.
             expr = conn.net_expr_text.strip() or conn.port_name
-            roots, whole = _scan_refs(expr, interfaces)
+            roots, whole = _scan_refs(expr, interfaces, modports)
             if not roots:
                 continue
             direction = directions.get(conn.port_name) if child is not None else None
-            if direction is None:
+            binding = bindings.get(conn.port_name)
+            if binding is not None:
+                direction = binding.direction
+            elif direction is None:
                 direction = hinted.get(conn.port_name)
             pins.append(
                 _Pin(
@@ -879,6 +1184,10 @@ def _collect_pins(
                     type_text=types.get(conn.port_name),
                     params=params,
                     whole=whole,
+                    iface=binding is not None,
+                    generic=binding is not None and binding.direction is None,
+                    modport_signals=binding.members if binding is not None else (),
+                    observer=binding is not None and binding.observer,
                 )
             )
     return tuple(pins)
@@ -906,25 +1215,49 @@ def _members_under(prefix: str, members: Mapping[str, tuple[str, ...]]) -> list[
     return [key for key in under if key.startswith(prefix + ".")]
 
 
-def _expand_whole(pin: _Pin, members: Mapping[str, tuple[str, ...]]) -> _Pin:
+def _expand_whole(
+    pin: _Pin, members: Mapping[str, tuple[str, ...]]
+) -> tuple[_Pin, ...]:
     """Attach a whole-interface binding to the member nets it spans.
 
     A pin bound to a whole interface (``.bus(cfg)``) keeps its root key
-    — two whole bindings of one interface still meet on ``cfg``, as
-    they always have — and additionally joins every member net of that
-    interface the scope references by member select. Without this, a
-    whole binding would lose the edges it had before member selects
-    got their own keys. Orienting a whole binding from its modport is
-    rtl-buddy-sch#194's job; this keeps its present behaviour.
+    — two whole bindings of one interface meet on ``cfg``, oriented by
+    their modports' folded directions — and additionally joins every
+    member net of that interface the scope references by member
+    select. Without this, a whole binding would lose the edges it had
+    before member selects got their own keys.
+
+    When the formal's modport is known, each member joins in **the
+    direction the modport gives that member** (rtl-buddy-sch#194): a
+    ``snk`` binding drives ``cfg.r`` and reads ``cfg.v``, whatever the
+    folded direction of the whole says. A member the modport doesn't
+    expose is not reachable through this binding and is skipped. A
+    modport-less binding joins every member with the pin's own
+    (unresolved) direction, as before.
     """
     if not pin.whole:
-        return pin
-    roots = dict.fromkeys(pin.roots)
+        return (pin,)
+    spanned: dict[str, None] = {}
     for prefix in pin.whole:
-        roots.update(dict.fromkeys(_members_under(prefix, members)))
-    if len(roots) == len(pin.roots):
-        return pin
-    return dataclasses.replace(pin, roots=tuple(roots))
+        spanned.update(dict.fromkeys(_members_under(prefix, members)))
+    if not pin.modport_signals:
+        roots = dict.fromkeys(pin.roots)
+        roots.update(spanned)
+        if len(roots) == len(pin.roots):
+            return (pin,)
+        return (dataclasses.replace(pin, roots=tuple(roots)),)
+    by_signal = dict(pin.modport_signals)
+    out = [pin]
+    for key in spanned:
+        direction = by_signal.get(key.rsplit(".", 1)[-1])
+        if direction is None:
+            continue
+        out.append(
+            dataclasses.replace(
+                pin, roots=(key,), direction=direction, generic=False, whole=()
+            )
+        )
+    return tuple(out)
 
 
 def _port_keys(port: Port, members: Mapping[str, tuple[str, ...]]) -> tuple[str, ...]:
@@ -1066,7 +1399,10 @@ def _driver_widths(
     """
     candidates = _Candidates()
     for pin in pins:
-        if pin.direction not in ("output", "inout"):
+        if pin.direction not in ("output", "inout") or pin.iface:
+            # An interface formal has no width to lend, and its folded
+            # direction must not make a member net's other, real
+            # driver look contested.
             continue
         if len(pin.roots) != 1:
             for root in pin.roots:
@@ -1161,6 +1497,8 @@ def _build_groups(
                 bucket = group.sinks
             elif pin.direction in ("output", "inout"):
                 bucket = group.drivers
+            elif pin.generic:
+                bucket = group.generic
             else:
                 bucket = group.unknown
             group.add(bucket, pin.endpoint, root, pin.formal)
@@ -1259,6 +1597,22 @@ def _bundle_emphasis(
     if "main" in found:
         return "main"
     if "side" in found:
+        return "side"
+    return None
+
+
+def _observer_emphasis(
+    dst: Endpoint, dst_pins: set[str], observers: set[tuple[Endpoint, str]]
+) -> Literal["side"] | None:
+    """``"side"`` for an edge that only taps into monitor modports.
+
+    A passive monitor (:func:`is_observer_modport`) reads the bus it
+    sits on; the edge into it is real dataflow, so it is drawn, but it
+    is not the path a reader follows, so it is drawn thin. Applied
+    only where the author's hints said nothing — an explicit emphasis
+    always wins.
+    """
+    if dst_pins and all((dst, pin) in observers for pin in dst_pins):
         return "side"
     return None
 

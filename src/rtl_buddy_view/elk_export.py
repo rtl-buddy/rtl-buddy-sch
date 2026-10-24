@@ -62,8 +62,10 @@ from rtl_buddy_view.connectivity import (
     Endpoint,
     NetEdge,
     instance_params,
+    port_direction,
     port_width,
     port_width_expr,
+    resolve_interface_port,
     scope_connectivity,
 )
 from rtl_buddy_view.extractor import Instance, Module, ModuleTable
@@ -402,7 +404,10 @@ def _ports(
         _port_entry(
             hier.instance_path,
             port.name,
-            port.direction,
+            # An interface port's direction is its modport's folded
+            # one (rtl-buddy-sch#194, docs § 3); a wire port's is
+            # what it declares.
+            port_direction(port, table),
             port_width(port.type_text, params) if port.port_kind == "wire" else None,
             port_width_expr(port.type_text) if port.port_kind == "wire" else None,
             # The root has no binding site: it is the sheet boundary,
@@ -411,7 +416,9 @@ def _ports(
             connected=hier.instance is None or port.name in bound,
             net=(port.name if hier.instance is None else bound.get(port.name)) or None,
         )
-        for port in module.ports
+        # ``bus_if gen`` is a modport-less interface port, not a net
+        # port of type ``bus_if``: no width to report.
+        for port in (resolve_interface_port(p, table) for p in module.ports)
     ]
 
 
