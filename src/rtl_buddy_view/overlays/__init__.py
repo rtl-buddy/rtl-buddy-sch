@@ -15,8 +15,8 @@ plugin layer:
   parsed data so the registry can pass overlays around without
   caring about their concrete payload shape.
 - :class:`OverlayRegistry` — name → Overlay instance dispatch.
-  Built-ins (``clock``, ``clock-tb``, ``reset``, ``coverage``,
-  ``wave``, ``axi-perf``, ``hints``, ``phys``) are registered by
+  Built-ins (``clock``, ``clock-tb``, ``clock-colors``, ``reset``,
+  ``coverage``, ``wave``, ``axi-perf``, ``hints``, ``phys``) are registered by
   :func:`default_registry`. Third-party packages register via
   the :data:`ENTRY_POINT_GROUP` (``rtl_buddy_view.overlays``)
   entry-point group; :func:`default_registry` discovers them
@@ -270,6 +270,7 @@ def default_registry(*, warn_stream: IO[str] | None = None) -> OverlayRegistry:
 
     from rtl_buddy_view.overlays.axi_perf import AxiPerfOverlay
     from rtl_buddy_view.overlays.clock import ClockOverlay
+    from rtl_buddy_view.overlays.clock_colors import ClockColorsOverlay
     from rtl_buddy_view.overlays.clock_tb import ClockTbOverlay
     from rtl_buddy_view.overlays.coverage import CoverageOverlay
     from rtl_buddy_view.overlays.hints import HintsOverlay
@@ -286,6 +287,7 @@ def default_registry(*, warn_stream: IO[str] | None = None) -> OverlayRegistry:
     registry.register(CoverageOverlay())
     registry.register(HintsOverlay())
     registry.register(PhysOverlay())
+    registry.register(ClockColorsOverlay())
 
     for instance, source in _discover_external_overlays(stream):
         if instance.name in registry.names():

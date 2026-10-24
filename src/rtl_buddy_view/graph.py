@@ -23,7 +23,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 
-from rtl_buddy_view.extractor import Instance, Module, ModuleTable
+from rtl_buddy_view.extractor import Instance, Module, ModuleTable, ParameterOverride
 
 
 class HierarchyError(ValueError):
@@ -54,6 +54,29 @@ class HierNode:
     # a downstream contract and phase 1 doesn't need the SPA to read
     # labels.
     display_label: str | None = None
+    # Which parameter overrides the node's box shows, from a
+    # ``// rbsch: params=…`` hint or ``--params none``
+    # (rtl-buddy-sch#196): ``None`` shows every override (the default,
+    # and the graph builder's only value), ``()`` none, and a tuple of
+    # names just those, in the source's override order. Display-only
+    # like ``display_label``: ``Instance.param_overrides`` and every
+    # JSON / ELK payload keep the full list.
+    display_params: tuple[str, ...] | None = None
+
+    @property
+    def shown_param_overrides(self) -> tuple[ParameterOverride, ...]:
+        """The parameter overrides a box for this node displays.
+
+        A positional override has no name to match, so a name list
+        drops it; ``None`` keeps everything.
+        """
+        if self.instance is None:
+            return ()
+        overrides = self.instance.param_overrides
+        if self.display_params is None:
+            return overrides
+        keep = set(self.display_params)
+        return tuple(ov for ov in overrides if ov.param_name in keep)
 
 
 def build_hierarchy(table: ModuleTable, top: str) -> HierNode:

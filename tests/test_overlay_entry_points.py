@@ -173,6 +173,7 @@ def test_no_externals_no_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
     assert registry.names() == (
         "axi-perf",
         "clock",
+        "clock-colors",
         "clock-tb",
         "coverage",
         "hints",

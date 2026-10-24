@@ -52,6 +52,7 @@ src/rtl_buddy_view/
 ├── query.py               # walk, subtree, instances_of, port_connections, source_snippet
 ├── connectivity.py        # scope_connectivity(): sibling dataflow for --block-diagram
 ├── hints.py               # `// rbsch:` pragma scanner + hint sidecar → HintMap → apply_hints()
+├── clock_colors.py        # per-figure clock → colour assignment + `clock-colors` overlay doc
 ├── annotations.py         # DomainMap loader (rtl-buddy-cdc#106 schema v1.0)
 └── render/
     ├── __init__.py
@@ -101,11 +102,14 @@ THIRD-PARTY-NOTICES.md     # what the wheel redistributes + their licenses
   is gated behind the `[slang]` optional extra. Lint/test groups
   are the place for tooling.
 - Output must be **deterministic**. All renderers sort their output
-  (instance paths, edges, crossings) with alphabetical tie-breaks;
-  the dot/mermaid clock palette is keyed by `sha256(clock_name)` so
-  color choice is stable across `PYTHONHASHSEED`. Golden diffs
-  downstream rely on this — don't introduce dict/set iteration
-  order into emitted bytes.
+  (instance paths, edges, crossings) with alphabetical tie-breaks.
+  The dot/mermaid clock palette (`clock_colors.py`, rtl-buddy-sch#196)
+  gives author-chosen colours first, then deals the swatches to the
+  figure's clocks in sorted-name order — the same rule as the SPA's
+  `viewer/src/palette.js::buildClockPalette` — and falls back to
+  `sha256(clock_name)` only past seven clocks, so color choice is
+  stable across `PYTHONHASHSEED`. Golden diffs downstream rely on
+  this — don't introduce dict/set iteration order into emitted bytes.
 
 ## Validation commands
 

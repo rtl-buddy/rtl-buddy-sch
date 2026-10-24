@@ -148,8 +148,8 @@ Phase-7b built-in is `phys`, not `openroad` or `power`.
 Collisions with a built-in name are detected at registry build
 time and resolved in favour of the built-in, with a stderr
 warning naming your package. Don't use a built-in name
-(`axi-perf`, `clock`, `clock-tb`, `coverage`, `hints`, `phys`,
-`reset`, `wave`).
+(`axi-perf`, `clock`, `clock-colors`, `clock-tb`, `coverage`,
+`hints`, `phys`, `reset`, `wave`).
 
 ### `schema_version`
 

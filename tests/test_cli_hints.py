@@ -154,7 +154,7 @@ def test_malformed_sidecar_exits_1_with_the_overlay_prefix(tmp_path: Path) -> No
 
 def test_hints_overlay_is_listed() -> None:
     result = _run("--list-overlays")
-    assert "hints\t1.1\t(built-in)" in result.stdout
+    assert "hints\t1.2\t(built-in)" in result.stdout
 
 
 # --- warnings ---------------------------------------------------------------

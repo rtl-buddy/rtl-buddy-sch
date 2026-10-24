@@ -23,7 +23,7 @@ digraph hierarchy {
   "top.u_rstgen" [label="u_rstgen\lrstsync\l[clk_b]\l", fillcolor="#dcfce7"];
   "top.u_rstgen.u_sync" [label="u_sync\lff\l[clk_b]\l✓rstsync\l", fillcolor="#dcfce7", color="#0d9488", penwidth=2];
   "top.u_fifo" [label="u_fifo\lfifo\l[clk_a, clk_b]\l[rst_n↓]\l"];
-  "top.u_fifo.u_wr_ptr" [label="u_wr_ptr\lff\l[clk_a]\l[rst_n↓]\l", fillcolor="#fef9c3"];
+  "top.u_fifo.u_wr_ptr" [label="u_wr_ptr\lff\l[clk_a]\l[rst_n↓]\l", fillcolor="#dbeafe"];
   "top.u_fifo.u_rd_ptr" [label="u_rd_ptr\lff\l[clk_b]\l[rst_n↓]\l", fillcolor="#dcfce7"];
   "top.u_rstgen" -> "top.u_rstgen.u_sync" [label=".clk  (clk)\l.rst_n(rst_n)\l.q    (rst_sync)\l"];
   "top.u_fifo" -> "top.u_fifo.u_wr_ptr" [label=".clk  (clk_a)\l.rst_n(rst_n)\l.q\l"];

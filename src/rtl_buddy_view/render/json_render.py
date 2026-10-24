@@ -291,10 +291,12 @@ def _layout_block(
     ``domain_map`` / ``reset_map`` / ``with_legend`` are intentionally
     NOT forwarded to the embedded DOT. Producer-baked clock/reset
     fills survive the SPA's overlay toggle (the inline-style clear
-    can't reach the polygon's ``fill=`` attribute), and the
-    hash-keyed Python palette disagrees with the SPA's first-seen
-    assignment so the legend would lie. The SPA is the single source
-    of truth for overlay coloring — it reads per-node
+    can't reach the polygon's ``fill=`` attribute), and the SPA
+    deals its own palette (``viewer/src/palette.js``) — the same
+    sorted-order rule as :mod:`rtl_buddy_view.clock_colors`, but over
+    the SPA's own clock set and without the author-chosen colours, so
+    baked fills could still disagree with its legend. The SPA is the
+    single source of truth for overlay coloring — it reads per-node
     ``overlays.clock`` / ``overlays.reset`` metadata and paints on
     top of a *structurally* laid-out diagram.
 

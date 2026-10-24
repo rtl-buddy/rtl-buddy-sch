@@ -39,6 +39,10 @@ _CLUSTER_REF_RE = re.compile(r'\bl(?:head|tail)="([^"]+)"')
 
 _MODES = {
     "block": {"block_diagram": True},
+    # ``--prune-flags`` (rtl-buddy-sch#196) must never prune a flag an
+    # edge names; with the fixtures' root-port ``hide`` / ``bundle=``
+    # pragmas this also covers re-pointed and dropped flag edges.
+    "block-pruned": {"block_diagram": True, "prune_flags": True},
     "cluster": {"as_cluster_tree": True},
     "tree": {},
 }
@@ -67,7 +71,12 @@ def _undeclared(text: str) -> list[str]:
 
 def test_the_sweep_covers_the_interface_fixtures() -> None:
     names = {f.parent.name for f in _filelists()}
-    assert {"iface_member_select", "iface_modport_edges", "iface_root_ports"} <= names
+    assert {
+        "block_presentation",
+        "iface_member_select",
+        "iface_modport_edges",
+        "iface_root_ports",
+    } <= names
 
 
 @pytest.mark.parametrize("filelist", _filelists(), ids=lambda p: p.parent.name)

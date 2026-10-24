@@ -7,7 +7,8 @@ Phase 4 (#17) surface::
                    [--frontend verible|slang] \\
                    [--overlay name=path]... \\
                    [--list-overlays] \\
-                   [--clock-legend]
+                   [--clock-legend] [--block-diagram [--prune-flags]] \\
+                   [--params all|none]
 
 ``--overlay name=path`` is the single generalized hook for every
 overlay type — clock, reset, coverage, wave, axi-perf, hints and
@@ -51,6 +52,11 @@ from rtl_buddy_view.annotations import (
     AnnotationsError,
     DomainMap,
 )
+from rtl_buddy_view.clock_colors import (
+    ClockColorMap,
+    ClockColorsError,
+    chosen_clock_colors,
+)
 from rtl_buddy_view.coverage_annotations import (
     DEFAULT_URL_BASE as COVERAGE_DEFAULT_URL_BASE,
     CoverageAnnotationsError,
@@ -71,6 +77,7 @@ from rtl_buddy_view.hints import (
     HintMap,
     HintsError,
     apply_hints,
+    hide_all_params,
     merge_hint_maps,
     resolve_hints,
     scan_pragmas,
@@ -107,6 +114,13 @@ class OutputFormat(str, Enum):
     mermaid = "mermaid"
     json = "json"
     elk = "elk"
+
+
+class ParamsMode(str, Enum):
+    """Which parameter overrides a box shows (rtl-buddy-sch#196)."""
+
+    all = "all"
+    none = "none"
 
 
 class CoverageMetric(str, Enum):
@@ -263,6 +277,24 @@ def main(
         "which net — rather than parent-to-child port maps. Ignored "
         "with a warning for other formats.",
     ),
+    params_mode: ParamsMode = typer.Option(
+        ParamsMode.all,
+        "--params",
+        case_sensitive=False,
+        help="Dot and mermaid only: which parameter overrides each box "
+        "shows. all (default) shows every override, narrowed per "
+        "module or instance by a '// rbsch: params=…' pragma; none "
+        "shows no parameter rows anywhere, overriding the pragmas. "
+        "JSON / ELK payloads always carry every override.",
+    ),
+    prune_flags: bool = typer.Option(
+        False,
+        "--prune-flags",
+        help="With --block-diagram: draw no boundary flag for a root "
+        "port that no edge lands on — typically clock and reset ports "
+        "whose edges the dataflow classifier drops. A flag an edge or "
+        "CDC / RDC arrow names is always kept.",
+    ),
     no_pragmas: bool = typer.Option(
         False,
         "--no-pragmas",
@@ -310,6 +342,22 @@ def main(
             err=True,
         )
         block_diagram = False
+    if prune_flags and not block_diagram:
+        typer.echo(
+            "warning: --prune-flags applies to --block-diagram only; ignoring",
+            err=True,
+        )
+        prune_flags = False
+    if params_mode is ParamsMode.none and output_format not in (
+        OutputFormat.dot,
+        OutputFormat.mermaid,
+    ):
+        typer.echo(
+            f"warning: --params applies to --format dot and mermaid only "
+            f"(got {output_format.value}); ignoring",
+            err=True,
+        )
+        params_mode = ParamsMode.all
 
     overlay_specs = _collect_overlays(overlays_flag, cdc_annotations, rdc_annotations)
 
@@ -330,6 +378,7 @@ def main(
             CoverageAnnotationsError,
             PhysAnnotationsError,
             HintsError,
+            ClockColorsError,
         ) as e:
             # Loader exceptions carry the overlay's own prefix in
             # their message; we just qualify with the overlay name
@@ -366,6 +415,9 @@ def main(
         no_pragmas=no_pragmas,
         sidecar=annotations.get("hints"),
     )
+    if params_mode is ParamsMode.none:
+        # After the hint rewrite, so it beats every ``params=`` pragma.
+        root = hide_all_params(root)
 
     domain_map: DomainMap | None = annotations.get("clock")  # type: ignore[assignment]
     reset_map: ResetDomainMap | None = annotations.get("reset")  # type: ignore[assignment]
@@ -425,6 +477,18 @@ def main(
                 dut_top_module=top,
                 warn_stream=sys.stderr,
             )
+    # Author-chosen clock colours (rtl-buddy-sch#196): the overlay map
+    # over ``// rbsch: clock color=…`` pragmas on the clock ports of the
+    # rendered root or the domain map's design top.
+    clock_color_map = annotations.get("clock-colors")
+    clock_colors = chosen_clock_colors(
+        domain_map,
+        hints=hint_map,
+        modules=(root.module_name,)
+        + ((domain_map.design_top,) if domain_map is not None else ()),
+        overlay=clock_color_map if isinstance(clock_color_map, ClockColorMap) else None,
+    )
+
     # Carry the original axi-perf.json path through to the JSON
     # renderer so view.json can carry a top-level `axi_perf.source`
     # field — the SPA's "Open in marimo" button reads it to skip the
@@ -456,6 +520,8 @@ def main(
             phys_join=phys_join,
             block_diagram=block_diagram,
             hints=hint_map,
+            clock_colors=clock_colors,
+            prune_flags=prune_flags,
         )
     else:
         with output_path.open("w") as sink:
@@ -477,6 +543,8 @@ def main(
                 phys_join=phys_join,
                 block_diagram=block_diagram,
                 hints=hint_map,
+                clock_colors=clock_colors,
+                prune_flags=prune_flags,
             )
 
 
@@ -575,6 +643,8 @@ def _render(
     phys_join: PhysJoin | None = None,
     block_diagram: bool = False,
     hints: HintMap | None = None,
+    clock_colors: dict[str, str] | None = None,
+    prune_flags: bool = False,
 ) -> None:
     # The coverage overlay contributes to view.json only (the web
     # viewer paints the heatmap); tree/dot/mermaid output is
@@ -600,9 +670,17 @@ def _render(
             block_diagram=block_diagram,
             module_table=module_table,
             hints=hints,
+            clock_colors=clock_colors,
+            prune_flags=prune_flags,
         )
     elif fmt is OutputFormat.mermaid:
-        mermaid_render.render(root, sink, domain_map=domain_map, reset_map=reset_map)
+        mermaid_render.render(
+            root,
+            sink,
+            domain_map=domain_map,
+            reset_map=reset_map,
+            clock_colors=clock_colors,
+        )
     elif fmt is OutputFormat.elk:
         # The exporter reads formal pin names and declared widths off
         # the module table, so an absent table is not a degraded
