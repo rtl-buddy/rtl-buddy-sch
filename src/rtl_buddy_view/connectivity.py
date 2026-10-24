@@ -11,10 +11,15 @@ dependency, deterministic output (see AGENTS.md § Development rules).
 
 The algorithm is deliberately structural rather than semantic:
 
-1. Every child-instance pin is mapped to the **root identifiers** of
-   the expression it is bound to — ``hwif_out.ctrl.SRC.value`` and
-   ``hwif_out.op.OP.value`` both reduce to ``hwif_out``, and
-   ``cmd_data[18:16]`` reduces to ``cmd_data``.
+1. Every child-instance pin is mapped to the **net keys** of the
+   expression it is bound to. For an ordinary net that is its root
+   identifier — ``hwif_out.ctrl.SRC.value`` and ``hwif_out.op.OP.value``
+   (a struct) both reduce to ``hwif_out``, and ``cmd_data[18:16]``
+   reduces to ``cmd_data``. A member of an **interface instance** is a
+   net of its own, so it keeps its member path instead: ``cfg.a_en``,
+   ``q[1].c_sta`` (see :func:`net_keys`). Collapsing those to ``cfg`` /
+   ``q`` would put every block touching any member — or any element
+   of an interface array — on one net (rtl-buddy-sch#193).
 2. Continuous assignments build a **directed value-flow graph** over
    those roots: ``assign lhs = rhs;`` adds one edge ``rhs_root ->
    lhs_root`` per root pair, because value flows out of the RHS and
@@ -42,6 +47,9 @@ Remaining limits, all downstream of not running an elaborator:
 
 * Roots are recovered by a textual regex, so a net named inside a
   macro body or built by generate-scope mangling is invisible.
+* An interface member is keyed one level deep, by its spelling: a
+  non-constant index (``q[i].v``) only meets the same text, never
+  ``q[0].v``.
 * Index expressions count as reads (``mem[addr]`` yields both), and
   bit ranges are ignored — two disjoint slices of one vector alias.
 * Procedural assignments (``always`` blocks) contribute no flow edges;
@@ -60,7 +68,7 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 
-from rtl_buddy_view.extractor import Module, ModuleTable, ParameterOverride
+from rtl_buddy_view.extractor import Module, ModuleTable, ParameterOverride, Port
 from rtl_buddy_view.hints import NetHints, PinDirection
 from rtl_buddy_view.width_expr import (
     IDENT_RE,
@@ -114,6 +122,21 @@ _PACKED_RANGE_RE = re.compile(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]")
 #: parameter stand in for") that this module asks of a net expression
 #: ("which names here are roots"). One pattern, one place.
 _ROOT_IDENT_RE = IDENT_RE
+
+#: What may follow an interface-instance name to select one of its
+#: members: zero or more ``[index]`` element selects (an interface
+#: array), then an optional ``.member``. Matched at the end of a root
+#: identifier by :func:`_scan_refs`. Index text is taken verbatim
+#: (whitespace aside) and may not nest brackets — ``q[a[0]].v`` fails
+#: the member half and falls back to a whole-interface reference.
+_MEMBER_TAIL_RE = re.compile(
+    r"((?:\s*\[[^\[\]]*\])*)\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_$]*))?"
+)
+
+#: The leading identifier of a net key — its root.
+_KEY_ROOT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+
+_WS_RE = re.compile(r"\s+")
 
 #: ``("inst", <instance name>)`` or ``("port", <port name>)`` — one end
 #: of a :class:`NetEdge`, relative to the scope being analyzed.
@@ -225,6 +248,109 @@ def root_identifiers(expr_text: str) -> tuple[str, ...]:
     for match in _ROOT_IDENT_RE.finditer(expr_text):
         seen.setdefault(match.group(0), None)
     return tuple(seen)
+
+
+def interface_roots(module: Module, table: ModuleTable) -> frozenset[str]:
+    """Names in ``module``'s scope that denote an interface, not a net.
+
+    Two declarations make a name an interface rather than a net or a
+    struct-typed variable:
+
+    * a body instance whose module is an **interface** the frontend
+      parsed (``cfg_if cfg ();`` with ``cfg_if`` in
+      :attr:`~rtl_buddy_view.extractor.ModuleTable.interfaces_by_name`)
+      — interface arrays (``cfg_if q [2] ();``) included;
+    * a port of the scope itself with ``port_kind == "interface"``
+      (``bus_if.snk in_bus``).
+
+    A struct-typed ``logic`` is a :class:`~rtl_buddy_view.extractor.NetDecl`
+    or a wire port, never either of these, so ``s.field`` keeps
+    reducing to ``s``. An instance of an interface the filelist does
+    not define is not recognised (there is nothing to tell it from a
+    blackbox module) and keeps today's root-name behaviour.
+    """
+    names = {
+        inst.name
+        for inst in module.instances
+        if inst.module_name in table.interfaces_by_name
+    }
+    names.update(p.name for p in module.ports if p.port_kind == "interface")
+    return frozenset(names)
+
+
+def net_keys(
+    expr_text: str, interfaces: frozenset[str] | set[str] = frozenset()
+) -> tuple[str, ...]:
+    """The nets an expression slice references, as connectivity keys.
+
+    :func:`root_identifiers`, except that a reference into an
+    **interface** named in ``interfaces`` (see :func:`interface_roots`)
+    keeps its member path — the member is the net, the interface is
+    only a namespace::
+
+        net_keys("cfg.a_en", {"cfg"})            ->  ("cfg.a_en",)
+        net_keys("q[1].c_sta", {"q"})            ->  ("q[1].c_sta",)
+        net_keys("q[i].c_sta", {"q"})            ->  ("q[i].c_sta", "i")
+        net_keys("cfg.data[3:0]", {"cfg"})       ->  ("cfg.data",)
+        net_keys("s.field", {"cfg"})             ->  ("s",)      # a struct
+        net_keys("cfg", {"cfg"})                 ->  ("cfg",)    # whole
+
+    The key is the member path **as spelled**, whitespace removed:
+    element indices are kept verbatim (constant or not), and selects
+    past the first member (``cfg.data[3:0]``, ``cfg.s.f``) are dropped
+    the same way a struct field or bit range is on an ordinary net. A
+    reference to the whole interface (``cfg``, ``q[1]``) stays on the
+    root name, exactly as before. With ``interfaces`` empty this *is*
+    :func:`root_identifiers`.
+    """
+    return _scan_refs(expr_text, interfaces)[0]
+
+
+def _scan_refs(
+    expr_text: str, interfaces: frozenset[str] | set[str]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(keys, whole)`` for one expression slice.
+
+    ``keys`` is :func:`net_keys`. ``whole`` lists the whole-interface
+    references among them as their select prefix (``cfg``, ``q[1]``),
+    so the caller can attach such a binding to the member nets it
+    spans (see :func:`_expand_whole`).
+    """
+    keys: dict[str, None] = {}
+    whole: dict[str, None] = {}
+    # Start offsets of member names already folded into a key. The
+    # identifier regex skips a name preceded by ``.``, but not one
+    # spelled ``cfg . a_en`` — that member must not also count as a
+    # net of its own.
+    members_at: set[int] = set()
+    for match in _ROOT_IDENT_RE.finditer(expr_text):
+        if match.start() in members_at:
+            continue
+        name = match.group(0)
+        tail = _MEMBER_TAIL_RE.match(expr_text, match.end())
+        if name not in interfaces or tail is None:
+            keys.setdefault(name, None)
+            continue
+        indices = _WS_RE.sub("", tail.group(1))
+        member = tail.group(2)
+        if member is None:
+            keys.setdefault(name, None)
+            whole.setdefault(name + indices, None)
+            continue
+        members_at.add(tail.start(2))
+        keys.setdefault(f"{name}{indices}.{member}", None)
+    return tuple(keys), tuple(whole)
+
+
+def _key_root(key: str) -> str:
+    """The root identifier of a net key (``q[1].c_sta`` -> ``q``)."""
+    match = _KEY_ROOT_RE.match(key)
+    return match.group(0) if match is not None else key
+
+
+def _is_member_key(key: str) -> bool:
+    """True for an interface member path rather than a plain net name."""
+    return "." in key
 
 
 def port_width(
@@ -385,6 +511,13 @@ def scope_connectivity(
       guessing the port would invent connectivity.
     * Implicit ``.name`` shorthand binds to the same-named net, which
       is exactly what the elaborator does.
+    * A member select on an interface (:func:`interface_roots`) is its
+      own net, keyed and labelled by its member path (``cfg.a_en``,
+      ``q[1].c_sta``; :func:`net_keys`). A binding of the *whole*
+      interface (``.bus(cfg)``) stays on the interface's name and also
+      joins every member net the scope selects, so it keeps the edges
+      it had before members were split; so does a scope interface
+      port. Net hints on the interface apply to all its members.
     * An interface port has no direction, so it joins its group as a
       driver when the group has known sinks and as a sink when it has
       known drivers — both when it has both, since an interface bundle
@@ -434,24 +567,33 @@ def scope_connectivity(
     ``assign`` drives is still measured, from its own declaration.
     """
     scope_params = params if params is not None else module_param_defaults(module)
+    interfaces = interface_roots(module, table)
+    raw_pins = _collect_pins(module, table, pin_hints, interfaces)
+    assign_keys = [
+        (net_keys(a.lhs_text, interfaces), net_keys(a.rhs_text, interfaces))
+        for a in module.assigns
+    ]
+    members = _members_by_root(
+        [key for pin in raw_pins for key in pin.roots]
+        + [key for lhs, rhs in assign_keys for key in (*lhs, *rhs)]
+    )
+    pins = tuple(_expand_whole(pin, members) for pin in raw_pins)
     # Pins first so their roots exist as flow-graph nodes before the
     # assign pass wires them; isolated roots still need a component of
     # their own for the direct same-net case.
-    pins = _collect_pins(module, table, pin_hints)
     flow = _FlowGraph()
     for pin in pins:
         for root in pin.roots:
             flow.add(root)
     for port in module.ports:
-        flow.add(port.name)
-    for assign in module.assigns:
-        lhs_roots = root_identifiers(assign.lhs_text)
-        rhs_roots = root_identifiers(assign.rhs_text)
+        for key in _port_keys(port, members):
+            flow.add(key)
+    for lhs_roots, rhs_roots in assign_keys:
         for lhs in lhs_roots:
             for rhs in rhs_roots:
                 flow.connect(rhs, lhs)
 
-    groups = _build_groups(module, pins, flow)
+    groups = _build_groups(module, pins, flow, members)
     widths, exprs = _net_width_info(module, pins, scope_params)
 
     # (src, dst) -> (net names, src formals, dst formals), accumulated
@@ -509,6 +651,9 @@ class _Pin:
     formal: str
     type_text: str | None = None
     params: tuple[tuple[str, str], ...] = ()
+    #: Whole-interface references in the binding, as select prefixes
+    #: (``cfg``, ``q[1]``) — see :func:`_expand_whole`.
+    whole: tuple[str, ...] = ()
 
 
 #: ``endpoint -> net root -> formal pin names``. One bucket per role
@@ -685,12 +830,15 @@ def _collect_pins(
     module: Module,
     table: ModuleTable,
     pin_hints: Mapping[str, Mapping[str, PinDirection]] | None = None,
+    interfaces: frozenset[str] = frozenset(),
 ) -> tuple[_Pin, ...]:
     """Resolve every named child-instance pin into a :class:`_Pin`.
 
     ``pin_hints`` fills directions only where resolution came up
     empty (an unresolved child, or a pin the child's port list
     doesn't know) — the declaration always beats the hint.
+    ``interfaces`` names the scope's interfaces, whose member selects
+    key on the member path (:func:`net_keys`).
     """
     pins: list[_Pin] = []
     for inst in module.instances:
@@ -716,7 +864,7 @@ def _collect_pins(
             # Implicit ``.name`` shorthand: the elaborator binds it to
             # the same-named net, so that is what we resolve it to.
             expr = conn.net_expr_text.strip() or conn.port_name
-            roots = root_identifiers(expr)
+            roots, whole = _scan_refs(expr, interfaces)
             if not roots:
                 continue
             direction = directions.get(conn.port_name) if child is not None else None
@@ -730,9 +878,65 @@ def _collect_pins(
                     formal=conn.port_name,
                     type_text=types.get(conn.port_name),
                     params=params,
+                    whole=whole,
                 )
             )
     return tuple(pins)
+
+
+def _members_by_root(keys: list[str]) -> dict[str, tuple[str, ...]]:
+    """Interface member keys seen in the scope, grouped by root, sorted."""
+    found: dict[str, set[str]] = {}
+    for key in keys:
+        if _is_member_key(key):
+            found.setdefault(_key_root(key), set()).add(key)
+    return {root: tuple(sorted(under)) for root, under in found.items()}
+
+
+def _members_under(prefix: str, members: Mapping[str, tuple[str, ...]]) -> list[str]:
+    """The member keys a whole-interface select prefix spans.
+
+    ``cfg`` spans every ``cfg.*`` member and ``q`` every element's
+    members; ``q[1]`` only ``q[1].*``.
+    """
+    root = _key_root(prefix)
+    under = members.get(root, ())
+    if prefix == root:
+        return list(under)
+    return [key for key in under if key.startswith(prefix + ".")]
+
+
+def _expand_whole(pin: _Pin, members: Mapping[str, tuple[str, ...]]) -> _Pin:
+    """Attach a whole-interface binding to the member nets it spans.
+
+    A pin bound to a whole interface (``.bus(cfg)``) keeps its root key
+    — two whole bindings of one interface still meet on ``cfg``, as
+    they always have — and additionally joins every member net of that
+    interface the scope references by member select. Without this, a
+    whole binding would lose the edges it had before member selects
+    got their own keys. Orienting a whole binding from its modport is
+    rtl-buddy-sch#194's job; this keeps its present behaviour.
+    """
+    if not pin.whole:
+        return pin
+    roots = dict.fromkeys(pin.roots)
+    for prefix in pin.whole:
+        roots.update(dict.fromkeys(_members_under(prefix, members)))
+    if len(roots) == len(pin.roots):
+        return pin
+    return dataclasses.replace(pin, roots=tuple(roots))
+
+
+def _port_keys(port: Port, members: Mapping[str, tuple[str, ...]]) -> tuple[str, ...]:
+    """The net keys a scope port stands on.
+
+    A wire port is its own net. An interface port is the root of its
+    members, so — like a whole-interface pin — it stands on its own
+    name *and* on every member of it the scope selects.
+    """
+    if port.port_kind != "interface":
+        return (port.name,)
+    return (port.name, *members.get(port.name, ()))
 
 
 def _net_width_info(
@@ -939,7 +1143,10 @@ def _bundle_bits_expr(
 
 
 def _build_groups(
-    module: Module, pins: tuple[_Pin, ...], flow: _FlowGraph
+    module: Module,
+    pins: tuple[_Pin, ...],
+    flow: _FlowGraph,
+    members: Mapping[str, tuple[str, ...]] | None = None,
 ) -> dict[str, _Group]:
     """Bucket pins and module ports into their flow components."""
     groups: dict[str, _Group] = {}
@@ -959,17 +1166,18 @@ def _build_groups(
             group.add(bucket, pin.endpoint, root, pin.formal)
 
     for port in module.ports:
-        group = group_for(port.name)
         endpoint: Endpoint = ("port", port.name)
-        if port.direction == "input":
-            bucket = group.drivers
-        elif port.direction in ("output", "inout"):
-            bucket = group.sinks
-        else:
-            bucket = group.interfaces
-        # The scope's own port *is* the pin at that endpoint, so the
-        # formal name is the port name.
-        group.add(bucket, endpoint, port.name, port.name)
+        for key in _port_keys(port, members or {}):
+            group = group_for(key)
+            if port.direction == "input":
+                bucket = group.drivers
+            elif port.direction in ("output", "inout"):
+                bucket = group.sinks
+            else:
+                bucket = group.interfaces
+            # The scope's own port *is* the pin at that endpoint, so the
+            # formal name is the port name.
+            group.add(bucket, endpoint, key, port.name)
 
     return groups
 
@@ -995,20 +1203,41 @@ def _is_clock_or_reset_group(
         return True
 
     def clock_like(name: str) -> bool:
-        hint = net_hints.get(name) if net_hints else None
+        hint = _hint_for(name, net_hints)
         if hint is not None:
             if hint.classification in ("clock", "reset"):
                 return True
             if hint.classification == "data" or hint.emphasis is not None:
                 return False
+        # An interface member is classified by its own name: ``bus.clk``
+        # is a clock, and ``cfg.a_en`` is data whatever ``cfg`` is.
+        leaf = name.rsplit(".", 1)[-1]
         return bool(
-            _CLOCK_NAME_RE.search(name)
-            or _RESET_NAME_RE.search(name)
-            or _BLOCK_EXTRA_CLOCK_RE.search(name)
-            or _BLOCK_EXTRA_RESET_RE.search(name)
+            _CLOCK_NAME_RE.search(leaf)
+            or _RESET_NAME_RE.search(leaf)
+            or _BLOCK_EXTRA_CLOCK_RE.search(leaf)
+            or _BLOCK_EXTRA_RESET_RE.search(leaf)
         )
 
     return all(clock_like(name) for name in names)
+
+
+def _hint_for(name: str, net_hints: Mapping[str, NetHints] | None) -> NetHints | None:
+    """The net hint governing one net key.
+
+    A plain net looks itself up. An interface member (``cfg.a_en``,
+    ``q[1].c_sta``) has no declaration of its own in the scope to carry
+    a pragma, so it inherits the hint on its interface — the instance
+    or interface port that declares ``cfg`` / ``q`` — unless a hint is
+    keyed on the member path itself. That is what lets ``bundle=`` on
+    an interface fold its members back into one named edge.
+    """
+    if not net_hints:
+        return None
+    hint = net_hints.get(name)
+    if hint is None and _is_member_key(name):
+        hint = net_hints.get(_key_root(name))
+    return hint
 
 
 def _bundle_emphasis(
@@ -1023,9 +1252,9 @@ def _bundle_emphasis(
     if not net_hints:
         return None
     found = {
-        net_hints[name].emphasis
-        for name in nets
-        if name in net_hints and net_hints[name].emphasis is not None
+        hint.emphasis
+        for hint in (_hint_for(name, net_hints) for name in nets)
+        if hint is not None and hint.emphasis is not None
     }
     if "main" in found:
         return "main"
@@ -1047,7 +1276,10 @@ def _bundle_name(
     """
     if not net_hints or not nets:
         return None
-    names = {net_hints[n].bundle if n in net_hints else None for n in nets}
+    names = {
+        hint.bundle if hint is not None else None
+        for hint in (_hint_for(n, net_hints) for n in nets)
+    }
     if len(names) != 1:
         return None
     (name,) = names

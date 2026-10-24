@@ -109,6 +109,15 @@ Two net-specific refinements:
 - Ports are net targets too: a clock is very often a port of the
   scope being drawn, and a trailing `// rbsch: clock` on the port
   declaration is the natural spelling.
+- So are **interfaces** — an interface instance (`cfg_if cfg ();`)
+  or an interface port of the scope. The block diagram treats each
+  member an instance binds (`.en(cfg.a_en)`, `.sta(q[1].c_sta)`) as
+  a net of its own, named by its member path; none of those members
+  has a declaration in the scope to carry a pragma, so a net hint on
+  the interface speaks for **every member** of it. A hint keyed on the
+  member path itself, where one exists, wins over the interface's.
+  Classification without a hint reads the member's own name: `bus.clk`
+  is a clock, `cfg.a_en` is data.
 
 Association uses the `SourceLocation` every extractor dataclass
 already carries, so there is no CST surgery involved — a per-file
@@ -225,6 +234,18 @@ what the wires do; `bundle=` lets the author say what they *mean*:
   statement.
 - The member nets stay in the JSON / ELK payloads; only the label
   changes.
+- On an **interface**, `bundle=` groups its members back together:
+  each member is its own net (labelled `cfg.a_en`, `cfg.b_en`, …), and
+  the interface's bundle name is inherited by all of them, so the
+  edges between two blocks fold into one named edge exactly as a
+  run of bundled `logic` declarations would.
+
+  ```systemverilog
+    cfg_if cfg ();  // rbsch: bundle=cfg_bus
+    csr  u_csr  (.a_en(cfg.a_en), .b_en(cfg.b_en), .c_sta(cfg.c_sta));
+    peer u_peer (.a_en(cfg.a_en), .b_en(cfg.b_en), .c_sta(cfg.c_sta));
+    // one edge, u_csr -> u_peer, labelled cfg_bus
+  ```
 
 ## Phase 4 vocabulary — layout hints
 

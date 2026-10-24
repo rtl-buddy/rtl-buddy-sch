@@ -171,7 +171,7 @@ ordered endpoint pair.
 | Key | Type | Notes |
 | --- | ---- | ----- |
 | `sources` / `targets` | array of 1 id | A **port id** when the formal pin at that end is unambiguous (exactly one pin), the **node id** otherwise. |
-| `rb.nets` | array of string | Net names the bundle carries, sorted. |
+| `rb.nets` | array of string | Net names the bundle carries, sorted. A member of an interface instance or interface port is named by its member path as spelled in the binding — `cfg.a_en`, `q[1].c_sta` — because each member is a separate net; a plain net (including a struct-typed one, whose field selects are not nets) is named by its root identifier. |
 | `rb.bits` | int \| null | Total width: the sum of each net's width, taken from that net's **driving** pin. **Integers only.** `null` when any net in the bundle is of unknown width — a partial sum would read as a real bus width. |
 | `rb.bits_expr` | string \| null | The bundle's width in the names the declarations use (`"PTR_W"`, `"WIDTH+1"`). Independent of `bits` — both may be set. `null` when no net contributes a name, when one is unknown both ways, or when the sum wouldn't be clean. See § 6.2. |
 | `rb.src_pins` / `rb.dst_pins` | array of string | The formal pins the bundle attaches to at each end, sorted. Populated even when the endpoint degrades to a node id, so the label is never lost. |

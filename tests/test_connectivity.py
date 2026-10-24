@@ -11,6 +11,8 @@ from __future__ import annotations
 from rtl_buddy_view.connectivity import (
     NetEdge,
     instance_params,
+    interface_roots,
+    net_keys,
     port_width,
     port_width_expr,
     root_identifiers,
@@ -19,6 +21,8 @@ from rtl_buddy_view.connectivity import (
 from rtl_buddy_view.extractor import (
     Assign,
     Instance,
+    Interface,
+    InterfaceSignal,
     Module,
     ModuleTable,
     NetDecl,
@@ -353,11 +357,12 @@ def test_interface_port_drives_when_group_has_no_driver() -> None:
         instances=(_inst("u_sink", "sink", _conn("d", "bus.psel")),),
     )
     edges = scope_connectivity(top, _table(top, _SINK))
+    # The member is the net (rtl-buddy-sch#193); the port is still the pin.
     assert edges == (
         NetEdge(
             src=("port", "bus"),
             dst=("inst", "u_sink"),
-            nets=("bus",),
+            nets=("bus.psel",),
             src_pins=("bus",),
             dst_pins=("d",),
         ),
@@ -375,7 +380,7 @@ def test_interface_port_sinks_when_group_has_a_driver() -> None:
         NetEdge(
             src=("inst", "u_src"),
             dst=("port", "bus"),
-            nets=("bus",),
+            nets=("bus.prdata",),
             src_pins=("q",),
             dst_pins=("bus",),
         ),
@@ -1620,3 +1625,309 @@ def test_declared_direction_beats_a_lying_pin_hint() -> None:
         top, table, pin_hints={"u_src": {"q": "input"}, "u_sink": {"d": "output"}}
     )
     assert hinted == baseline
+
+
+# --- interface member selects (rtl-buddy-sch#193) ---------------------------
+
+
+def test_net_keys_keep_an_interface_member_path() -> None:
+    assert net_keys("cfg.a_en", {"cfg"}) == ("cfg.a_en",)
+
+
+def test_net_keys_keep_a_constant_array_index() -> None:
+    assert net_keys("q[1].c_sta", {"q"}) == ("q[1].c_sta",)
+
+
+def test_net_keys_keep_a_non_constant_index_verbatim_and_read_it() -> None:
+    assert net_keys("q[i].c_sta", {"q"}) == ("q[i].c_sta", "i")
+
+
+def test_net_keys_drop_selects_past_the_member() -> None:
+    assert net_keys("cfg.data[3:0]", {"cfg"}) == ("cfg.data",)
+    assert net_keys("cfg.s.f", {"cfg"}) == ("cfg.s",)
+
+
+def test_net_keys_normalise_whitespace_and_skip_the_member_name() -> None:
+    assert net_keys("q [1] . c_sta", {"q"}) == ("q[1].c_sta",)
+
+
+def test_net_keys_leave_a_whole_interface_on_its_root() -> None:
+    assert net_keys("cfg", {"cfg"}) == ("cfg",)
+    assert net_keys("q[1]", {"q"}) == ("q",)
+
+
+def test_net_keys_leave_struct_and_bit_selects_alone() -> None:
+    """``s`` is not an interface: its field select is not a net."""
+    assert net_keys("s.field", {"cfg"}) == ("s",)
+    assert net_keys("bus[3]", {"cfg"}) == ("bus",)
+    assert net_keys("{cfg.a_en, s.f}", {"cfg"}) == ("cfg.a_en", "s")
+
+
+def test_net_keys_without_interfaces_are_root_identifiers() -> None:
+    expr = "{hwif_out.ctrl.SRC.value, mem[addr], 2'b01}"
+    assert net_keys(expr) == root_identifiers(expr)
+
+
+_CFG_IF = Interface(
+    name="cfg_if",
+    parameters=(),
+    signals=(
+        InterfaceSignal(name="a_en", type_text="logic", location=None),
+        InterfaceSignal(name="b_en", type_text="logic", location=None),
+        InterfaceSignal(name="c_sta", type_text="logic", location=None),
+    ),
+    modports=(),
+    location=None,
+)
+_CSR3 = _module(
+    "csr3",
+    ports=(
+        _port("a_en", "output", "logic"),
+        _port("b_en", "output", "logic"),
+        _port("c_sta", "input", "logic"),
+    ),
+)
+_BLK_IN = _module("blk_in", ports=(_port("en", "input", "logic"),))
+_BLK_OUT = _module("blk_out", ports=(_port("sta", "output", "logic"),))
+
+
+def _iface_table(*modules: Module) -> ModuleTable:
+    table = _table(*modules, _CSR3, _BLK_IN, _BLK_OUT)
+    table.interfaces_by_name["cfg_if"] = _CFG_IF
+    return table
+
+
+def _top2() -> Module:
+    """The issue's repro, by hand."""
+    return _module(
+        "top2",
+        instances=(
+            _inst("cfg", "cfg_if"),
+            _inst(
+                "u_csr",
+                "csr3",
+                _conn("a_en", "cfg.a_en"),
+                _conn("b_en", "cfg.b_en"),
+                _conn("c_sta", "cfg.c_sta"),
+            ),
+            _inst("u_a", "blk_in", _conn("en", "cfg.a_en")),
+            _inst("u_b", "blk_in", _conn("en", "cfg.b_en")),
+            _inst("u_c", "blk_out", _conn("sta", "cfg.c_sta")),
+            _inst("q", "cfg_if"),
+            _inst("u_p0", "blk_out", _conn("sta", "q[0].c_sta")),
+            _inst("u_p1", "blk_out", _conn("sta", "q[1].c_sta")),
+            _inst("u_k0", "blk_in", _conn("en", "q[0].c_sta")),
+            _inst("u_k1", "blk_in", _conn("en", "q[1].c_sta")),
+        ),
+    )
+
+
+def test_interface_roots_are_interface_instances_and_interface_ports() -> None:
+    top = _module(
+        "top",
+        ports=(
+            _port("in_bus", None, port_kind="interface", interface_type="bus_if"),
+            _port("d", "input", "logic"),
+        ),
+        instances=(_inst("cfg", "cfg_if"), _inst("u_a", "blk_in")),
+        net_decls=(_decl("s", "pair_t"),),
+    )
+    assert interface_roots(top, _iface_table(top)) == frozenset({"cfg", "in_bus"})
+
+
+def test_interface_of_an_unparsed_type_is_not_recognised() -> None:
+    top = _module("top", instances=(_inst("cfg", "cfg_if"),))
+    assert interface_roots(top, _table(top)) == frozenset()
+
+
+def test_member_selects_key_on_the_member_path() -> None:
+    """rtl-buddy-sch#193: one edge per member, no all-to-all."""
+    top = _top2()
+    edges = scope_connectivity(top, _iface_table(top))
+    assert [(e.src[1], e.dst[1], e.nets) for e in edges] == [
+        ("u_c", "u_csr", ("cfg.c_sta",)),
+        ("u_csr", "u_a", ("cfg.a_en",)),
+        ("u_csr", "u_b", ("cfg.b_en",)),
+        ("u_p0", "u_k0", ("q[0].c_sta",)),
+        ("u_p1", "u_k1", ("q[1].c_sta",)),
+    ]
+
+
+def test_member_nets_take_the_driving_pins_width() -> None:
+    top = _top2()
+    edges = scope_connectivity(top, _iface_table(top))
+    assert {e.bits for e in edges} == {1}
+
+
+def test_struct_field_selects_still_share_one_net() -> None:
+    """A struct-typed variable is a net: ``s.a`` and ``s.b`` are both ``s``."""
+    pair_src = _module("pair_src", ports=(_port("p", "output", "logic [1:0]"),))
+    top = _module(
+        "top",
+        instances=(
+            _inst("u_src", "pair_src", _conn("p", "s")),
+            _inst("u_x", "blk_in", _conn("en", "s.a")),
+            _inst("u_y", "blk_in", _conn("en", "s.b")),
+        ),
+        net_decls=(_decl("s", "pair_t"),),
+    )
+    edges = scope_connectivity(top, _iface_table(top, pair_src))
+    assert [(e.src[1], e.dst[1], e.nets) for e in edges] == [
+        ("u_src", "u_x", ("s",)),
+        ("u_src", "u_y", ("s",)),
+    ]
+
+
+def test_assigns_flow_through_member_keys() -> None:
+    top = _module(
+        "top",
+        instances=(
+            _inst("cfg", "cfg_if"),
+            _inst("u_c", "blk_out", _conn("sta", "cfg.c_sta")),
+            _inst("u_k", "blk_in", _conn("en", "k_en")),
+            _inst("u_j", "blk_in", _conn("en", "cfg.a_en")),
+        ),
+        assigns=(_assign("k_en", "cfg.c_sta"),),
+    )
+    edges = scope_connectivity(top, _iface_table(top))
+    assert [(e.src[1], e.dst[1], e.nets) for e in edges] == [
+        ("u_c", "u_k", ("k_en",)),
+    ]
+
+
+def test_a_whole_interface_binding_joins_the_member_nets() -> None:
+    """``.m(cfg)`` keeps the edges it had before members got keys."""
+    mon = _module(
+        "mon",
+        ports=(_port("m", None, port_kind="interface", interface_type="cfg_if"),),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("cfg", "cfg_if"),
+            _inst("u_c", "blk_out", _conn("sta", "cfg.c_sta")),
+            _inst("u_mon", "mon", _conn("m", "cfg")),
+        ),
+    )
+    edges = scope_connectivity(top, _iface_table(top, mon))
+    assert [(e.src[1], e.dst[1], e.nets, e.dst_pins) for e in edges] == [
+        ("u_c", "u_mon", ("cfg.c_sta",), ("m",)),
+    ]
+
+
+def test_a_whole_array_element_binding_spans_only_that_element() -> None:
+    mon = _module(
+        "mon",
+        ports=(_port("m", None, port_kind="interface", interface_type="cfg_if"),),
+    )
+    top = _module(
+        "top",
+        instances=(
+            _inst("q", "cfg_if"),
+            _inst("u_p0", "blk_out", _conn("sta", "q[0].c_sta")),
+            _inst("u_p1", "blk_out", _conn("sta", "q[1].c_sta")),
+            _inst("u_mon", "mon", _conn("m", "q[1]")),
+        ),
+    )
+    edges = scope_connectivity(top, _iface_table(top, mon))
+    assert [(e.src[1], e.dst[1], e.nets) for e in edges] == [
+        ("u_p1", "u_mon", ("q[1].c_sta",)),
+    ]
+
+
+def test_an_interface_port_stands_on_each_selected_member() -> None:
+    """A scope interface port meets its members one net at a time."""
+    top = _module(
+        "top",
+        ports=(_port("bus", None, port_kind="interface", interface_type="cfg_if"),),
+        instances=(
+            _inst("u_c", "blk_out", _conn("sta", "bus.c_sta")),
+            _inst("u_a", "blk_in", _conn("en", "bus.a_en")),
+        ),
+    )
+    edges = scope_connectivity(top, _iface_table(top))
+    assert [(e.src, e.dst, e.nets) for e in edges] == [
+        (("inst", "u_c"), ("port", "bus"), ("bus.c_sta",)),
+        (("port", "bus"), ("inst", "u_a"), ("bus.a_en",)),
+    ]
+
+
+def test_a_clock_member_is_classified_by_its_own_name() -> None:
+    clk_src = _module("clk_src", ports=(_port("clk", "output", "logic"),))
+    clk_sink = _module("clk_sink", ports=(_port("clk", "input", "logic"),))
+    top = _module(
+        "top",
+        instances=(
+            _inst("cfg", "cfg_if"),
+            _inst("u_gen", "clk_src", _conn("clk", "cfg.clk")),
+            _inst("u_use", "clk_sink", _conn("clk", "cfg.clk")),
+        ),
+    )
+    assert scope_connectivity(top, _iface_table(top, clk_src, clk_sink)) == ()
+
+
+def _peer_top() -> tuple[Module, ModuleTable]:
+    peer = _module(
+        "peer",
+        ports=(
+            _port("a_en", "input", "logic"),
+            _port("b_en", "input", "logic"),
+            _port("c_sta", "output", "logic"),
+        ),
+    )
+    top = _module(
+        "top3",
+        instances=(
+            _inst("cfg", "cfg_if"),
+            _inst(
+                "u_csr",
+                "csr3",
+                _conn("a_en", "cfg.a_en"),
+                _conn("b_en", "cfg.b_en"),
+                _conn("c_sta", "cfg.c_sta"),
+            ),
+            _inst(
+                "u_peer",
+                "peer",
+                _conn("a_en", "cfg.a_en"),
+                _conn("b_en", "cfg.b_en"),
+                _conn("c_sta", "cfg.c_sta"),
+            ),
+        ),
+    )
+    return top, _iface_table(top, peer)
+
+
+def test_bundle_on_the_interface_folds_its_members_into_one_edge() -> None:
+    top, table = _peer_top()
+    edges = scope_connectivity(
+        top, table, net_hints=_hints(cfg=_net_hint(bundle="cfg_bus"))
+    )
+    (edge,) = edges
+    assert (edge.src, edge.dst) == (("inst", "u_csr"), ("inst", "u_peer"))
+    assert edge.bundle == "cfg_bus"
+    assert edge.nets == ("cfg.a_en", "cfg.b_en", "cfg.c_sta")
+    assert edge.bits == 2
+
+
+def test_without_a_bundle_the_member_edges_stay_apart() -> None:
+    top, table = _peer_top()
+    edges = scope_connectivity(top, table)
+    assert [(e.src[1], e.dst[1], e.nets) for e in edges] == [
+        ("u_csr", "u_peer", ("cfg.a_en", "cfg.b_en")),
+        ("u_peer", "u_csr", ("cfg.c_sta",)),
+    ]
+
+
+def test_a_member_keyed_hint_beats_the_interface_hint() -> None:
+    top, table = _peer_top()
+    hints = _hints(
+        cfg=_net_hint(bundle="cfg_bus"),
+        **{"cfg.c_sta": _net_hint(emphasis="side")},
+    )
+    edges = scope_connectivity(top, table, net_hints=hints)
+    by_pair = {(e.src[1], e.dst[1]): e for e in edges}
+    # c_sta no longer agrees on the bundle, so nothing folds.
+    assert by_pair[("u_csr", "u_peer")].bundle == "cfg_bus"
+    assert by_pair[("u_peer", "u_csr")].bundle is None
+    assert by_pair[("u_peer", "u_csr")].emphasis == "side"
