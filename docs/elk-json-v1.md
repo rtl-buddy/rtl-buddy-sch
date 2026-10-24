@@ -121,7 +121,7 @@ matching.
 | --- | ---- | ----- |
 | `name` | string | The formal port name. |
 | `net` | string \| null | The net expression bound at *this instance's* binding site — the verbatim slice (`op_q`, `~rst_n`, `cmd[7:0]`), with implicit `.name` shorthand resolved to the same-named net. `null` when the formal isn't bound; on the root, a port's net is its own name. **Why it exists**: a pin whose net no sibling *pin* drives — the parent's own `always_ff` drives it, and the dataflow analyzer only hops continuous assigns (§4) — has no edge to attach to and draws as a bare stub. This is what keeps that pin traceable, and it is read off the binding site rather than inferred. A consumer should print it only when it differs from `name`. |
-| `direction` | `"input"` \| `"output"` \| `"inout"` \| null | `null` for an interface-bundle port and for a blackbox pin. |
+| `direction` | `"input"` \| `"output"` \| `"inout"` \| null | A wire port's declared direction. An **interface port with a modport** (`bus_if.src o`) carries its modport's folded direction, `"input"` or `"output"` — see § 4.1. `null` for an interface port with no modport (`bus_if b`), one whose modport doesn't decide, and a blackbox pin. |
 | `is_clock` / `is_reset` | bool | Name-shaped, using the conservative token form (`clk`/`clock`, `rst`/`reset` as an underscore-delimited token). P2/P4 draw the chevron and bubble glyphs off these. |
 | `width` | int \| null | Declared bit width, **as this instance was parameterised** — `[WIDTH-1:0]` under `#(.WIDTH(19))` is 19. `null` when the bound doesn't resolve to an integer, the type is an aggregate, or the port is an interface bundle. See § 6.1. |
 | `width_expr` | string \| null | The width in the names the declaration uses, read **as written** (`[WIDTH-1:0]` → `"WIDTH"`). Independent of `width`: a pin may carry both (`19` *and* `"WIDTH"`). `null` for a range written in integers. See § 6.2. |
@@ -175,8 +175,46 @@ ordered endpoint pair.
 | `rb.bits` | int \| null | Total width: the sum of each net's width, taken from that net's **driving** pin. **Integers only.** `null` when any net in the bundle is of unknown width — a partial sum would read as a real bus width. |
 | `rb.bits_expr` | string \| null | The bundle's width in the names the declarations use (`"PTR_W"`, `"WIDTH+1"`). Independent of `bits` — both may be set. `null` when no net contributes a name, when one is unknown both ways, or when the sum wouldn't be clean. See § 6.2. |
 | `rb.src_pins` / `rb.dst_pins` | array of string | The formal pins the bundle attaches to at each end, sorted. Populated even when the endpoint degrades to a node id, so the label is never lost. |
-| `rb.emphasis` | `"main"` \| `"side"` \| null | The author's `rbsch` emphasis (#180): `main` is the primary datapath, `side` is CSR/status wiring. Presentation semantics only — the consumer picks the strokes. |
+| `rb.emphasis` | `"main"` \| `"side"` \| null | The author's `rbsch` emphasis (#180): `main` is the primary datapath, `side` is CSR/status wiring. Presentation semantics only — the consumer picks the strokes. Without a hint, an edge whose every target pin is a **monitor modport** (§ 4.1) is `side` too. |
 | `rb.bundle` | string \| null | The author's `rbsch: bundle=` name (#180). When set, the whole edge is one named interface: label it by this name instead of `rb.nets`, and note that a same-named return path (valid/ready style) has **already been folded** into this edge upstream — its nets and pins are merged in, while `bits` keeps describing the data direction only. |
+
+### 4.1 Interfaces
+
+A whole-interface binding (`.o(shared)`, or a modport select
+`.o(shared.src)`) is one wire, oriented by the formal's modport
+(rtl-buddy-sch#194). The modport's per-signal directions fold into one:
+
+1. Clock- and reset-named signals don't vote.
+2. Return-path (handshake) signals don't vote while anything else is
+   left: any `_`-token spelling `ready`/`rdy` (`tready`, `awready`,
+   `hreadyout`, `rdy_n`) and the bare `ack`, `gnt`, `grant`,
+   `credit(s)`, `stall`, `wait`, `waitrequest`. So
+   `modport src (output v, output d, input r)` is an `"output"`.
+3. The majority **by signal count** of what remains is the direction;
+   an all-output or all-input modport is the unanimous case.
+4. A tie, or nothing left to vote (all `inout`), is `null`.
+
+Siblings on one interface instance get an edge from each
+output-modport pin to each input-modport pin, its net named by the
+instance (`shared`). An interface port with **no modport** meets the
+modport pins on its net from the other side: it reads when a source
+is bound there, and drives when only sinks are. Where the scope also
+selects members of the interface (`shared.r`), each member is its own
+net (§ 4, `rb.nets`) and a whole binding joins it in the direction the
+modport gives *that member*, so a ready driven by a sink still points
+back at the source.
+
+A **monitor** modport is all inputs and reads a signal that a
+sink-side modport of the same interface drives (it listens to both
+halves of the handshake, which no consumer does); a modport named
+`mon`, `monitor`, `obs`, `observer`, `passive`, `snoop` or `sniff`
+with no outputs counts as one too. Edges into a monitor carry
+`rb.emphasis: "side"` unless a hint says otherwise.
+
+An interface **instance** is still a node (it has parameters, and the
+node set is the hierarchy), but it is never an edge endpoint: it is
+the wire. A consumer drawing a dataflow sheet may skip it — the
+`--block-diagram` dot output does.
 
 Why the degradation: one edge may stand for two pins at once
 (`wr_en` *and* `wr_data` from the same driver). There is no single

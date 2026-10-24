@@ -53,7 +53,7 @@ from rtl_buddy_view.extractor import (
     PortConnection,
     flatten_interface_ports,
 )
-from rtl_buddy_view.graph import HierNode
+from rtl_buddy_view.graph import HierNode, without_interface_instances
 from rtl_buddy_view.hints import HintMap
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 
@@ -141,7 +141,10 @@ def render(
     scope that resolved to a module. Interface ports render as one
     bundle anchor rather than one anchor per flattened signal — an
     APB port is a single block-diagram terminal, not eleven wires.
-    Requires ``module_table`` (pin directions come from the child
+    Interface *instances* are not drawn at all: on a dataflow diagram
+    an interface is the wire between the blocks bound to it, and the
+    edges through it are oriented by those blocks' modports
+    (rtl-buddy-sch#194). Requires ``module_table`` (pin directions come from the child
     modules); without one the dataflow edges are skipped and the
     output degrades to a plain cluster tree. CDC / RDC overlay arrows
     keep working.
@@ -166,6 +169,10 @@ def render(
     """
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
     active_reset_map = reset_map if reset_map is not None else None
+    if block_diagram and module_table is not None:
+        # An interface instance is the wire between the blocks bound
+        # to it, not a box (rtl-buddy-sch#194).
+        node = without_interface_instances(node, module_table)
     # DOT's edges are parent→child by hierarchy; AXI bundles
     # connect siblings (CPU↔DRAM at the same level) that DOT
     # doesn't emit as explicit edges. The design pivoted away from
