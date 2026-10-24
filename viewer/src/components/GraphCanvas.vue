@@ -88,6 +88,7 @@ import { computed, onMounted, ref, watch, onBeforeUnmount } from 'vue'
 import { useViewerStore } from '../store.js'
 import { layoutGraph, layoutDot, clusterIdFor, hasEmbeddedDot } from '../layout/viz.js'
 import { buildBlockFlowDot } from '../layout/blockFlow.js'
+import { netHighlightFor, readEdgeDescriptors } from '../layout/netHover.js'
 import { applyOverlays } from '../overlays/index.js'
 import { coverageLiveOverlay } from '../overlays/coverage_live.js'
 import { useHub } from '../composables/useHub.js'
@@ -263,6 +264,7 @@ async function renderSvg() {
     }
   }
   applyDutBoundary(_svgEl, graph.value)
+  indexEdgesForHover(_svgEl)
   repaintOverlays()
   applySelectionHighlight(store.selection)
   // Signal to the badge-position computed that the underlying SVG
@@ -429,6 +431,95 @@ function highlightEdgesForPort(nodeId, portName) {
       edge.setAttribute('data-rb-edge-highlighted', 'true')
     }
   }
+}
+
+// ---------------------------------------------------------------
+// Net hover-highlight (Hierarchy view, rtl-buddy-sch#142)
+// ---------------------------------------------------------------
+//
+// The Schematic tab's hover, ported to the viz.js canvas: point at an
+// edge and its net lights up; point at an endpoint (a scope port
+// anchor or an instance) and everything attached to it does. Which
+// edges count as "the net" is ``netHighlightFor``'s call — a pure
+// function over records ``readEdgeDescriptors`` takes once per layout,
+// so a mouse event never re-parses the SVG.
+//
+// Transient and separate from the click highlight on purpose. Hover
+// stamps its own ``data-rb-edge-hover`` and clears only that, so a
+// mouseleave can never wipe the Block Flow port-click highlight
+// (``data-rb-edge-highlighted``), and a click's ``clearEdgeHighlight``
+// never touches the hover. Hierarchy-only: Block Flow has the
+// click-driven port highlight and no hover contract yet.
+let _edgeRecords = []
+let _edgeElsById = new Map()
+let _hoverKey = null
+
+// A 1px Graphviz polyline is all but impossible to point at, so each
+// edge gets an invisible fat twin — the same trick SchematicCanvas
+// uses (``.sch-hit``). Inserted right AFTER the visible path, never
+// before: the clock / reset overlays paint ``[data-edge-from…] path``
+// with ``querySelector``, i.e. the first path in the group, and must
+// keep finding the real one. ``stroke-opacity`` rather than a
+// ``transparent`` stroke so the twin also stays invisible in a
+// captured SVG, which travels without this stylesheet.
+const EDGE_HIT_WIDTH = 10
+
+function indexEdgesForHover(svgRoot) {
+  _hoverKey = null
+  _edgeRecords = []
+  _edgeElsById = new Map()
+  if (!svgRoot || store.viewMode !== 'hier') return
+  _edgeRecords = readEdgeDescriptors(svgRoot)
+  for (const group of svgRoot.querySelectorAll('g.edge')) {
+    if (group.id) _edgeElsById.set(group.id, group)
+    const path = group.querySelector('path')
+    if (!path) continue
+    const hit = path.cloneNode(false)
+    hit.removeAttribute('id')
+    hit.removeAttribute('stroke-dasharray')
+    hit.setAttribute('data-rb-edge-hit', 'true')
+    hit.setAttribute('fill', 'none')
+    hit.setAttribute('stroke-opacity', '0')
+    hit.setAttribute('stroke-width', String(EDGE_HIT_WIDTH))
+    hit.setAttribute('pointer-events', 'stroke')
+    path.parentNode.insertBefore(hit, path.nextSibling)
+  }
+}
+
+function hoverTargetFromEvent(e) {
+  const target = e.target
+  if (!target || typeof target.closest !== 'function') return null
+  const edge = target.closest('g.edge')
+  if (edge) return edge.id ? { edgeId: edge.id } : null
+  const node = target.closest('g.node, g.cluster, [data-node-id]')
+  const id = node && node.getAttribute('data-node-id')
+  return id ? { nodeId: id } : null
+}
+
+function applyNetHover(hover) {
+  const key = hover ? (hover.edgeId ? `e:${hover.edgeId}` : `n:${hover.nodeId}`) : null
+  if (key === _hoverKey) return
+  _hoverKey = key
+  if (!_svgEl) return
+  for (const el of _svgEl.querySelectorAll('[data-rb-edge-hover]')) {
+    el.removeAttribute('data-rb-edge-hover')
+  }
+  if (!hover) return
+  for (const id of netHighlightFor(_edgeRecords, hover)) {
+    const el = _edgeElsById.get(id)
+    if (el) el.setAttribute('data-rb-edge-hover', 'true')
+  }
+}
+
+function onHover(e) {
+  // A pan drag sweeps the cursor across everything; lighting each net
+  // it crosses is noise. Leave the highlight as it was until release.
+  if (dragStart || store.viewMode !== 'hier') return
+  applyNetHover(hoverTargetFromEvent(e))
+}
+
+function onHoverLeave() {
+  applyNetHover(null)
 }
 
 watch(graph, renderSvg)
@@ -1009,6 +1100,8 @@ onMounted(() => {
     svgHostEl.value.addEventListener('contextmenu', onContextMenu)
     svgHostEl.value.addEventListener('wheel', onWheel, { passive: false })
     svgHostEl.value.addEventListener('mousedown', onMouseDown)
+    svgHostEl.value.addEventListener('mouseover', onHover)
+    svgHostEl.value.addEventListener('mouseleave', onHoverLeave)
   }
   document.addEventListener('mousemove', onMouseMove)
   document.addEventListener('mouseup', onMouseUp)
@@ -1022,6 +1115,8 @@ onBeforeUnmount(() => {
     svgHostEl.value.removeEventListener('contextmenu', onContextMenu)
     svgHostEl.value.removeEventListener('wheel', onWheel)
     svgHostEl.value.removeEventListener('mousedown', onMouseDown)
+    svgHostEl.value.removeEventListener('mouseover', onHover)
+    svgHostEl.value.removeEventListener('mouseleave', onHoverLeave)
   }
   document.removeEventListener('mousemove', onMouseMove)
   document.removeEventListener('mouseup', onMouseUp)
@@ -1167,6 +1262,28 @@ onBeforeUnmount(() => {
   pointer-events: all;
 }
 
+/* Net hover-highlight (#142). ``applyNetHover`` stamps
+   ``data-rb-edge-hover`` on every edge of the net under the cursor.
+   The Schematic tab's ``.sch-wire.hot`` vocabulary — accent stroke
+   plus a soft accent glow — so hover reads the same on both canvases,
+   and as the same family as the node selection mark below. ``!important``
+   because it has to beat the producer-DOT re-tint, the CDC baked
+   colours and the overlays' inline paint, all of which it only borrows
+   for as long as the cursor stays. Sits BEFORE the click highlight so
+   that, on an edge carrying both, the deliberate click wins. */
+.svg-host :deep([data-rb-edge-hover]) path:not([data-rb-edge-hit]) {
+  stroke: var(--accent) !important;
+  stroke-width: 2.5 !important;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 60%, transparent));
+}
+.svg-host :deep([data-rb-edge-hover]) polygon {
+  fill: var(--accent) !important;
+  stroke: var(--accent) !important;
+}
+.svg-host :deep([data-rb-edge-hover]) text {
+  fill: var(--accent) !important;
+}
+
 /* Port-edge highlight. Painted by ``highlightEdgesForPort`` when
    the user clicks a port cell in block-flow view — marks every
    edge incident on the clicked port (typically one, occasionally
@@ -1180,6 +1297,15 @@ onBeforeUnmount(() => {
 .svg-host :deep([data-rb-edge-highlighted]) polygon {
   fill: var(--warn) !important;
   stroke: var(--warn) !important;
+}
+/* The hover hit-twin (see ``indexEdgesForHover``) stays invisible
+   whatever paints its group — the producer re-tint and the click
+   highlight both match ``g.edge path`` — and the hover rule above
+   skips it outright, so hovering never shrinks it to the visible
+   stroke width (which would drop the hover the moment it lands). */
+.svg-host :deep(g.edge path[data-rb-edge-hit]) {
+  stroke-opacity: 0 !important;
+  filter: none !important;
 }
 
 /* Selected-node accent. Painted by ``applySelectionHighlight``,
