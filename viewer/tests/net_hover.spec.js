@@ -15,6 +15,7 @@ import {
   describeEdge,
   isNetLabel,
   netHighlightFor,
+  parseEdgeTitle,
   parseEndpoint,
   readEdgeDescriptors,
 } from '../src/layout/netHover.js'
@@ -32,6 +33,45 @@ describe('parseEndpoint', () => {
     expect(parseEndpoint(' top.u_a ')).toEqual({ node: 'top.u_a', port: null })
     expect(parseEndpoint('')).toEqual({ node: '', port: null })
     expect(parseEndpoint(null)).toEqual({ node: '', port: null })
+  })
+  it('accepts a DOT-quoted id and port, the way graphToDot writes them', () => {
+    expect(parseEndpoint('"top.u_b":"in_clk_a"')).toEqual({ node: 'top.u_b', port: 'in_clk_a' })
+    expect(parseEndpoint('"top.u_b":"in_clk_a":w')).toEqual({ node: 'top.u_b', port: 'in_clk_a' })
+    expect(parseEndpoint('"top.u_b":e')).toEqual({ node: 'top.u_b', port: null })
+  })
+  it('a colon or escaped quote inside a quoted id stays part of the id', () => {
+    expect(parseEndpoint('"a:b":p')).toEqual({ node: 'a:b', port: 'p' })
+    expect(parseEndpoint('"x\\"y"')).toEqual({ node: 'x"y', port: null })
+  })
+  it('a raw id that merely contains a quote is not read as a quoted string', () => {
+    expect(parseEndpoint('x"y:e')).toEqual({ node: 'x"y', port: null })
+  })
+})
+
+describe('parseEdgeTitle', () => {
+  it('returns plain ids with the ports split off (rtl-buddy-sch#197)', () => {
+    expect(parseEdgeTitle('top.u_a:out_clk_b:e->top.u_b:in_clk_a:w')).toEqual({
+      from: 'top.u_a',
+      fromPort: 'out_clk_b',
+      to: 'top.u_b',
+      toPort: 'in_clk_a',
+    })
+    expect(parseEdgeTitle('top.u_fifo->top.u_fifo.u_rd_ptr:in_clk_a')).toEqual({
+      from: 'top.u_fifo',
+      fromPort: null,
+      to: 'top.u_fifo.u_rd_ptr',
+      toPort: 'in_clk_a',
+    })
+  })
+  it('ignores an arrow inside a quoted id', () => {
+    expect(parseEdgeTitle('"a->b":p->c')).toMatchObject({ from: 'a->b', fromPort: 'p', to: 'c' })
+  })
+  it('is null without exactly one arrow or with an empty end', () => {
+    expect(parseEdgeTitle('top.u_a')).toBeNull()
+    expect(parseEdgeTitle('->top.u_a')).toBeNull()
+    expect(parseEdgeTitle('a->')).toBeNull()
+    expect(parseEdgeTitle('a->b->c')).toBeNull()
+    expect(parseEdgeTitle(null)).toBeNull()
   })
 })
 

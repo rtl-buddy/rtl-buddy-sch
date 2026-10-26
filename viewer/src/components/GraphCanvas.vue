@@ -88,7 +88,11 @@ import { computed, onMounted, ref, watch, onBeforeUnmount } from 'vue'
 import { useViewerStore } from '../store.js'
 import { layoutGraph, layoutDot, clusterIdFor, hasEmbeddedDot } from '../layout/viz.js'
 import { buildBlockFlowDot } from '../layout/blockFlow.js'
-import { netHighlightFor, readEdgeDescriptors } from '../layout/netHover.js'
+import {
+  netHighlightFor,
+  readEdgeDescriptors,
+  stampEdgeEndpoints,
+} from '../layout/netHover.js'
 import { applyOverlays } from '../overlays/index.js'
 import { coverageLiveOverlay } from '../overlays/coverage_live.js'
 import { useHub } from '../composables/useHub.js'
@@ -241,14 +245,10 @@ async function renderSvg() {
       group.setAttribute('data-node-id', synthClusterLookup.get(clusterId))
     }
   }
-  for (const group of _svgEl.querySelectorAll('g.edge')) {
-    const titleEl = group.querySelector('title')
-    if (!titleEl) continue
-    // Graphviz edge title format: "from->to".
-    const [from, to] = titleEl.textContent.split('->')
-    if (from) group.setAttribute('data-edge-from', from.trim())
-    if (to) group.setAttribute('data-edge-to', to.trim())
-  }
+  // Graphviz edge title format: ``from[:port[:compass]]->to[…]``. The
+  // stamps carry the plain node ids (the port goes in its own
+  // attribute) so they match ``graph.edges`` — see stampEdgeEndpoints.
+  stampEdgeEndpoints(_svgEl)
   // Block-flow cells: viz.js wraps each HTML table cell that has
   // an ``HREF`` in an ``<a xlink:href="...">`` element. Stamp the
   // href on the anchor as ``data-bf-id`` (no namespace gymnastics
