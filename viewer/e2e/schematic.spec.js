@@ -412,3 +412,52 @@ test.describe('export', () => {
     expect(text).not.toContain(`data-node-id="${INNER}"`)
   })
 })
+
+// --- interface instances (#205) -----------------------------------------------
+//
+// An interface instance is the wire between the blocks bound to it, so
+// the exporter flags it ``rb.is_interface`` and the sheet skips it —
+// the same pruning the dot ``--block-diagram`` applies. The fixture
+// design has none, so one is grafted on in memory, shaped the way the
+// exporter emits it (a blackbox-looking node, no edge touching it).
+
+const IFACE = 'blk_top.shared'
+
+function withInterfaceInstance(base, { flagged = true } = {}) {
+  const data = JSON.parse(JSON.stringify(base))
+  data.layout.elk.children.push({
+    id: IFACE,
+    rb: {
+      display_label: null,
+      instance_name: 'shared',
+      module_name: 'bus_if',
+      is_blackbox: true,
+      is_interface: flagged,
+      param_overrides: [['W', '8']],
+      clock: null,
+    },
+    ports: [
+      {
+        id: `${IFACE}:clk`,
+        rb: { name: 'clk', direction: null, is_clock: true, is_reset: false, width: null, width_expr: null, connected: true },
+      },
+    ],
+    children: [],
+    edges: [],
+  })
+  return data
+}
+
+test.describe('interface instances', () => {
+  test('a flagged interface instance is not drawn as a box', async ({ page }) => {
+    await openSchematic(page, withInterfaceInstance(payload))
+    await expect(page.locator('.sch-block[data-node-id="blk_top.u_cons"]')).toHaveCount(1)
+    await expect(page.locator(`[data-node-id="${IFACE}"]`)).toHaveCount(0)
+    await expect(page.locator(`[data-port-id^="${IFACE}:"]`)).toHaveCount(0)
+  })
+
+  test('the same node without the flag would be (the graft is real)', async ({ page }) => {
+    await openSchematic(page, withInterfaceInstance(payload, { flagged: false }))
+    await expect(page.locator(`.sch-block[data-node-id="${IFACE}"]`)).toHaveCount(1)
+  })
+})

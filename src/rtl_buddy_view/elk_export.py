@@ -69,7 +69,7 @@ from rtl_buddy_view.connectivity import (
     scope_connectivity,
 )
 from rtl_buddy_view.extractor import Instance, Module, ModuleTable
-from rtl_buddy_view.graph import HierNode
+from rtl_buddy_view.graph import HierNode, is_interface_instance
 from rtl_buddy_view.hints import HintMap
 
 SCHEMA_VERSION = 1
@@ -115,6 +115,11 @@ NODE_RB_CONTRACT: dict[str, type | tuple[type, ...]] = {
     "instance_name": (str, type(None)),
     "module_name": str,
     "is_blackbox": bool,
+    # An interface instance (rtl-buddy-sch#205): kept as a node because
+    # its parameters are part of the payload (#165), but it is the wire,
+    # never an edge endpoint, so a dataflow canvas skips it. Always
+    # present, ``false`` on every other node.
+    "is_interface": bool,
     "param_overrides": list,
     "clock": (str, type(None)),
 }
@@ -302,6 +307,7 @@ def _node(
             "instance_name": hier.instance.name if hier.instance is not None else None,
             "module_name": hier.module_name,
             "is_blackbox": hier.is_blackbox,
+            "is_interface": is_interface_instance(hier, table),
             "param_overrides": _param_overrides(hier, table),
             "clock": _clock_of(hier, domain_map),
         },

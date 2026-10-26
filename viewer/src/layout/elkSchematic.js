@@ -555,6 +555,51 @@ export function collapsePayload(payload, collapsed) {
   return prune(payload)
 }
 
+// --- interface instances ------------------------------------------------------
+
+/**
+ * ``payload`` with every interface-instance node dropped (#205).
+ *
+ * An interface instance (``bus_if shared (.clk(clk));``) is the wire
+ * between the blocks bound to it, not a block: the exporter keeps it
+ * in the tree for its parameters (#165) and flags it
+ * ``rb.is_interface`` (elk.json §2, §4.1), and a dataflow sheet skips
+ * it — the same pruning the dot ``--block-diagram`` applies. Drawn, it
+ * is an orphan box with no wire on it.
+ *
+ * The contract promises no edge references such a node or its ports
+ * (since #194 the wire runs between the siblings). An edge that did
+ * anyway is dropped with it rather than left dangling, because elkjs
+ * throws on an endpoint it cannot resolve and one stray reference
+ * would blank the whole sheet. The payload root is never dropped: it
+ * is the sheet being drawn.
+ *
+ * Pure; returns ``payload`` itself when it holds no interface
+ * instance, so the common case allocates nothing.
+ */
+export function withoutInterfaceInstances(payload) {
+  if (!payload) return payload
+  const dropped = new Set()
+  const scan = (node) => {
+    for (const child of node.children || []) {
+      if (child.rb && child.rb.is_interface === true) dropped.add(child.id)
+      else scan(child)
+    }
+  }
+  scan(payload)
+  if (dropped.size === 0) return payload
+
+  const touches = (endpoint) => dropped.has(nodeIdOfEndpoint(endpoint))
+  const prune = (node) => ({
+    ...node,
+    children: (node.children || []).filter((c) => !dropped.has(c.id)).map(prune),
+    edges: (node.edges || []).filter(
+      (e) => !(e.sources || []).some(touches) && !(e.targets || []).some(touches),
+    ),
+  })
+  return prune(payload)
+}
+
 /**
  * Instance paths of every compound block in ``payload``, collapsed or
  * not — i.e. everything the canvas may offer a ▸/▾ toggle for.
@@ -564,12 +609,16 @@ export function collapsePayload(payload, collapsed) {
  * unfolds it has to survive the fold.
  *
  * The payload root is excluded — it is the sheet, not a block, and a
- * sheet that folds into a box would leave nothing to draw.
+ * sheet that folds into a box would leave nothing to draw. So is a
+ * block whose only children are interface instances: they are never
+ * drawn ({@link withoutInterfaceInstances}), so it lays out as a leaf
+ * and a toggle on it would fold nothing.
  */
 export function collapsibleIds(payload, out = new Set(), depth = 0) {
   if (!payload) return out
   const children = payload.children || []
-  if (depth > 0 && children.length > 0 && payload.id) out.add(payload.id)
+  const drawn = children.some((c) => !(c.rb && c.rb.is_interface === true))
+  if (depth > 0 && drawn && payload.id) out.add(payload.id)
   for (const child of children) collapsibleIds(child, out, depth + 1)
   return out
 }
@@ -590,15 +639,17 @@ export function collapsibleIds(payload, out = new Set(), depth = 0) {
  * ``collapsed`` is the set of instance paths folded shut (see
  * {@link collapsePayload}). It is applied *before* decoration, so a
  * collapsed block is sized and pinned exactly like the leaf it now
- * is — there is no second code path for the folded case.
+ * is — there is no second code path for the folded case. Interface
+ * instances are dropped first ({@link withoutInterfaceInstances}).
  */
 export function buildElkGraph(payload, { collapsed = null, measure = approxMeasure } = {}) {
   if (!payload || typeof payload !== 'object' || !payload.id) return null
   const ctx = { measure, parentDrives: new Set(), parentSinks: new Set() }
+  const drawn = collapsePayload(withoutInterfaceInstances(payload), collapsed)
   return {
     id: SCHEMATIC_ROOT_ID,
     layoutOptions: { ...ROOT_LAYOUT_OPTIONS },
-    children: [decorateNode(collapsePayload(payload, collapsed), ctx, 0)],
+    children: [decorateNode(drawn, ctx, 0)],
   }
 }
 

@@ -44,6 +44,7 @@ import {
   subtreeOf,
   titleBlockRows,
   toSchematic,
+  withoutInterfaceInstances,
 } from '../src/layout/elkSchematic.js'
 
 function port(name, direction, extra = {}) {
@@ -663,6 +664,146 @@ describe('collapsePayload', () => {
   it('ignores a collapse nested under another collapse', () => {
     const folded = collapsePayload(nested, new Set(['top.u_p', 'top.u_p.u_s']))
     expect(folded.children.find((c) => c.id === 'top.u_p').children).toHaveLength(0)
+  })
+})
+
+// --- interface instances (#205) ---------------------------------------------
+
+// The #194 shape: two blocks bound to one interface instance get an
+// edge between themselves; the instance is a flagged node no edge
+// touches. Plus a nested scope with its own interface, to prove the
+// skip recurses.
+const withIface = {
+  id: 'top',
+  rb: { module_name: 'top', is_interface: false },
+  ports: [],
+  children: [
+    {
+      id: 'top.shared',
+      rb: { instance_name: 'shared', module_name: 'bus_if', is_blackbox: true, is_interface: true },
+      ports: [{ id: 'top.shared:clk', rb: { name: 'clk', direction: null } }],
+      children: [],
+      edges: [],
+    },
+    {
+      id: 'top.u_p',
+      rb: { instance_name: 'u_p', module_name: 'producer', is_interface: false },
+      ports: [{ id: 'top.u_p:o', rb: { name: 'o', direction: 'output' } }],
+      children: [
+        {
+          id: 'top.u_p.inner',
+          rb: { instance_name: 'inner', module_name: 'bus_if', is_interface: true },
+          ports: [],
+          children: [],
+          edges: [],
+        },
+        {
+          id: 'top.u_p.u_s',
+          rb: { instance_name: 'u_s', module_name: 'stage', is_interface: false },
+          ports: [],
+          children: [],
+          edges: [],
+        },
+      ],
+      edges: [],
+    },
+    {
+      id: 'top.u_c',
+      rb: { instance_name: 'u_c', module_name: 'consumer', is_interface: false },
+      ports: [{ id: 'top.u_c:i', rb: { name: 'i', direction: 'input' } }],
+      children: [],
+      edges: [],
+    },
+  ],
+  edges: [
+    {
+      id: 'top.u_p:o->top.u_c:i',
+      sources: ['top.u_p:o'],
+      targets: ['top.u_c:i'],
+      rb: { nets: ['shared'], src_pins: ['o'], dst_pins: ['i'] },
+    },
+  ],
+}
+
+function ids(node, out = []) {
+  out.push(node.id)
+  for (const c of node.children || []) ids(c, out)
+  return out
+}
+
+describe('withoutInterfaceInstances', () => {
+  it('drops every rb.is_interface node, at any depth', () => {
+    const kept = withoutInterfaceInstances(withIface)
+    expect(ids(kept)).toEqual(['top', 'top.u_p', 'top.u_p.u_s', 'top.u_c'])
+  })
+
+  it('keeps the wire between the siblings bound to the interface', () => {
+    const kept = withoutInterfaceInstances(withIface)
+    expect(kept.edges.map((e) => e.id)).toEqual(['top.u_p:o->top.u_c:i'])
+  })
+
+  it('leaves no edge pointing at a dropped node or one of its ports', () => {
+    // The exporter never emits one (#194); a payload that did must not
+    // reach elkjs, which throws on an unresolvable endpoint.
+    const stray = {
+      ...withIface,
+      edges: [
+        ...withIface.edges,
+        { id: 'a', sources: ['top.shared:clk'], targets: ['top.u_c:i'], rb: { nets: ['x'] } },
+        { id: 'b', sources: ['top.u_p:o'], targets: ['top.shared'], rb: { nets: ['y'] } },
+      ],
+    }
+    const kept = withoutInterfaceInstances(stray)
+    const live = new Set(ids(kept))
+    const refs = kept.edges.flatMap((e) => [...e.sources, ...e.targets])
+    for (const ref of refs) expect(live.has(nodeIdOfEndpoint(ref))).toBe(true)
+    expect(kept.edges.map((e) => e.id)).toEqual(['top.u_p:o->top.u_c:i'])
+  })
+
+  it('returns the payload itself when there is nothing to drop', () => {
+    expect(withoutInterfaceInstances(payload)).toBe(payload)
+    expect(withoutInterfaceInstances(nested)).toBe(nested)
+    expect(withoutInterfaceInstances(null)).toBeNull()
+  })
+
+  it('never drops the sheet root, even when it is an interface', () => {
+    // Descending onto an interface instance scopes the sheet to it.
+    const root = { ...withIface.children[0] }
+    expect(withoutInterfaceInstances(root)).toBe(root)
+  })
+
+  it('does not mutate the payload', () => {
+    const before = JSON.stringify(withIface)
+    withoutInterfaceInstances(withIface)
+    expect(JSON.stringify(withIface)).toBe(before)
+  })
+
+  it('is what buildElkGraph lays out', () => {
+    const g = buildElkGraph(withIface, { measure: approxMeasure })
+    expect(ids(g.children[0])).toEqual(['top', 'top.u_p', 'top.u_p.u_s', 'top.u_c'])
+  })
+
+  it('does not offer a fold on a block whose only children are interfaces', () => {
+    const onlyIface = {
+      ...withIface,
+      children: [
+        {
+          ...withIface.children[1],
+          children: [withIface.children[1].children[0]],
+        },
+      ],
+      edges: [],
+    }
+    expect(collapsibleIds(onlyIface).has('top.u_p')).toBe(false)
+    expect(collapsibleIds(withIface).has('top.u_p')).toBe(true)
+  })
+
+  it('composes with a collapse of the scope that held one', () => {
+    const g = buildElkGraph(withIface, {
+      collapsed: new Set(['top.u_p']),
+      measure: approxMeasure,
+    })
+    expect(ids(g.children[0])).toEqual(['top', 'top.u_p', 'top.u_c'])
   })
 })
 

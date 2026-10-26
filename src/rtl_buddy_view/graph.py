@@ -155,6 +155,23 @@ def find_tb_top(table: ModuleTable, dut_top: str) -> str | None:
     return roots[0] if len(roots) == 1 else None
 
 
+def is_interface_instance(node: HierNode, table: ModuleTable) -> bool:
+    """Whether ``node`` is an interface instance (``bus_if shared (…);``).
+
+    SystemVerilog spells it with module-instance syntax, so the
+    hierarchy builder gives it a node with no module behind it. It
+    counts as an interface when its type is in
+    ``table.interfaces_by_name`` and not also a module. One rule for
+    every artifact that asks: the dot block diagram prunes on it and the
+    ELK export flags it (``rb.is_interface``, rtl-buddy-sch#205).
+    """
+    return (
+        node.module is None
+        and node.module_name in table.interfaces_by_name
+        and node.module_name not in table.modules_by_name
+    )
+
+
 def without_interface_instances(node: HierNode, table: ModuleTable) -> HierNode:
     """``node``'s subtree with every interface instance pruned.
 
@@ -162,19 +179,16 @@ def without_interface_instances(node: HierNode, table: ModuleTable) -> HierNode:
     in the elaborated hierarchy, but on a **dataflow** drawing it is
     the wire between the blocks bound to it, not a block of its own
     (rtl-buddy-sch#194). The connectivity analyzer already routes the
-    edges through it; the block diagram and the ELK schematic use this
-    to stop drawing it as an orphan blackbox box. An instance counts
-    as an interface when its type is in ``table.interfaces_by_name``
-    and not also a module. Unchanged subtrees are returned as-is.
+    edges through it; the block diagram uses this to stop drawing it as
+    an orphan blackbox box. The ELK export keeps the node (its
+    parameters are part of the payload, #165) and marks it
+    ``rb.is_interface`` instead, so its canvases can skip it the same
+    way (#205). Unchanged subtrees are returned as-is.
     """
     kept = tuple(
         without_interface_instances(child, table)
         for child in node.children
-        if not (
-            child.module is None
-            and child.module_name in table.interfaces_by_name
-            and child.module_name not in table.modules_by_name
-        )
+        if not is_interface_instance(child, table)
     )
     if len(kept) == len(node.children) and all(
         a is b for a, b in zip(kept, node.children)
