@@ -477,7 +477,11 @@ def test_sidecar_empty_entry_is_dropped() -> None:
         (_sidecar(modules={"a": {"leaf": "yes"}}), "must be a boolean"),
         (_sidecar(modules={"a": {"label": 3}}), "must be a string"),
         (_sidecar(instances={"a": {"hide": True}}), "<parent_module>.<instance_name>"),
-        (_sidecar(instances={"a.b.c": {}}), "<parent_module>.<instance_name>"),
+        # ``a.b.c`` is legal since #217 (module ``a``, generate-scoped
+        # path ``b.c``); a path with unbalanced brackets is not.
+        (_sidecar(instances={"a.b[0": {}}), "unbalanced '\\['"),
+        (_sidecar(nets={"a": {}}), "<module>.<net_name>"),
+        (_sidecar(nets={"a.b]": {}}), "unbalanced '\\]'"),
         (_sidecar(instances={"a.b": 1}), "entry must be a JSON object"),
         (_sidecar(instances={"a.b": {"hide": 1}}), "must be a boolean"),
         (_sidecar(instances={"a.b": {"label": 1}}), "must be a string"),

@@ -700,4 +700,4 @@ def test_list_overlays_names_clock_colors() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "clock-colors\t1.0\t(built-in)" in result.stdout
-    assert "hints\t1.2\t(built-in)" in result.stdout
+    assert "hints\t1.3\t(built-in)" in result.stdout

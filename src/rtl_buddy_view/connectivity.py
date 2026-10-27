@@ -1957,13 +1957,46 @@ def _hint_for(name: str, net_hints: Mapping[str, NetHints] | None) -> NetHints |
     keyed on the member path itself. A vector element (``dv[SR_A]``)
     inherits the hint on its vector the same way. That is what lets ``bundle=`` on
     an interface fold its members back into one named edge.
+
+    A net or interface declared inside a generate block is named with
+    its scope (``g[0].w``, ``g[0].sub`` — rtl-buddy-sch#217/#218), so
+    its root is not the leading identifier ``g`` but the longest
+    scope-qualified prefix that carries a hint: ``g[0].sub[1].v``
+    inherits from ``g[0].sub[1]`` or ``g[0].sub``. Only dotted prefixes
+    are tried before the root, so a key with no generate scope resolves
+    exactly as it always has.
     """
     if not net_hints:
         return None
     hint = net_hints.get(name)
     if hint is None and _is_select_key(name):
+        for prefix in _scoped_prefixes(name):
+            hint = net_hints.get(prefix)
+            if hint is not None:
+                return hint
         hint = net_hints.get(_key_root(name))
     return hint
+
+
+def _scoped_prefixes(name: str) -> list[str]:
+    """Dotted proper prefixes of ``name`` at a ``.`` / ``[`` boundary, longest first.
+
+    ``g[0].sub[1].v`` → ``g[0].sub[1]``, ``g[0].sub``. A prefix without a
+    dot (``g[0]``, ``q[1]``) is never a generate-scoped net, so it is left
+    to the root rule.
+    """
+    cuts: list[int] = []
+    depth = 0
+    for i, ch in enumerate(name):
+        if ch == "[":
+            if depth == 0:
+                cuts.append(i)
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+        elif ch == "." and depth == 0:
+            cuts.append(i)
+    return [name[:cut] for cut in reversed(cuts) if "." in name[:cut]]
 
 
 def _bundle_emphasis(

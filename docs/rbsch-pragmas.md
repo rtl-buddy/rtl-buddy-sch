@@ -129,6 +129,18 @@ Two net-specific refinements:
   Classification without a hint reads the member's own name: `bus.clk`
   is a clock, `cfg.a_en` is data.
 
+- **Inside a generate block** (#217), an instantiation in a loop
+  body unrolls to one instance per iteration (`g[0].u_x`,
+  `g[1].u_x`, …), all at the same source line. A pragma on it speaks
+  for **every iteration**, in every placement of the module —
+  including iterations only a placement's parameter override creates.
+  To hint a single iteration, use a sidecar key (`top.g[0].u_x`,
+  see [Generate-scoped keys](#generate-scoped-keys)). The same holds
+  for a net pragma on an interface instance declared in a loop body
+  (`bus_if sub [0:1] ();`). A net pragma on a plain `logic` declared
+  inside a generate block does not yet reach its per-iteration copies
+  (`g[0].w`); use a sidecar `nets` key for those.
+
 Association uses the `SourceLocation` every extractor dataclass
 already carries, so there is no CST surgery involved — a per-file
 line scan resolves against extracted locations.
@@ -456,7 +468,7 @@ rtl-buddy-view --top demo_tiny_alu_subsys_top \
 
 ```json
 {
-  "schema_version": "1.2",
+  "schema_version": "1.3",
   "modules": {
     "ip_cdc_sync": { "leaf": true },
     "demo_tiny_alu_subsys_csr": { "label": "CSR block (PeakRDL)" },
@@ -465,13 +477,16 @@ rtl-buddy-view --top demo_tiny_alu_subsys_top \
   "instances": {
     "demo_tiny_alu_subsys_top.u_afifo": { "collapse": true, "params": ["DEPTH"] },
     "demo_tiny_alu_subsys_top.u_dbg_tap": { "hide": true },
-    "demo_tiny_alu_subsys_top.u_compute": { "label": "ALU datapath", "rank": 2 }
+    "demo_tiny_alu_subsys_top.u_compute": { "label": "ALU datapath", "rank": 2 },
+    "demo_tiny_alu_subsys_top.g_lane[0].u_tap": { "hide": true },
+    "demo_tiny_alu_subsys_top.g_lane[*].u_stage": { "collapse": true }
   },
   "nets": {
     "demo_tiny_alu_subsys_top.tick": { "classification": "clock", "color": "blue" },
     "demo_tiny_alu_subsys_top.result_bus": { "emphasis": "main" },
     "demo_tiny_alu_subsys_top.cmd_valid": { "bundle": "cmd_bus" },
-    "demo_tiny_alu_subsys_top.dbg_en": { "hide": true }
+    "demo_tiny_alu_subsys_top.dbg_en": { "hide": true },
+    "demo_tiny_alu_subsys_top.g_lane[*].lane_valid": { "emphasis": "main" }
   }
 }
 ```
@@ -479,7 +494,9 @@ rtl-buddy-view --top demo_tiny_alu_subsys_top \
 - `modules` is keyed by module name; `instances` by
   `"<parent_module>.<instance_name>"`; `nets` (phase 2) by
   `"<module>.<net_name>"` — the same pairs the in-source paths
-  resolve to. No key half may contain a dot.
+  resolve to. The key splits on its **first** dot, so the name half
+  may be a generate-scoped path and may carry `*` wildcards — see
+  [Generate-scoped keys](#generate-scoped-keys).
 - A net entry spells the families as fields: `"classification"` is
   one of `"clock"` / `"reset"` / `"data"`, `"emphasis"` is `"main"`
   or `"side"` (invalid values raise — they would otherwise silently
@@ -503,6 +520,67 @@ rtl-buddy-view --top demo_tiny_alu_subsys_top \
 **The sidecar wins on conflict**, field by field: a sidecar that only
 renames a block keeps the in-source `collapse` on that same
 instance.
+
+### Generate-scoped keys
+
+Schema 1.3 (#217). An instance or net inside a generate block is
+named the way every output prints it (#209): `g[0].u_x` for a loop
+iteration, `g.u_x` for a conditional arm, `g[*].u_x` for a loop
+whose bounds don't fold to constants, nested as deep as the source
+nests (`g[0].h[1].u_x`). A key is that name behind its module:
+
+| Key | Reaches |
+|---|---|
+| `top.u_x` | the plain instance `u_x` (unchanged since 1.0) |
+| `top.g[0].u_x` | iteration 0 of loop `g` only |
+| `top.g[*].u_x` | every iteration of `g` — and the symbolic `g[*].u_x` |
+| `top.g.u_x` | `u_x` in the conditional arm `g` |
+| `top.*.u_x` | `u_x` in every one-level generate scope |
+| `top.u_rd_*` | every plain instance whose name starts `u_rd_` |
+| `top.g[*].w` (nets) | the generate-local net `w` of every iteration |
+| `top.g[*].sub[1]` (nets) | element 1 of every iteration's interface array `sub` |
+
+The grammar:
+
+- The key splits on its **first** dot: the module before it (no `[`,
+  `]` or `*`), the path after it. The path is `segment('.'segment)*`,
+  a segment is a name followed by zero or more `[index]` groups.
+- **`*` is the one wildcard.** It matches any run of characters,
+  possibly none, *within one dot-separated segment* — brackets
+  included, so `g[*]` is "any index of `g`" and `*` alone is "any
+  one segment". It never crosses a dot: `top.*` reaches `u_x` but not
+  `g[0].u_x` (write `top.*.*` for that). There is no other glob
+  syntax; `?` and `[…]` classes are literal text.
+- A malformed path — unbalanced or nested brackets, an empty index
+  `[]`, text after a `]` other than `[` or `.`, an empty segment —
+  raises like every other malformed sidecar key, naming the problem.
+- A wildcard is expanded against the names the elaborated design
+  has, across **every placement** of the module: a parameter override
+  that grows a loop adds iterations (`g[3].u_x`) the module's default
+  elaboration does not have, and both `g[*]` and an exact `g[3]` key
+  reach them. A `nets` wildcard expands against the module's declared
+  nets, ports, interface instances and generate-local nets; append a
+  wildcard-free member or element path (`g[*].sub[1]`) to reach into
+  each match.
+- **Precedence**, field by field when several keys reach one target:
+  an exact key beats every wildcard, and a wildcard with more literal
+  characters beats one with fewer (ties: the later key in sorted
+  order). The sidecar as a whole still beats in-source pragmas, so a
+  sidecar `g[*]` wildcard overrides a pragma on one iteration.
+- **A key that names nothing warns** — an exact key or a wildcard
+  that matches no instance (no net) of its module, or a module that
+  is not in the design. The warning lists the module's names, which
+  is the quickest way to learn a generate scope's spelling. It is a
+  warning, not an error, because one sidecar may serve several tops;
+  an exact key that names nothing is kept, so no 1.0–1.2 sidecar
+  changes behaviour.
+
+Every renderer honours these keys the same way: `hide` / `collapse`
+/ `label` / `params` / layout rewrite the hierarchy before rendering
+(tree, dot, mermaid, json, elk), and net hints reach the
+block-diagram connectivity — a member of a generate-local interface
+(`g[0].sub[1].v`) inherits the hint on `g[0].sub`, like a member of
+a module-scope interface inherits from `sub`.
 
 ## Escape hatch
 
