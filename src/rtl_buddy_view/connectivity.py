@@ -456,11 +456,15 @@ def _scan_refs(
     # member spelled ``cfg . a_en``, which the identifier regex does
     # not skip on its own) are not nets.
     consumed = 0
+    scoped = _generate_scoped(interfaces)
     for match in _ROOT_IDENT_RE.finditer(expr_text):
         if match.start() < consumed:
             continue
         name = match.group(0)
-        tail = _scan_tail(expr_text, match.end())
+        end = match.end()
+        if scoped and name in interfaces:
+            name, end = _scoped_name(expr_text, match.start(), name, end, scoped)
+        tail = _scan_tail(expr_text, end)
         consumed = tail.end
         indices = "".join(f"[{_WS_RE.sub('', i)}]" for i in tail.indices)
         if name not in interfaces:
@@ -479,6 +483,36 @@ def _scan_refs(
             continue
         keys.setdefault(f"{name}{indices}.{member}", None)
     return tuple(keys), tuple(whole)
+
+
+def _generate_scoped(interfaces: frozenset[str] | set[str]) -> tuple[str, ...]:
+    """The generate-scoped interface names among ``interfaces``, longest first.
+
+    An interface instance declared inside a generate block is unrolled
+    to a qualified name (``g[0].sub``, rtl-buddy-sch#218) — the only
+    dotted entries :func:`interface_roots` produces.
+    """
+    return tuple(sorted((n for n in interfaces if "." in n), key=len, reverse=True))
+
+
+def _scoped_name(
+    text: str, start: int, name: str, end: int, scoped: tuple[str, ...]
+) -> tuple[str, int]:
+    """``(name, end)``, widened to a generate-scoped interface at ``start``.
+
+    The unroller spells a reference to a generate-local interface as
+    its qualified name verbatim (``g[0].sub[1].v``), so the root is the
+    whole ``g[0].sub`` — keyed like a module-scope ``sub`` would be
+    (``g[0].sub[1].v``, a whole ``g[0].sub[1]``) — rather than the
+    scope label ``g`` with ``sub`` as its member.
+    """
+    for qualified in scoped:
+        stop = start + len(qualified)
+        if text.startswith(qualified, start) and not (
+            stop < len(text) and (text[stop].isalnum() or text[stop] in "_$")
+        ):
+            return qualified, stop
+    return name, end
 
 
 @dataclass(frozen=True)
@@ -1532,7 +1566,10 @@ def _members_under(prefix: str, members: Mapping[str, tuple[str, ...]]) -> list[
     under = members.get(root, ())
     if prefix == root:
         return list(under)
-    return [key for key in under if key.startswith(prefix + ".")]
+    # A generate-scoped interface (``g[0].sub``) is not its key's root
+    # (``g``), so its elements' members (``g[0].sub[1].v``) are under
+    # ``prefix[``, not only ``prefix.``.
+    return [key for key in under if key.startswith((prefix + ".", prefix + "["))]
 
 
 def _expand_whole(
