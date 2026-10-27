@@ -77,6 +77,8 @@ from rtl_buddy_view.hints import (
     HintMap,
     HintsError,
     apply_hints,
+    bind_hint_keys,
+    design_names,
     hide_all_params,
     merge_hint_maps,
     resolve_hints,
@@ -741,6 +743,10 @@ def _apply_hints_or_warn(
     frontend already parsed but that we can't re-read is a hint-layer
     problem, and losing a hint should never lose the diagram.
     """
+    # Wildcard keys (``g[*].u_x``) expand against the names the
+    # elaborated design actually has — every placement's own unrolling,
+    # not only the table's default one (rtl-buddy-sch#217).
+    names = design_names(table, root)
     pragma_hints = HintMap()
     if not no_pragmas:
         sources: dict[str, str] = {}
@@ -753,14 +759,17 @@ def _apply_hints_or_warn(
                 sources[str(path)] = path.read_text()
             except OSError:  # pragma: no cover - raced/permission-denied source
                 continue
-        pragma_hints = resolve_hints(scan_pragmas(sources), table)
+        pragma_hints = bind_hint_keys(
+            resolve_hints(scan_pragmas(sources), table), names
+        )
 
     hints = pragma_hints
     if isinstance(sidecar, HintMap):
         # Sidecar over pragma: pointing at a file on the command line
         # is the more deliberate act, and it's the only lever available
-        # for source the author can't edit.
-        hints = merge_hint_maps(pragma_hints, sidecar)
+        # for source the author can't edit. Each map is bound on its
+        # own first, so a sidecar wildcard still beats a pragma.
+        hints = merge_hint_maps(pragma_hints, bind_hint_keys(sidecar, names))
 
     warnings: list[str] = []
     hinted = apply_hints(root, hints, warnings=warnings)

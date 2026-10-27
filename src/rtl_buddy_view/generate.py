@@ -677,3 +677,67 @@ def elaborate_module(module: Module, env: Env) -> Module:
     if instances == module.instances and assigns == module.assigns:
         return module
     return dataclasses.replace(module, instances=instances, assigns=assigns)
+
+
+def scoped_net_names(items: tuple[GenerateItem, ...], env: Env) -> tuple[str, ...]:
+    """Every generate-local net ``items`` unroll to under ``env`` (#217).
+
+    The names the unroller qualifies a block's local nets to
+    (``g[0].w``, ``g.w``, ``g[*].w``), in source order — the same walk
+    as :func:`elaborate`, collecting the scope's nets instead of its
+    instances. The hint layer uses it to tell a sidecar ``nets`` key
+    that names a generate-local net from one that names nothing.
+    """
+    names: list[str] = []
+    _collect_scoped_nets(
+        items, _Scope(prefix="", env=env, genvars={}, nets={}, guards=()), names
+    )
+    return tuple(dict.fromkeys(names))
+
+
+def _collect_scoped_nets(
+    items: tuple[GenerateItem, ...], scope: _Scope, names: list[str]
+) -> None:
+    for item in items:
+        if isinstance(item, GenerateLoop):
+            indices = loop_indices(item, scope.env)
+            iterations: list[tuple[str, str | None]] = (
+                [(str(i), str(i)) for i in indices]
+                if indices is not None
+                else [(SYMBOLIC_INDEX, None)]
+            )
+            for index, value in iterations:
+                prefix = f"{scope.prefix}{item.label}[{index}]."
+                inner = _with_locals(
+                    scope,
+                    prefix,
+                    item.local_nets,
+                    item.local_params,
+                    {
+                        **scope.genvars,
+                        item.genvar: value if value is not None else index,
+                    },
+                    {**scope.env, item.genvar: value},
+                    scope.guards,
+                )
+                names.extend(prefix + net for net in item.local_nets)
+                _collect_scoped_nets(item.items, inner, names)
+        elif isinstance(item, GenerateConditional):
+            for arm in item.arms:
+                if any(
+                    (truth := eval_bool(text, scope.env)) is not None and truth != want
+                    for text, want in arm.guards
+                ):
+                    continue
+                prefix = f"{scope.prefix}{arm.label}."
+                inner = _with_locals(
+                    scope,
+                    prefix,
+                    arm.local_nets,
+                    arm.local_params,
+                    scope.genvars,
+                    scope.env,
+                    scope.guards,
+                )
+                names.extend(prefix + net for net in arm.local_nets)
+                _collect_scoped_nets(arm.items, inner, names)

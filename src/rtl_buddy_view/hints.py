@@ -53,19 +53,30 @@ Unknown vocabulary never raises. A typo'd key is collected as a warning
 naming the known set (the self-correcting-typo pattern the overlay
 registry uses for unknown overlay names) so a bad pragma degrades to
 "no hint" rather than "no diagram".
+
+Generate-scoped targets (rtl-buddy-sch#217): an instance or net inside
+a generate block is named the way :mod:`rtl_buddy_view.generate`
+unrolls it — ``g[0].u_x``, ``g.u_x``, or ``g[*].u_x`` for a loop whose
+bounds don't fold — so a sidecar key splits on its *first* dot only
+(:func:`parse_hint_key`), and ``*`` in the name half is a wildcard
+(:func:`key_pattern`). Wildcard keys are expanded against the names the
+elaborated design actually has by :func:`bind_hint_keys`, which is
+also where a key that names nothing gets its warning.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from collections.abc import Mapping, MutableSequence, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
 
 from rtl_buddy_view.clock_colors import color_spelling_help, parse_color
 from rtl_buddy_view.extractor import Module, ModuleTable
+from rtl_buddy_view.generate import module_env, scoped_net_names
 from rtl_buddy_view.graph import HierNode
 
 #: Comment prefix this tool answers to. The ``rb`` stem is the
@@ -76,7 +87,9 @@ PRAGMA_PREFIX = "rbsch"
 
 #: Sidecar schema version this loader emits/accepts. Same
 #: major-must-match / minor-may-drift rule as the clock-domain map.
-SIDECAR_SCHEMA_VERSION = "1.2"
+#: 1.3 (rtl-buddy-sch#217): ``instances`` / ``nets`` keys may name a
+#: generate-scoped target (``top.g[0].u_x``) and carry ``*`` wildcards.
+SIDECAR_SCHEMA_VERSION = "1.3"
 SUPPORTED_SCHEMA_MAJOR = 1
 
 #: Valueless pragma words that shape a *box* (module or instance).
@@ -144,6 +157,9 @@ ParamsHint = Literal["all", "none"] | tuple[str, ...]
 #: ``inout``: a hint exists to recover a *dataflow* direction, and a
 #: bidirectional claim recovers nothing.
 PinDirection = Literal["input", "output"]
+
+#: The wildcard a sidecar key's name half may carry (rtl-buddy-sch#217).
+WILDCARD = "*"
 
 
 class HintsError(ValueError):
@@ -460,12 +476,22 @@ class HintMap:
     ``(module_name, net_name)`` — a net name is meaningful only
     inside the module that declares it, and the sidecar spells the
     pair ``"module.net"``.
+
+    The name half of an instance or net key may be generate-scoped
+    (``g[0].u_x``) and, before :func:`bind_hint_keys` has run, may be a
+    ``*`` wildcard (``g[*].u_x``); a bound map holds concrete names
+    only.
+
+    ``source`` names the sidecar a map was loaded from, so the binding
+    warnings can say which file a dead key lives in. It takes no part
+    in equality.
     """
 
     modules: Mapping[str, ModuleHints] = field(default_factory=dict)
     instances: Mapping[tuple[str, str], InstanceHints] = field(default_factory=dict)
     nets: Mapping[tuple[str, str], NetHints] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
+    source: str | None = field(default=None, compare=False)
 
     @property
     def is_empty(self) -> bool:
@@ -558,10 +584,21 @@ def _declaration_index(table: ModuleTable) -> dict[str, tuple[_Decl, ...]]:
     the phase-2 targets — sort last on a line, which is invisible in
     practice: box association and net association each filter to
     their own kind before looking.
+
+    An instance inside a generate loop is one declaration however many
+    iterations it unrolls to: the table carries ``g[0].u_x`` and
+    ``g[1].u_x`` at the same source line, and both collapse to the
+    template ``g[*].u_x`` (:func:`generate_template`), so a pragma on
+    the instantiation speaks for every iteration — in every placement,
+    once :func:`bind_hint_keys` expands it (rtl-buddy-sch#217).
     """
     per_file: dict[str, list[_Decl]] = {}
+    seen: set[tuple[str, _Decl]] = set()
 
     def _add(file: str, decl: _Decl) -> None:
+        if (file, decl) in seen:
+            return
+        seen.add((file, decl))
         per_file.setdefault(file, []).append(decl)
 
     for module in table.modules_by_name.values():
@@ -574,13 +611,14 @@ def _declaration_index(table: ModuleTable) -> dict[str, tuple[_Decl, ...]]:
             iloc = inst.location
             if iloc is None or iloc.start_line is None:
                 continue
+            template = generate_template(inst.name)
             _add(
                 iloc.file,
                 _Decl(
                     line=iloc.start_line,
                     kind="instance",
                     module=module.name,
-                    instance=inst.name,
+                    instance=template,
                 ),
             )
             # An interface instance is also a *net* target: it is the
@@ -594,7 +632,7 @@ def _declaration_index(table: ModuleTable) -> dict[str, tuple[_Decl, ...]]:
                         line=iloc.start_line,
                         kind="net",
                         module=module.name,
-                        net=inst.name,
+                        net=template,
                     ),
                 )
         # Nets: body declarations and ports both — a clock is very
@@ -850,7 +888,7 @@ def _instance_module(table: ModuleTable | None, decl: _Decl) -> Module | None:
     if parent is None:
         return None
     for inst in parent.instances:
-        if inst.name == decl.instance:
+        if generate_template(inst.name) == decl.instance:
             return table.modules_by_name.get(inst.module_name)
     return None
 
@@ -1097,6 +1135,29 @@ def _resolve_nets(
         nets[net_key] = current
 
 
+#: Any one of the three hint records (they share :func:`_override`).
+_H = TypeVar("_H", ModuleHints, InstanceHints, NetHints)
+
+
+def _override(base: _H | None, over: _H) -> _H:
+    """``over`` laid field-wise onto ``base``: a ``None`` field says nothing.
+
+    The one merge rule every hint layer shares — sidecar over pragma
+    (:func:`merge_hint_maps`) and exact key over wildcard key
+    (:func:`bind_hint_keys`). All three hint records are flat frozen
+    dataclasses whose every field is tri-state, so the rule is the same
+    for each.
+    """
+    if base is None:
+        return over
+    changes = {
+        name: value
+        for name in over.__dataclass_fields__
+        if (value := getattr(over, name)) is not None
+    }
+    return replace(base, **changes)
+
+
 def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
     """Field-wise merge with ``override`` winning.
 
@@ -1108,60 +1169,365 @@ def merge_hint_maps(base: HintMap, override: HintMap) -> HintMap:
     """
     modules = dict(base.modules)
     for name, hints in override.modules.items():
-        current = modules.get(name, ModuleHints())
-        modules[name] = ModuleHints(
-            leaf=current.leaf if hints.leaf is None else hints.leaf,
-            label=current.label if hints.label is None else hints.label,
-            in_pins=current.in_pins if hints.in_pins is None else hints.in_pins,
-            out_pins=current.out_pins if hints.out_pins is None else hints.out_pins,
-            params=current.params if hints.params is None else hints.params,
-        )
+        modules[name] = _override(modules.get(name), hints)
     instances = dict(base.instances)
     for key, inst_hints in override.instances.items():
-        current_i = instances.get(key, InstanceHints())
-        instances[key] = InstanceHints(
-            collapse=(
-                current_i.collapse
-                if inst_hints.collapse is None
-                else inst_hints.collapse
-            ),
-            hide=current_i.hide if inst_hints.hide is None else inst_hints.hide,
-            label=current_i.label if inst_hints.label is None else inst_hints.label,
-            rank=current_i.rank if inst_hints.rank is None else inst_hints.rank,
-            group=current_i.group if inst_hints.group is None else inst_hints.group,
-            in_pins=(
-                current_i.in_pins if inst_hints.in_pins is None else inst_hints.in_pins
-            ),
-            out_pins=(
-                current_i.out_pins
-                if inst_hints.out_pins is None
-                else inst_hints.out_pins
-            ),
-            params=(
-                current_i.params if inst_hints.params is None else inst_hints.params
-            ),
-        )
+        instances[key] = _override(instances.get(key), inst_hints)
     nets = dict(base.nets)
     for net_key, net_hints in override.nets.items():
-        current_n = nets.get(net_key, NetHints())
-        nets[net_key] = NetHints(
-            classification=(
-                current_n.classification
-                if net_hints.classification is None
-                else net_hints.classification
-            ),
-            emphasis=(
-                current_n.emphasis if net_hints.emphasis is None else net_hints.emphasis
-            ),
-            bundle=(current_n.bundle if net_hints.bundle is None else net_hints.bundle),
-            hide=current_n.hide if net_hints.hide is None else net_hints.hide,
-            color=current_n.color if net_hints.color is None else net_hints.color,
-        )
+        nets[net_key] = _override(nets.get(net_key), net_hints)
     return HintMap(
         modules=dict(sorted(modules.items())),
         instances=dict(sorted(instances.items())),
         nets=dict(sorted(nets.items())),
         warnings=base.warnings + override.warnings,
+    )
+
+
+# --- keys (rtl-buddy-sch#217) ------------------------------------------------
+#
+# An instance or net inside a generate block is named the way
+# :mod:`rtl_buddy_view.generate` unrolls it: ``g[0].u_x`` (loop
+# iteration), ``g.u_x`` (conditional arm), ``g[*].u_x`` (a loop whose
+# bounds don't fold), nested as deep as the source nests. A key is
+# therefore ``<module>.<path>``, split on the *first* dot, where the path
+# is the name exactly as every output prints it. ``*`` in the path is a
+# wildcard for any run of characters within one dot-separated segment,
+# brackets included — so ``g[*]`` is every iteration of ``g`` (and the
+# symbolic ``g[*]`` itself), and ``u_*`` every name starting ``u_``.
+
+_INDEX_RE = re.compile(r"\[[^\[\]]*\]")
+
+
+def _top_level_cuts(path: str, *, brackets: bool) -> list[int]:
+    """Offsets of the ``.`` (and with ``brackets``, ``[``) outside any ``[…]``."""
+    cuts: list[int] = []
+    depth = 0
+    for i, ch in enumerate(path):
+        if ch == "[":
+            if depth == 0 and brackets and i:
+                cuts.append(i)
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+        elif ch == "." and depth == 0:
+            cuts.append(i)
+    return cuts
+
+
+def generate_template(name: str) -> str:
+    """``g[0].h[1].u_x`` → ``g[*].h[*].u_x``: the name every iteration shares.
+
+    Only the generate scope — everything before the last top-level dot
+    — is rewritten; the leaf keeps its own brackets. A name outside any
+    generate block (or in a conditional arm only, ``g.u_x``) comes back
+    unchanged. This is how an in-source pragma on an instantiation
+    inside a loop body reaches every iteration rather than the first.
+    """
+    cuts = _top_level_cuts(name, brackets=False)
+    if not cuts:
+        return name
+    cut = cuts[-1]
+    return _INDEX_RE.sub(f"[{WILDCARD}]", name[:cut]) + name[cut:]
+
+
+def _path_error(path: str) -> str | None:
+    """Why ``path`` is not a well-formed instance / net path, or ``None``.
+
+    The grammar is ``segment ('.' segment)*`` with ``segment`` a name
+    followed by zero or more ``[index]`` groups. Names and indices are
+    otherwise free text: an escaped identifier, a parameter-named
+    index (``dv[SR_A]``) and ``*`` are all legal.
+    """
+    if not path:
+        return "nothing after the module name"
+    expect_name = True  # at a segment start: a name must come next
+    after_index = False  # just closed a ']': only '[', '.' or the end
+    i = 0
+    while i < len(path):
+        ch = path[i]
+        if ch == "[":
+            if expect_name:
+                return f"'[' at offset {i} must follow a name"
+            close = path.find("]", i + 1)
+            nested = path.find("[", i + 1)
+            if close == -1:
+                return f"unbalanced '[' at offset {i}"
+            if nested != -1 and nested < close:
+                return f"nested '[' at offset {nested}"
+            if close == i + 1:
+                return f"empty index '[]' at offset {i}"
+            after_index = True
+            i = close + 1
+            continue
+        if ch == "]":
+            return f"unbalanced ']' at offset {i}"
+        if ch == ".":
+            if expect_name:
+                return f"empty path segment (stray '.' at offset {i})"
+            expect_name = True
+            after_index = False
+        elif after_index:
+            return (
+                f"unexpected {ch!r} after ']' at offset {i} "
+                f"(expected '[', '.' or the end)"
+            )
+        else:
+            expect_name = False
+        i += 1
+    if expect_name:
+        return "empty path segment (trailing '.')"
+    return None
+
+
+def parse_hint_key(text: str) -> tuple[str, str]:
+    """Split a sidecar ``instances`` / ``nets`` key into ``(module, path)``.
+
+    The split is on the *first* dot: a module name never contains one,
+    while a generate-scoped path does (``top.g[0].u_x``). Raises
+    :class:`ValueError` naming what is wrong; the sidecar loader turns
+    that into a :class:`HintsError` with the key's location.
+    """
+    module, sep, path = text.partition(".")
+    if not sep:
+        raise ValueError("no '.' between the module and the name")
+    if not module:
+        raise ValueError("empty module name")
+    if any(ch in module for ch in "[]" + WILDCARD):
+        raise ValueError(
+            f"module name {module!r} may not contain '[', ']' or {WILDCARD!r}"
+        )
+    reason = _path_error(path)
+    if reason is not None:
+        raise ValueError(f"{reason} in {path!r}")
+    return module, path
+
+
+def key_pattern(path: str) -> re.Pattern[str] | None:
+    """The full-match regex for a wildcard key path, or ``None`` when exact.
+
+    ``*`` matches any run of characters — possibly none — that holds no
+    ``.``: it never crosses into another path segment. Everything else
+    matches itself.
+    """
+    if WILDCARD not in path:
+        return None
+    return re.compile("[^.]*".join(re.escape(part) for part in path.split(WILDCARD)))
+
+
+def _literal_length(path: str) -> int:
+    """How specific a wildcard key is: its count of non-wildcard characters."""
+    return len(path) - path.count(WILDCARD)
+
+
+@dataclass(frozen=True)
+class DesignNames:
+    """The instance and net names each module has, for key binding.
+
+    Keyed by module name. Instance names are every name a placement of
+    the module elaborates to — a parameter override that changes a loop
+    bound adds names (``g[3].u_x``) the table's default elaboration
+    lacks. Net names are the module's declared nets, its ports, its
+    interface instances and its generate-local nets, qualified with
+    their scope (``g[0].w``).
+    """
+
+    instances: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    nets: Mapping[str, frozenset[str]] = field(default_factory=dict)
+
+
+def design_names(table: ModuleTable, root: HierNode | None = None) -> DesignNames:
+    """Collect :class:`DesignNames` from ``table`` and, if given, ``root``.
+
+    The table contributes every module's default elaboration, so a key
+    on a module outside the rendered subtree still binds; ``root``
+    contributes each placement's own elaboration, which is what the
+    renderers draw.
+    """
+    instances: dict[str, set[str]] = {}
+    nets: dict[str, set[str]] = {}
+    seen: set[tuple[int, tuple[tuple[str, str | None], ...]]] = set()
+
+    def add(module: Module, env: Mapping[str, str | None]) -> None:
+        memo = (id(module), tuple(sorted(env.items(), key=lambda kv: kv[0])))
+        if memo in seen:
+            return
+        seen.add(memo)
+        inst_names = instances.setdefault(module.name, set())
+        net_names = nets.setdefault(module.name, set())
+        for inst in module.instances:
+            inst_names.add(inst.name)
+            if inst.module_name in table.interfaces_by_name:
+                net_names.add(inst.name)
+        net_names.update(decl.name for decl in module.net_decls)
+        net_names.update(port.name for port in module.ports)
+        if module.generate_body:
+            net_names.update(scoped_net_names(module.generate_body, env))
+
+    for module in table.modules_by_name.values():
+        add(module, module_env(module))
+
+    def walk(node: HierNode, env: Mapping[str, str | None]) -> None:
+        if node.module is None:
+            return
+        add(node.module, env)
+        for child in node.children:
+            source = table.modules_by_name.get(child.module_name)
+            if child.instance is None or source is None:
+                continue
+            walk(
+                child,
+                module_env(source, child.instance.param_overrides, outer_env=env),
+            )
+
+    if root is not None:
+        top = table.modules_by_name.get(root.module_name)
+        if top is not None:
+            walk(root, module_env(top))
+
+    return DesignNames(
+        instances={k: frozenset(v) for k, v in sorted(instances.items())},
+        nets={k: frozenset(v) for k, v in sorted(nets.items())},
+    )
+
+
+def _names_target(path: str, known: frozenset[str], *, members: bool) -> bool:
+    """Whether an exact key path names something in ``known``.
+
+    With ``members`` (net keys), a path that *extends* a known net at a
+    ``.`` / ``[`` boundary also counts: ``cfg.a_en`` is a member of the
+    interface ``cfg``, ``dv[SR_A]`` an element of the vector ``dv`` —
+    the connectivity analyzer looks those keys up verbatim.
+    """
+    if path in known:
+        return True
+    if not members:
+        return False
+    return any(path[:cut] in known for cut in _top_level_cuts(path, brackets=True))
+
+
+def _expand(path: str, known: frozenset[str], *, members: bool) -> list[str]:
+    """The concrete names a wildcard key path binds to, sorted.
+
+    Every known name the pattern matches in full; with ``members``
+    (net keys), also a known net matched by the pattern's head with the
+    wildcard-free rest of the key appended — ``g[*].sub[1]`` reaches
+    element ``[1]`` of every iteration's ``sub``.
+    """
+    pattern = key_pattern(path)
+    assert pattern is not None
+    hits = {name for name in known if pattern.fullmatch(name)}
+    if members:
+        for cut in _top_level_cuts(path, brackets=True):
+            head, tail = path[:cut], path[cut:]
+            head_pattern = key_pattern(head)
+            if head_pattern is None or WILDCARD in tail:
+                continue
+            hits.update(name + tail for name in known if head_pattern.fullmatch(name))
+    return sorted(hits)
+
+
+def _names_nothing(module: str, noun: str, known: Mapping[str, frozenset[str]]) -> str:
+    names = known.get(module)
+    if names is None:
+        return f"module {module!r} is not in the design; the key names nothing"
+    if not names:
+        return f"module {module!r} has no {noun}s; the key names nothing"
+    listed = sorted(names)
+    shown = ", ".join(listed[:8]) + (", …" if len(listed) > 8 else "")
+    return f"names no {noun} of module {module!r} (its {noun}s: {shown})"
+
+
+def _bind_section(
+    entries: Mapping[tuple[str, str], _H],
+    known: Mapping[str, frozenset[str]],
+    *,
+    section: str,
+    noun: str,
+    members: bool,
+    where: str,
+    warnings: list[str],
+) -> dict[tuple[str, str], _H]:
+    bound: dict[tuple[str, str], _H] = {}
+    wild = sorted(
+        (
+            (module, path, hint)
+            for (module, path), hint in entries.items()
+            if WILDCARD in path
+        ),
+        key=lambda e: (_literal_length(e[1]), e[1], e[0]),
+    )
+    # Least specific first, so a narrower wildcard's fields land on top.
+    for module, path, hint in wild:
+        matches = _expand(path, known.get(module, frozenset()), members=members)
+        if not matches:
+            warnings.append(
+                f"{where}{section}.{module}.{path}: {_names_nothing(module, noun, known)}"
+            )
+            continue
+        for name in matches:
+            bound[(module, name)] = _override(bound.get((module, name)), hint)
+    # An exact key beats every wildcard, field by field.
+    for (module, path), hint in entries.items():
+        if WILDCARD in path:
+            continue
+        if not _names_target(path, known.get(module, frozenset()), members=members):
+            warnings.append(
+                f"{where}{section}.{module}.{path}: {_names_nothing(module, noun, known)}"
+            )
+        bound[(module, path)] = _override(bound.get((module, path)), hint)
+    return dict(sorted(bound.items()))
+
+
+def bind_hint_keys(hints: HintMap, names: DesignNames) -> HintMap:
+    """Expand wildcard keys and flag keys that name nothing (rtl-buddy-sch#217).
+
+    Every downstream consumer looks hints up by a concrete
+    ``(module, name)`` pair, so a wildcard key (``top.g[*].u_x``) is
+    replaced by one entry per name it matches in ``names``. When
+    several keys reach one target the fields merge: an exact key wins
+    over any wildcard, and a wildcard with more literal characters over
+    one with fewer (ties: the later key in sorted order).
+
+    A key — wildcard or exact — that names no instance (no net) of its
+    module is a warning, not an error: the sidecar may serve several
+    tops or filelists. An exact key is kept regardless, so binding
+    never changes what an old sidecar does. Module keys are not
+    checked; the sidecar's ``in``/``out`` pin lists exist precisely for
+    modules the design has no source for.
+
+    Bind the pragma map and the sidecar map *separately*, before
+    :func:`merge_hint_maps`, so a sidecar wildcard still beats an
+    in-source pragma on the same instance.
+    """
+    if not hints.instances and not hints.nets:
+        return hints
+    warnings = list(hints.warnings)
+    where = f"{hints.source}: " if hints.source else ""
+    instances = _bind_section(
+        hints.instances,
+        names.instances,
+        section="instances",
+        noun="instance",
+        members=False,
+        where=where,
+        warnings=warnings,
+    )
+    nets = _bind_section(
+        hints.nets,
+        names.nets,
+        section="nets",
+        noun="net",
+        members=True,
+        where=where,
+        warnings=warnings,
+    )
+    return HintMap(
+        modules=hints.modules,
+        instances=instances,
+        nets=nets,
+        warnings=tuple(warnings),
+        source=hints.source,
     )
 
 
@@ -1235,6 +1601,10 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
     top-level keys are ignored (forward compatibility, matching the
     clock-domain-map consumer rules); wrong *types* raise, because a
     sidecar is an artefact the user deliberately pointed at.
+
+    ``instances`` / ``nets`` keys go through :func:`parse_hint_key`, so
+    a malformed one raises here too. Wildcard keys are kept as written;
+    :func:`bind_hint_keys` expands them once the design is known.
     """
     if not isinstance(payload, dict):
         raise HintsError(f"{source}: top-level must be a JSON object")
@@ -1283,9 +1653,13 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
         raise HintsError(f"{source}: 'instances' must be a JSON object")
     for key_text, entry in sorted(raw_instances.items()):
         where = f"{source}: instances.{key_text}"
-        parts = key_text.split(".")
-        if len(parts) != 2 or not all(parts):
-            raise HintsError(f"{where}: key must be '<parent_module>.<instance_name>'")
+        try:
+            inst_key = parse_hint_key(key_text)
+        except ValueError as e:
+            raise HintsError(
+                f"{where}: key must be '<parent_module>.<instance_name>' "
+                f"(generate-scoped: '<parent_module>.g[0].<instance_name>'): {e}"
+            ) from None
         if not isinstance(entry, dict):
             raise HintsError(f"{where}: entry must be a JSON object")
         inst_hints = InstanceHints()
@@ -1327,7 +1701,7 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
             else:
                 warnings.append(f"{where}: {_unknown_word_warning(name)}")
         if not inst_hints.is_empty:
-            instances[(parts[0], parts[1])] = inst_hints
+            instances[inst_key] = inst_hints
 
     nets: dict[tuple[str, str], NetHints] = {}
     raw_nets = payload.get("nets", {})
@@ -1335,9 +1709,13 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
         raise HintsError(f"{source}: 'nets' must be a JSON object")
     for key_text, entry in sorted(raw_nets.items()):
         where = f"{source}: nets.{key_text}"
-        parts = key_text.split(".")
-        if len(parts) != 2 or not all(parts):
-            raise HintsError(f"{where}: key must be '<module>.<net_name>'")
+        try:
+            net_key = parse_hint_key(key_text)
+        except ValueError as e:
+            raise HintsError(
+                f"{where}: key must be '<module>.<net_name>' "
+                f"(generate-scoped: '<module>.g[0].<net_name>'): {e}"
+            ) from None
         if not isinstance(entry, dict):
             raise HintsError(f"{where}: entry must be a JSON object")
         net_hints = NetHints()
@@ -1387,13 +1765,14 @@ def parse_hint_sidecar(payload: object, *, source: str) -> HintMap:
             else:
                 warnings.append(f"{where}: {_unknown_word_warning(name)}")
         if not net_hints.is_empty:
-            nets[(parts[0], parts[1])] = net_hints
+            nets[net_key] = net_hints
 
     return HintMap(
         modules=modules,
         instances=instances,
         nets=nets,
         warnings=tuple(warnings),
+        source=source,
     )
 
 

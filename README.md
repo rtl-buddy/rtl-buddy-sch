@@ -550,6 +550,11 @@ uv run rtl-buddy-view --top demo_tiny_alu_subsys_top \
     --overlay hints=docs/demo.hints.json
 ```
 
+Sidecar keys reach generate-scoped targets by the name every output
+prints — `top.g[0].u_x` for one iteration, `top.g[*].u_x` for all of
+them (`*` matches within one dot-separated segment) — and a key that
+names nothing in the design warns.
+
 Unknown keys warn on stderr with the known set instead of failing the
 run. Full vocabulary, association rules and sidecar schema:
 [`docs/rbsch-pragmas.md`](docs/rbsch-pragmas.md).
