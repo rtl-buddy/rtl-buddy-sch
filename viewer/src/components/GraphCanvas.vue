@@ -86,6 +86,7 @@
 // layout step and so click handlers can recover the model node.
 import { computed, onMounted, ref, watch, onBeforeUnmount } from 'vue'
 import { useViewerStore } from '../store.js'
+import { leafName } from '../instancePath.js'
 import { layoutGraph, layoutDot, clusterIdFor, hasEmbeddedDot } from '../layout/viz.js'
 import { buildBlockFlowDot } from '../layout/blockFlow.js'
 import {
@@ -153,11 +154,26 @@ const scopePath = computed(() => {
 const breadcrumb = computed(() => {
   const scope = scopePath.value
   if (!scope) return []
-  const segments = scope.split('.')
-  return segments.map((label, i) => {
-    const path = segments.slice(0, i + 1).join('.')
-    return { label, path, current: i === segments.length - 1 }
-  })
+  if (!store.nodesById.has(scope)) {
+    const segments = scope.split('.')
+    return segments.map((label, i) => {
+      const path = segments.slice(0, i + 1).join('.')
+      return { label, path, current: i === segments.length - 1 }
+    })
+  }
+  // Walk the tree parents rather than splitting on dots: a
+  // generate-scoped ``top.g[0].u_s`` sits directly under ``top``, and
+  // ``top.g[0]`` is no scope one could jump to (rtl-buddy-sch#209).
+  const chain = []
+  for (let cur = scope; cur && !chain.includes(cur); ) {
+    chain.unshift(cur)
+    cur = store.treeParentOf.get(cur) || null
+  }
+  return chain.map((path, i) => ({
+    label: i === 0 ? path : leafName(store.nodesById.get(path), path),
+    path,
+    current: i === chain.length - 1,
+  }))
 })
 
 function jumpToScope(path) {

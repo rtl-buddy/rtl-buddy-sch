@@ -7,9 +7,10 @@ dependency. Source anchors (`(file, line, col)`) are attached to every
 node so consumers can cite or jump to the originating SV source.
 
 Phase 1 scope: ``module``, ``port``, ``parameter``, ``instance``,
-``port connection`` (named and positional). Generate blocks and
-parameterized-instance resolution are deferred to Phase 2's slang
-fallback path — see [rtl-buddy/rtl-buddy-view#2](https://github.com/rtl-buddy/rtl-buddy-view/issues/2).
+``port connection`` (named and positional). Generate constructs
+(``for`` / ``if`` / ``case``) are kept as a template
+(:attr:`Module.generate_body`) and unrolled by
+:mod:`rtl_buddy_view.generate` (rtl-buddy-sch#209).
 """
 
 from __future__ import annotations
@@ -110,6 +111,15 @@ class Instance:
     param_overrides: tuple[ParameterOverride, ...]
     port_connections: tuple[PortConnection, ...]
     location: SourceLocation | None
+    # The unresolved generate condition guarding this instance, or
+    # ``None`` when it is elaborated unconditionally (rtl-buddy-sch#209).
+    # Set only on instances unrolled out of an ``if`` / ``case``
+    # generate construct whose condition the parameter evaluator could
+    # not decide: every such arm is kept, and this carries the
+    # undecided guards joined with ``&&`` (``"USE_FAST"``,
+    # ``"!(MODE == 2)"``). Exposed on the hierarchy as
+    # :attr:`rtl_buddy_view.graph.HierNode.is_conditional`.
+    generate_condition: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +208,60 @@ class NetDecl:
 
 
 @dataclass(frozen=True)
+class GenerateLoop:
+    """A ``for (genvar …) begin : label … end`` generate construct.
+
+    A template, not an elaboration: the header is kept as source text
+    and :mod:`rtl_buddy_view.generate` unrolls it against a parameter
+    environment. ``label`` is the block name, or the LRM default
+    ``genblk<N>`` (IEEE 1800-2017 § 27.6) when the block is unnamed.
+    ``local_nets`` names the nets/variables declared directly in the
+    body: each iteration has its own copy, so a binding to one is
+    qualified with the iteration's scope (``g[0].w``) when unrolled.
+    ``local_params`` are the body's own ``localparam``s.
+    """
+
+    label: str
+    genvar: str
+    init_text: str
+    cond_text: str
+    step_text: str
+    items: tuple["GenerateItem", ...]
+    local_nets: tuple[str, ...] = ()
+    local_params: tuple[Parameter, ...] = ()
+    location: SourceLocation | None = None
+
+
+@dataclass(frozen=True)
+class GenerateArm:
+    """One generate block of an ``if`` / ``case`` generate construct.
+
+    ``guards`` is the conjunction that selects this arm, as
+    ``(condition source text, required truth value)`` pairs: the
+    ``else`` of ``if (A) … else if (B) …`` is ``(("A", False),
+    ("B", False))``. Directly nested conditionals (an ``else if``, or
+    an ``if`` arm whose only item is another ``if`` without
+    ``begin``/``end``) are flattened into extra arms of the outer
+    construct, which is how the LRM scopes them. A ``case`` item's
+    guard is ``(expr) == (label)``.
+    """
+
+    label: str
+    guards: tuple[tuple[str, bool], ...]
+    items: tuple["GenerateItem", ...]
+    local_nets: tuple[str, ...] = ()
+    local_params: tuple[Parameter, ...] = ()
+
+
+@dataclass(frozen=True)
+class GenerateConditional:
+    """An ``if`` / ``case`` generate construct: mutually exclusive arms."""
+
+    arms: tuple[GenerateArm, ...]
+    location: SourceLocation | None = None
+
+
+@dataclass(frozen=True)
 class Module:
     name: str
     ports: tuple[Port, ...]
@@ -245,6 +309,23 @@ class Module:
     # register's data group. Read only to tell which nets the body's
     # logic reads (:func:`rtl_buddy_view.connectivity.logic_nets`).
     procedural_conditions: tuple[str, ...] = ()
+    # The module body's instances and assigns **in source order with
+    # their generate constructs intact** (rtl-buddy-sch#209). Empty for
+    # a module without any generate construct — the flat
+    # ``instances`` / ``assigns`` above are then the whole story.
+    # When non-empty, ``instances`` and ``assigns`` are this template
+    # unrolled against the module's own parameter defaults, and the
+    # hierarchy builder re-unrolls it per placement when a parent's
+    # overrides change a bound (:func:`rtl_buddy_view.generate.elaborate`).
+    generate_body: tuple["GenerateItem", ...] = ()
+    # Body-level ``localparam`` (and body ``parameter``) declarations.
+    # Header parameters stay in ``parameters``; these feed only the
+    # generate evaluator's environment, so no renderer emits them.
+    local_params: tuple[Parameter, ...] = ()
+
+
+#: One entry of a generate template, in source order.
+GenerateItem = Instance | Assign | GenerateLoop | GenerateConditional
 
 
 @dataclass(frozen=True)

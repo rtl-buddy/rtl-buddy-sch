@@ -25,6 +25,7 @@
 // / east edge — polyline no longer piles every edge onto the
 // geometric center of the side.
 
+import { parentPath } from '../instancePath.js'
 import { token } from '../theme.js'
 
 const CLOCK_RESET_RE = /(?:^|_)(?:clk|clock|rst|reset)(?:$|_)/i
@@ -82,17 +83,15 @@ function dotId(id) {
   return `"${dotEscape(id)}"`
 }
 
-// Direct children of ``scopeId``: nodes whose instance path starts
-// with ``<scopeId>.`` and has exactly one further dot-segment.
+// Direct children of ``scopeId``: nodes whose parent path is
+// ``scopeId``. Not "exactly one further dot-segment": a generate-scoped
+// child ``top.g[0].u_s`` is a direct child of ``top`` (rtl-buddy-sch#209),
+// and its ``instance_name`` is what says so (``parentPath``).
 function directChildrenOf(graph, scopeId) {
   if (!graph || !graph.nodes || !scopeId) return []
-  const prefix = scopeId + '.'
-  const prefixDepth = prefix.length
-  return graph.nodes.filter((n) => {
-    if (!n.id.startsWith(prefix)) return false
-    const rest = n.id.slice(prefixDepth)
-    return rest.length > 0 && !rest.includes('.')
-  })
+  return graph.nodes.filter(
+    (n) => n && typeof n.id === 'string' && n.id !== scopeId && parentPath(n) === scopeId,
+  )
 }
 
 function findNode(graph, id) {

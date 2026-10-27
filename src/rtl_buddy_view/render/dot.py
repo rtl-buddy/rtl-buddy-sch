@@ -2168,6 +2168,8 @@ def _html_compact_label(
             tags.append("✓rstsync")
     if node.is_blackbox:
         tags.append("(blackbox)")
+    if node.is_conditional:
+        tags.append(conditional_tag(node))
     tags.extend(extra_lines)
     for tag in tags:
         rows.append(
@@ -2269,7 +2271,20 @@ def _label_text_lines(
             lines.append("✓rstsync")
     if node.is_blackbox:
         lines.append("(blackbox)")
+    if node.is_conditional:
+        lines.append(conditional_tag(node))
     return lines
+
+
+def conditional_tag(node: HierNode) -> str:
+    """The box line for an undecided generate arm (rtl-buddy-sch#209).
+
+    ``(if USE_FAST)`` — the condition the arm depends on, so the
+    reader knows both alternatives are drawn and which knob picks one.
+    Callers escape it for their label syntax.
+    """
+    cond = node.instance.generate_condition if node.instance is not None else None
+    return f"(if {cond})"
 
 
 def _html_escape(s: str) -> str:
@@ -2694,6 +2709,8 @@ def _label_for(
             lines.append("✓rstsync")
     if node.is_blackbox:
         lines.append("(blackbox)")
+    if node.is_conditional:
+        lines.append(_escape(conditional_tag(node)))
     # Trailing ``\l`` anchors the final line to the left margin.
     return r"\l".join(lines) + r"\l"
 

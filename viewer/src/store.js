@@ -33,6 +33,7 @@
 //
 import { defineStore } from 'pinia'
 import { parseViewJson } from './parse.js'
+import { leafName } from './instancePath.js'
 import { commonSourceRoot } from './sourcePaths.js'
 import { loadCovData, moduleCoverage } from './covData.js'
 
@@ -646,7 +647,9 @@ export const useViewerStore = defineStore('viewer', {
         if (!q) return { matches, visible: new Set() }
         for (const n of nodes) {
           if (!n || typeof n.id !== 'string' || !n.id) continue
-          const name = n.id.slice(n.id.lastIndexOf('.') + 1)
+          // The scoped name (``g[1].u_k``, rtl-buddy-sch#209), so a
+          // query can pick out one generate iteration.
+          const name = leafName(n, n.id)
           const module = typeof n.module === 'string' ? n.module : ''
           if (
             name.toLowerCase().includes(q) ||

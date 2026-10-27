@@ -181,6 +181,10 @@ def _render_children(
         branch = "└── " if is_last else "├── "
         next_prefix = prefix + ("    " if is_last else "│   ")
         tag = " (blackbox)" if child.is_blackbox else ""
+        if child.is_conditional and child.instance is not None:
+            # An undecided generate arm (rtl-buddy-sch#209): drawn,
+            # but only one alternative elaborates.
+            tag += f" (if {child.instance.generate_condition})"
         inst_name = (
             child.instance.name if child.instance is not None else child.module_name
         )

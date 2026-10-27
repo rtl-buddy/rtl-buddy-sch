@@ -230,8 +230,9 @@ reads from the C side's perspective of who implements: `import`
 means C implements and SV calls, `export` the reverse.
 
 DPI items are extracted from module bodies by the Verible frontend
-(flat scope, same rule as instances — generate blocks and
-compilation-unit scope are out). Checker DPI usually lives in
+(flat scope — generate blocks and compilation-unit scope are out;
+instances, unlike DPI items, are unrolled out of generate blocks,
+rtl-buddy-sch#209). Checker DPI usually lives in
 testbench code, which is why the TB-rooted export matters here: a
 DUT-rooted export of a design whose DPI is all in the TB has no
 `dpi_function` nodes at all.

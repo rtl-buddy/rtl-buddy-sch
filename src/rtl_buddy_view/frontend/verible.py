@@ -19,6 +19,7 @@ extractor coverage are tracked separately in
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import subprocess
@@ -30,6 +31,10 @@ from rtl_buddy_view.offsets import OffsetIndex
 from rtl_buddy_view.extractor import (
     Assign,
     DpiFunction,
+    GenerateArm,
+    GenerateConditional,
+    GenerateItem,
+    GenerateLoop,
     Instance,
     Interface,
     InterfaceSignal,
@@ -43,6 +48,7 @@ from rtl_buddy_view.extractor import (
     PortConnection,
     SourceLocation,
 )
+from rtl_buddy_view.generate import elaborate, module_env
 
 
 class VeribleUnavailable(RuntimeError):
@@ -263,6 +269,19 @@ def _walk_modules(
         procedural_assigns, procedural_conditions = _extract_procedural(
             node, file=file, offsets=offsets, source=source
         )
+        item_list = _first_child_with_tag(node, "kModuleItemList")
+        local_params = _scope_params(
+            item_list, file=file, offsets=offsets, source=source
+        )
+        generate_body: tuple[GenerateItem, ...] = ()
+        if item_list is not None and _has_generate(item_list):
+            # rtl-buddy-sch#209: keep the body as a template and unroll
+            # it against the module's own defaults. The hierarchy
+            # builder re-unrolls it per placement when overrides move
+            # a bound.
+            generate_body = _generate_scope(
+                item_list, file=file, offsets=offsets, source=source
+            )
         net_decls = _extract_net_decls(
             node,
             file=file,
@@ -270,20 +289,24 @@ def _walk_modules(
             source=source,
             port_names={p.name for p in ports},
         )
-        out.append(
-            Module(
-                name=name,
-                ports=ports,
-                parameters=parameters,
-                instances=instances,
-                location=loc,
-                dpi_functions=dpi_functions,
-                assigns=assigns,
-                net_decls=net_decls,
-                procedural_assigns=procedural_assigns,
-                procedural_conditions=procedural_conditions,
-            )
+        module = Module(
+            name=name,
+            ports=ports,
+            parameters=parameters,
+            instances=instances,
+            location=loc,
+            dpi_functions=dpi_functions,
+            assigns=assigns,
+            net_decls=net_decls,
+            generate_body=generate_body,
+            local_params=local_params,
+            procedural_assigns=procedural_assigns,
+            procedural_conditions=procedural_conditions,
         )
+        if generate_body:
+            instances, assigns = elaborate(generate_body, module_env(module))
+            module = dataclasses.replace(module, instances=instances, assigns=assigns)
+        out.append(module)
     return out
 
 
@@ -665,10 +688,24 @@ def _param_from_decl(
     ptype = _first_child_with_tag(decl, "kParamType")
     if ptype is not None:
         for child in ptype.get("children", ()) or ():
-            if isinstance(child, dict) and child.get("tag") == "SymbolIdentifier":
-                if "text" in child:
-                    name = child["text"]
-                    name_node = child
+            if not isinstance(child, dict):
+                continue
+            # A typed parameter (``parameter int W``) carries its name
+            # as a direct SymbolIdentifier; an untyped one
+            # (``parameter W``, and every later declarator of a
+            # ``#(parameter A = 1, B = 2)`` list) wraps it in a
+            # kUnqualifiedId.
+            sym = (
+                child
+                if child.get("tag") == "SymbolIdentifier"
+                else _first_child_with_tag(child, "SymbolIdentifier")
+                if child.get("tag") == "kUnqualifiedId"
+                else None
+            )
+            if sym is not None:
+                if "text" in sym:
+                    name = sym["text"]
+                    name_node = sym
                 break
     trailing = _first_child_with_tag(decl, "kTrailingAssign")
     if trailing is not None:
@@ -707,48 +744,426 @@ def _extract_instances(
             or data_decl.get("tag") != "kDataDeclaration"
         ):
             continue
-        base = _first_child_with_tag(data_decl, "kInstantiationBase")
-        if base is None:
-            continue
-        inst_type = _first_child_with_tag(base, "kInstantiationType")
-        gate_list = _first_child_with_tag(base, "kGateInstanceRegisterVariableList")
-        if inst_type is None or gate_list is None:
-            continue
-        module_name_node = _find_first_sym(inst_type)
-        if module_name_node is None:
-            continue
-        module_name = module_name_node.get("text", "")
-        if not module_name:
-            continue
-        param_overrides = _extract_param_overrides(
-            inst_type, file=file, offsets=offsets, source=source
+        out.extend(
+            _instances_from_decl(data_decl, file=file, offsets=offsets, source=source)
         )
-        for gate in gate_list.get("children", ()) or ():
-            if not isinstance(gate, dict) or gate.get("tag") != "kGateInstance":
-                continue
-            inst_name_node = _first_child_with_tag(gate, "SymbolIdentifier")
-            if inst_name_node is None or "text" not in inst_name_node:
-                continue
-            inst_name = inst_name_node["text"]
-            span = _node_span(gate)
-            loc = (
-                SourceLocation(file=file)
-                if span is None
-                else _location(file, offsets, span[0], span[1])
+    return tuple(out)
+
+
+def _instances_from_decl(
+    data_decl: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> list[Instance]:
+    """The instances one ``kDataDeclaration`` declares (none for a net)."""
+    base = _first_child_with_tag(data_decl, "kInstantiationBase")
+    if base is None:
+        return []
+    inst_type = _first_child_with_tag(base, "kInstantiationType")
+    gate_list = _first_child_with_tag(base, "kGateInstanceRegisterVariableList")
+    if inst_type is None or gate_list is None:
+        return []
+    module_name_node = _find_first_sym(inst_type)
+    if module_name_node is None:
+        return []
+    module_name = module_name_node.get("text", "")
+    if not module_name:
+        return []
+    param_overrides = _extract_param_overrides(
+        inst_type, file=file, offsets=offsets, source=source
+    )
+    out: list[Instance] = []
+    for gate in gate_list.get("children", ()) or ():
+        if not isinstance(gate, dict) or gate.get("tag") != "kGateInstance":
+            continue
+        inst_name_node = _first_child_with_tag(gate, "SymbolIdentifier")
+        if inst_name_node is None or "text" not in inst_name_node:
+            continue
+        inst_name = inst_name_node["text"]
+        span = _node_span(gate)
+        loc = (
+            SourceLocation(file=file)
+            if span is None
+            else _location(file, offsets, span[0], span[1])
+        )
+        port_connections = _extract_port_connections(
+            gate, file=file, offsets=offsets, source=source
+        )
+        out.append(
+            Instance(
+                name=inst_name,
+                module_name=module_name,
+                param_overrides=param_overrides,
+                port_connections=port_connections,
+                location=loc,
             )
-            port_connections = _extract_port_connections(
-                gate, file=file, offsets=offsets, source=source
+        )
+    return out
+
+
+# --- generate templates (rtl-buddy-sch#209) --------------------------------
+
+#: The three generate constructs. Each one counts toward its scope's
+#: ``genblk<N>`` numbering, named or not (IEEE 1800-2017 § 27.6).
+_GENERATE_TAGS = (
+    "kLoopGenerateConstruct",
+    "kConditionalGenerateConstruct",
+    "kCaseGenerateConstruct",
+)
+
+_GENBLK_RE = re.compile(r"^genblk\d+$")
+
+
+def _has_generate(item_list: dict) -> bool:
+    """Whether a module body holds any generate construct or region."""
+    return any(
+        True
+        for _ in _iter_nodes_with_tags(item_list, (*_GENERATE_TAGS, "kGenerateRegion"))
+    )
+
+
+def _scope_items(item_list: dict | None):
+    """The items of one generate scope, with ``generate`` regions opened.
+
+    A ``generate … endgenerate`` region is not a scope (LRM § 27.3):
+    its items belong to the enclosing one, and so does their
+    ``genblk`` numbering.
+    """
+    if item_list is None:
+        return
+    for child in item_list.get("children", ()) or ():
+        if not isinstance(child, dict):
+            continue
+        if child.get("tag") == "kGenerateRegion":
+            yield from _scope_items(_first_child_with_tag(child, "kGenerateItemList"))
+        else:
+            yield child
+
+
+def _scope_params(
+    item_list: dict | None, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[Parameter, ...]:
+    """``localparam`` / body ``parameter`` declarations of one scope."""
+    return tuple(
+        _param_from_decl(item, file=file, offsets=offsets, source=source)
+        for item in _scope_items(item_list)
+        if item.get("tag") == "kParamDeclaration"
+    )
+
+
+def _scope_nets(
+    item_list: dict | None, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[str, ...]:
+    """Names of the nets/variables one generate scope declares."""
+    names: list[str] = []
+    for item in _scope_items(item_list):
+        tag = item.get("tag")
+        if tag == "kDataDeclaration":
+            decls = _var_decls(item, file=file, offsets=offsets, source=source)
+        elif tag == "kNetDeclaration":
+            decls = _net_decls(item, file=file, offsets=offsets, source=source)
+        else:
+            continue
+        names.extend(d.name for d in decls)
+    return tuple(dict.fromkeys(names))
+
+
+def _taken_genblk_names(item_list: dict | None) -> set[str]:
+    """Explicit ``genblk<N>``-shaped names in a scope, for collision padding.
+
+    Over-approximates (any matching identifier inside the scope's own
+    items counts), which can only add a padding zero, never drop one.
+    """
+    taken: set[str] = set()
+    for item in _scope_items(item_list):
+        for sym in _iter_nodes_with_tag(item, "SymbolIdentifier"):
+            text = sym.get("text", "")
+            if _GENBLK_RE.match(text):
+                taken.add(text)
+    return taken
+
+
+def _default_label(number: int, taken: set[str]) -> str:
+    """``genblk<N>``, zero-padded past any explicit name it would shadow."""
+    digits = str(number)
+    while f"genblk{digits}" in taken:
+        digits = "0" + digits
+    return f"genblk{digits}"
+
+
+def _generate_scope(
+    item_list: dict | None, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[GenerateItem, ...]:
+    """One scope's instances, assigns and generate constructs, in order."""
+    out: list[GenerateItem] = []
+    taken = _taken_genblk_names(item_list)
+    number = 0
+    for item in _scope_items(item_list):
+        tag = item.get("tag")
+        if tag == "kDataDeclaration":
+            out.extend(
+                _instances_from_decl(item, file=file, offsets=offsets, source=source)
             )
-            out.append(
-                Instance(
-                    name=inst_name,
-                    module_name=module_name,
-                    param_overrides=param_overrides,
-                    port_connections=port_connections,
-                    location=loc,
+        elif tag in ("kContinuousAssignmentStatement", "kNetDeclaration"):
+            out.extend(
+                _extract_assigns(item, file=file, offsets=offsets, source=source)
+            )
+        elif tag in _GENERATE_TAGS:
+            number += 1
+            default = _default_label(number, taken)
+            construct = (
+                _loop_template(item, default, file=file, offsets=offsets, source=source)
+                if tag == "kLoopGenerateConstruct"
+                else _conditional_template(
+                    item, default, file=file, offsets=offsets, source=source
                 )
             )
+            if construct is not None:
+                out.append(construct)
     return tuple(out)
+
+
+def _block_parts(
+    body: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[
+    str | None, tuple[GenerateItem, ...], tuple[str, ...], tuple[Parameter, ...]
+]:
+    """``(label, items, local nets, local params)`` of one generate block.
+
+    A ``begin : label … end`` block is a ``kGenerateBlock``; a body
+    written without ``begin``/``end`` is a single item, which is a
+    (necessarily unnamed) generate block of its own.
+    """
+    if body.get("tag") == "kGenerateBlock":
+        label: str | None = None
+        begin = _first_child_with_tag(body, "kBegin")
+        if begin is not None:
+            lbl = _first_child_with_tag(begin, "kLabel")
+            sym = _find_first_sym(lbl) if lbl is not None else None
+            if sym is not None:
+                label = sym["text"]
+        item_list = _first_child_with_tag(body, "kGenerateItemList")
+    else:
+        label = None
+        item_list = {"tag": "kGenerateItemList", "children": [body]}
+    return (
+        label,
+        _generate_scope(item_list, file=file, offsets=offsets, source=source),
+        _scope_nets(item_list, file=file, offsets=offsets, source=source),
+        _scope_params(item_list, file=file, offsets=offsets, source=source),
+    )
+
+
+def _span_location(node: dict, file: str, offsets: OffsetIndex) -> SourceLocation:
+    span = _node_span(node)
+    if span is None:
+        return SourceLocation(file=file)
+    return _location(file, offsets, span[0], span[1])
+
+
+def _paren_expr_text(paren: dict | None, source: bytes) -> str | None:
+    """The expression inside a ``kParenGroup``, verbatim."""
+    if paren is None:
+        return None
+    expr = _first_child_with_tag(paren, "kExpression")
+    if expr is not None:
+        return _source_slice(expr, source)
+    text = _source_slice(paren, source)
+    if text is None:
+        return None
+    return text.strip()[1:-1].strip() or None
+
+
+def _loop_template(
+    node: dict, default: str, *, file: str, offsets: OffsetIndex, source: bytes
+) -> GenerateLoop | None:
+    """A ``kLoopGenerateConstruct`` as a :class:`GenerateLoop`."""
+    header = _first_child_with_tag(node, "kLoopHeader")
+    paren = _first_child_with_tag(header, "kParenGroup") if header else None
+    spec = _first_child_with_tag(paren, "kForSpec") if paren else None
+    if spec is None:
+        return None
+    parts = {
+        tag: _first_child_with_tag(spec, tag)
+        for tag in ("kForInitialization", "kForCondition", "kForStepList")
+    }
+    texts = {
+        tag: (_source_slice(n, source) if n is not None else None)
+        for tag, n in parts.items()
+    }
+    init = texts["kForInitialization"]
+    cond = texts["kForCondition"]
+    step = texts["kForStepList"]
+    if init is None or cond is None or step is None:
+        return None
+    genvar = re.match(r"\s*(?:genvar\s+)?([A-Za-z_][A-Za-z0-9_$]*)", init)
+    if genvar is None:
+        return None
+    body = next(
+        (
+            c
+            for c in node.get("children", ()) or ()
+            if isinstance(c, dict) and c.get("tag") not in (None, "kLoopHeader")
+        ),
+        None,
+    )
+    if body is None:
+        return None
+    label, items, nets, params = _block_parts(
+        body, file=file, offsets=offsets, source=source
+    )
+    return GenerateLoop(
+        label=label or default,
+        genvar=genvar.group(1),
+        init_text=init,
+        cond_text=cond,
+        step_text=step,
+        items=items,
+        local_nets=nets,
+        local_params=params,
+        location=_span_location(node, file, offsets),
+    )
+
+
+def _first_item_child(node: dict | None) -> dict | None:
+    """The first CST-node (``k…``) child — a generate body's item."""
+    if node is None:
+        return None
+    for child in node.get("children", ()) or ():
+        if isinstance(child, dict) and str(child.get("tag", "")).startswith("k"):
+            return child
+    return None
+
+
+def _if_arms(
+    node: dict, guards: tuple[tuple[str, bool], ...], source: bytes
+) -> list[tuple[tuple[tuple[str, bool], ...], dict]]:
+    """Flattened ``(guards, body)`` arms of a ``kConditionalGenerateConstruct``."""
+    clause = _first_child_with_tag(node, "kGenerateIfClause")
+    if clause is None:
+        return []
+    header = _first_child_with_tag(clause, "kGenerateIfHeader")
+    gen_if = _first_child_with_tag(header, "kGenerateIf") if header else None
+    cond = _paren_expr_text(
+        _first_child_with_tag(gen_if, "kParenGroup") if gen_if else None, source
+    )
+    if cond is None:
+        return []
+    arms = _nested_arms(
+        _first_item_child(_first_child_with_tag(clause, "kGenerateIfBody")),
+        guards + ((cond, True),),
+        source,
+    )
+    else_clause = _first_child_with_tag(node, "kGenerateElseClause")
+    if else_clause is not None:
+        arms += _nested_arms(
+            _first_item_child(_first_child_with_tag(else_clause, "kGenerateElseBody")),
+            guards + ((cond, False),),
+            source,
+        )
+    return arms
+
+
+def _case_arms(
+    node: dict, guards: tuple[tuple[str, bool], ...], source: bytes
+) -> list[tuple[tuple[tuple[str, bool], ...], dict]]:
+    """Flattened ``(guards, body)`` arms of a ``kCaseGenerateConstruct``.
+
+    Item ``k`` is ``(E) == (label)`` (any of its labels) with every
+    earlier item's match false; ``default`` is every item's match false.
+    """
+    selector = _paren_expr_text(_first_child_with_tag(node, "kParenGroup"), source)
+    items = _first_child_with_tag(node, "kGenerateCaseItemList")
+    if selector is None or items is None:
+        return []
+    matches: list[tuple[str, dict | None]] = []
+    default_body: dict | None = None
+    for item in items.get("children", ()) or ():
+        if not isinstance(item, dict):
+            continue
+        body = next(
+            (
+                c
+                for c in reversed(item.get("children", ()) or ())
+                if isinstance(c, dict)
+                and str(c.get("tag", "")).startswith("k")
+                and c.get("tag") != "kExpressionList"
+            ),
+            None,
+        )
+        if item.get("tag") == "kGenerateDefaultItem":
+            default_body = body
+            continue
+        if item.get("tag") != "kGenerateCaseItem":
+            continue
+        labels_node = _first_child_with_tag(item, "kExpressionList")
+        labels = [
+            text
+            for e in (labels_node or {}).get("children", ()) or ()
+            if isinstance(e, dict) and e.get("tag") == "kExpression"
+            for text in [_source_slice(e, source)]
+            if text is not None
+        ]
+        if not labels:
+            continue
+        match = " || ".join(f"({selector}) == ({label})" for label in labels)
+        matches.append((match, body))
+    arms: list[tuple[tuple[tuple[str, bool], ...], dict]] = []
+    for index, (match, body) in enumerate(matches):
+        prior = tuple((m, False) for m, _ in matches[:index])
+        arms += _nested_arms(body, guards + prior + ((match, True),), source)
+    if default_body is not None:
+        prior = tuple((m, False) for m, _ in matches)
+        arms += _nested_arms(default_body, guards + prior, source)
+    return arms
+
+
+def _nested_arms(
+    body: dict | None, guards: tuple[tuple[str, bool], ...], source: bytes
+) -> list[tuple[tuple[tuple[str, bool], ...], dict]]:
+    """One arm, or a directly nested construct's arms (LRM § 27.5).
+
+    A conditional arm whose only item is another ``if`` / ``case``
+    written without ``begin``/``end`` is not a scope of its own: the
+    inner construct's blocks belong to the outer one — which is what
+    makes ``else if`` chains one construct.
+    """
+    if body is None:
+        return []
+    tag = body.get("tag")
+    if tag == "kConditionalGenerateConstruct":
+        return _if_arms(body, guards, source)
+    if tag == "kCaseGenerateConstruct":
+        return _case_arms(body, guards, source)
+    return [(guards, body)]
+
+
+def _conditional_template(
+    node: dict, default: str, *, file: str, offsets: OffsetIndex, source: bytes
+) -> GenerateConditional | None:
+    """An ``if`` / ``case`` generate construct as a :class:`GenerateConditional`."""
+    raw = (
+        _if_arms(node, (), source)
+        if node.get("tag") == "kConditionalGenerateConstruct"
+        else _case_arms(node, (), source)
+    )
+    arms: list[GenerateArm] = []
+    for guards, body in raw:
+        label, items, nets, params = _block_parts(
+            body, file=file, offsets=offsets, source=source
+        )
+        arms.append(
+            GenerateArm(
+                label=label or default,
+                guards=guards,
+                items=items,
+                local_nets=nets,
+                local_params=params,
+            )
+        )
+    if not arms:
+        return None
+    return GenerateConditional(
+        arms=tuple(arms), location=_span_location(node, file, offsets)
+    )
 
 
 def _extract_port_connections(
@@ -1011,7 +1426,10 @@ def _extract_assigns(
     rather than only the top ``kModuleItemList``: assignments inside
     generate blocks alias nets exactly like flat ones do, and the
     connectivity analyzer only ever uses them as alias hints, so
-    over-capturing is strictly better than dropping them. Net
+    over-capturing is strictly better than dropping them. (A module
+    that has generate constructs replaces this flat list with the
+    unrolled one, genvars substituted — rtl-buddy-sch#209; this walk
+    is also what reads one template item's assigns.) Net
     A *net* declaration with an initializer (``wire w = x;``) is a
     continuous assignment too — LRM 1800 § 6.7.1 — and Verible gives
     it its own shape (``kNetDeclarationAssignment``), so it is

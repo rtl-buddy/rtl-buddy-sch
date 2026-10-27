@@ -42,6 +42,7 @@ src/rtl_buddy_view/
 ├── _verible_install.py    # vendored Verible fetch + binary discovery
 ├── _cst_cache.py          # content-hashed Verible JSON CST cache (XDG)
 ├── extractor.py           # frozen dataclasses: Module, Instance, Port, …
+├── generate.py            # generate for/if/case unrolling + bound evaluator (#209)
 ├── frontend/
 │   ├── __init__.py        # Frontend enum + parse_to_modules() factory
 │   ├── verible.py         # Verible CST walker → ModuleTable

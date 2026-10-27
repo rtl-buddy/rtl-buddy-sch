@@ -625,9 +625,7 @@ def _closure_table() -> ModuleTable:
 
     ``.qq``/``.WITDH`` stand in for every way a formal can go
     missing: an interface's header ports (``Interface`` has no
-    ``ports`` field), a multi-declarator ``#(parameter AW = 8, DW =
-    32)`` header the Verible frontend collapses to one
-    ``<unknown>``, and a plain source-level typo.
+    ``ports`` field) and a plain source-level typo.
     """
     child = Module(
         name="child",
@@ -835,20 +833,24 @@ def test_fixture_graph_is_closed(fixture_dir: str, top: str) -> None:
 
 
 def test_frontend_gaps_are_stubbed_rather_than_dangled() -> None:
-    """The ``graph_closure`` fixture pins the two real-world shapes.
+    """The ``graph_closure`` fixture pins the real-world shapes.
 
     ``closure_bus_if``'s ``clk``/``rst_n`` are interface *header*
-    ports, which ``extractor.Interface`` doesn't model;
-    ``closure_leaf``'s ``#(parameter AW = 8, DW = 32)`` reaches the
-    module table as one ``<unknown>`` parameter. Both are named at
-    the instantiation site, so both need a node to point at.
+    ports, which ``extractor.Interface`` doesn't model, yet are named
+    at the instantiation site, so they need a node to point at.
+
+    ``closure_leaf``'s untyped ``#(parameter AW = 8, DW = 32)`` used
+    to reach the module table as one ``<unknown>`` parameter and be
+    stubbed here too. The frontend now reads an untyped parameter's
+    name (rtl-buddy-sch#209 needs it to evaluate generate bounds), so
+    both are real declarations with their defaults.
     """
     payload = _export_fixture("graph_closure", "closure_top")
     nodes = _nodes_by_id(payload)
     assert nodes["port:closure_bus_if.clk"]["type"] == "port"
     assert nodes["port:closure_bus_if.rst_n"]["owner"] == "closure_bus_if"
-    assert nodes["param:closure_leaf.AW"]["default"] is None
-    assert nodes["param:closure_leaf.DW"]["default"] is None
+    assert nodes["param:closure_leaf.AW"]["default"] == "8"
+    assert nodes["param:closure_leaf.DW"]["default"] == "32"
     # ... and a non-scalar port type stays unknown rather than 1.
     assert nodes["port:closure_leaf.budget"]["type_text"] == "int"
     assert nodes["port:closure_leaf.budget"]["width"] is None

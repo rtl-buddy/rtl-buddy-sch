@@ -152,15 +152,16 @@ older `rtl-buddy-view`; regenerating with a current one is the fix.
 
 | Field           | Type              | Notes |
 | --------------- | ----------------- | ----- |
-| `id`            | string            | **Stable instance path**, dot-separated from `top`. Reproducible across runs given the same RTL. |
+| `id`            | string            | **Stable instance path**, dot-separated from `top`. Reproducible across runs given the same RTL. An instance inside a generate block carries its scope, named as slang and simulators name it (rtl-buddy-sch#209): `top.g[0].u_s` for loop iteration 0, `top.g.u_x` for a conditional block, `top.genblk2[1].u_w` for an unnamed one (IEEE 1800 § 27.6), and `top.g[*].u_s` for a loop whose bounds could not be evaluated. So an id may contain `[`, `]` and `*` as well as dots. |
 | `module`        | string            | Module-type name this instance refers to. |
-| `instance_name` | string \| null    | Source-level instance name. `null` for the top node. |
+| `instance_name` | string \| null    | Source-level instance name, prefixed with its generate scope (`g[0].u_s`). `null` for the top node. |
 | `is_blackbox`   | boolean           | `true` when the module wasn't in the filelist — viewers render with a dashed border. |
 | `source`        | `source_block` \| null | Anchor for this node. `null` only for synthetic / blackbox nodes the extractor never saw. |
 | `ports`         | array of `port`   | Per-port bindings at THIS instance (`expr` is what the parent connected). |
 | `parameters`    | object            | Override → verbatim source slice (`"32"`, `"\"hello\""`, `` "`MAX_WIDTH" ``). Empty when none. |
 | `link`          | string \| null    | `rtlbuddy://` URI (§4). `null` only when no source location is known. |
 | `overlays`      | object            | Per-overlay metadata, keyed by overlay name. Missing keys mean no contribution; never an error. |
+| `generate_condition` | string (optional) | **Present only** on an instance inside an `if` / `case` generate block whose condition could not be evaluated (rtl-buddy-sch#209). Every arm not ruled out is kept, and this carries the undecided guards joined with `&&` (`"USE_FAST"`, `"!(MODE == 2)"`) — only one alternative elaborates. Absent on every other node, so payloads without such arms are unchanged. |
 
 ### `source_block`
 

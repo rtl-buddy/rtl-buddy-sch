@@ -633,11 +633,9 @@ class _Builder:
     def _ensure_param_stub(self, owner: str, param_name: str) -> None:
         """Parameter node recovered from an *override site*.
 
-        Same closure duty as :meth:`_ensure_port_stub`. The common
-        real-world trigger is a multi-declarator header
-        (``#(parameter AW = 8, DW = 32)``), which the Verible
-        frontend collapses to a single ``<unknown>`` parameter — so
-        ``.AW(...)`` / ``.DW(...)`` overrides have nothing declared
+        Same closure duty as :meth:`_ensure_port_stub`: an override
+        naming a parameter the declaration doesn't carry (a typo, or
+        a parameter the frontend could not read) still needs a node
         to point at.
         """
         self._add_node(
