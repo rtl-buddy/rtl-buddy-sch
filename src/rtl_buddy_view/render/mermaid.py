@@ -23,12 +23,14 @@ labels so the slug is purely a layout-engine concern.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import IO
 
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.render.dot import (
+    conditional_tag,
     MAX_EDGE_LABEL_CONNECTIONS,
     _format_cdc_summary,
     _format_rdc_summary,
@@ -117,6 +119,8 @@ def _label(
             parts.append("✓rstsync")
     if node.is_blackbox:
         parts.append("(blackbox)")
+    if node.is_conditional:
+        parts.append(_escape(conditional_tag(node)))
     return "<br/>".join(parts)
 
 
@@ -257,8 +261,16 @@ def _slug(instance_path: str) -> str:
     syntactic, used for class-level styling), so we convert to
     underscores. The mapping is purely cosmetic — the verbatim
     instance path always appears inside the node label.
+
+    Generate-scope paths (``top.g[0].u_s``, ``top.g[*].u_s``;
+    rtl-buddy-sch#209) are the other hazard: ``[`` opens a node
+    shape, so ``top_g[0]_u_s`` would parse as node ``top_g`` labelled
+    ``0``. Every character outside ``[A-Za-z0-9_]`` becomes ``_``.
     """
-    return instance_path.replace(".", "_").replace("-", "_")
+    return _SLUG_UNSAFE_RE.sub("_", instance_path)
+
+
+_SLUG_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_]")
 
 
 def _escape(s: str) -> str:

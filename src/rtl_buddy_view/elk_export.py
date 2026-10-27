@@ -120,6 +120,11 @@ NODE_RB_CONTRACT: dict[str, type | tuple[type, ...]] = {
     # never an edge endpoint, so a dataflow canvas skips it. Always
     # present, ``false`` on every other node.
     "is_interface": bool,
+    # The undecided generate condition guarding the instance
+    # (rtl-buddy-sch#209; ``HierNode.is_conditional``): every arm the
+    # evaluator could not rule out is kept, and this says what picks
+    # one. ``null`` on every unconditionally elaborated node.
+    "generate_condition": (str, type(None)),
     "param_overrides": list,
     "clock": (str, type(None)),
 }
@@ -308,6 +313,9 @@ def _node(
             "module_name": hier.module_name,
             "is_blackbox": hier.is_blackbox,
             "is_interface": is_interface_instance(hier, table),
+            "generate_condition": (
+                hier.instance.generate_condition if hier.instance is not None else None
+            ),
             "param_overrides": _param_overrides(hier, table),
             "clock": _clock_of(hier, domain_map),
         },

@@ -44,6 +44,7 @@ node, which is what
     "module_name": "demo_tiny_alu_subsys_top",
     "is_blackbox": false,
     "is_interface": false,
+    "generate_condition": null,
     "param_overrides": [],
     "clock": null,
     "export": {
@@ -92,6 +93,7 @@ Per **node**:
 | `module_name` | string | The type name, drawn centred inside the box. |
 | `is_blackbox` | bool | The module was never declared in the parsed sources. |
 | `is_interface` | bool | The node is an **interface instance** (`bus_if shared (.clk(clk));`), not a block (#205). It stays in the tree because its parameters do (`param_overrides`), but it is the wire between the blocks bound to it and never an edge endpoint — a dataflow canvas skips it (§ 4.1). Because an interface is not in the module table, such a node also reads `is_blackbox: true`; this flag is what tells the two apart. `false` on every other node. |
+| `generate_condition` | string \| null | The undecided generate condition guarding this instance (rtl-buddy-sch#209): when an `if` / `case` generate condition cannot be evaluated, every arm not ruled out is kept and marked with its guards joined by `&&` (`"USE_FAST"`, `"!(MODE == 2)"`). `null` on every unconditionally elaborated node. Generate-scoped instances also carry their scope in `instance_name` and `id` (`g[0].u_s`, `top.g[0].u_s`; `g[*].u_s` when a loop's bounds don't evaluate). |
 | `param_overrides` | array | `[[name, value], …]` in **declaration order**. `name` is `null` for a positional override on a declaration we couldn't resolve. |
 | `clock` | string \| null | Predominant clock from the `clock` overlay; `null` without one. |
 | `export` | object | Root only — see § 1. |

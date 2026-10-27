@@ -463,6 +463,11 @@ def _node_dict(
             phys_join=phys_join,
         ),
     }
+    if node.is_conditional and node.instance is not None:
+        # Only on nodes in an undecided ``if`` / ``case`` generate arm
+        # (rtl-buddy-sch#209), so every other payload stays
+        # byte-identical. docs/view-json-v1.md § nodes.
+        out["generate_condition"] = node.instance.generate_condition
     return out
 
 

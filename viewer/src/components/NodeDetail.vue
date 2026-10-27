@@ -328,9 +328,11 @@ const physScopeLabel = computed(() => physScope({ physScope: store.physScope }))
 const physParent = computed(() => {
   const id = node.value && node.value.id
   if (typeof id !== 'string') return null
-  const cut = id.lastIndexOf('.')
-  if (cut < 0) return null
-  const parent = store.nodesById.get(id.slice(0, cut))
+  // The tree parent, not the last dot: ``top.g[0].u_s``'s parent is
+  // ``top`` (rtl-buddy-sch#209).
+  const parentId = store.treeParentOf.get(id)
+  if (!parentId) return null
+  const parent = store.nodesById.get(parentId)
   return (parent && parent.overlays && parent.overlays.phys) || null
 })
 const physFigures = computed(() => {

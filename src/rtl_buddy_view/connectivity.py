@@ -353,6 +353,10 @@ def interface_roots(module: Module, table: ModuleTable) -> frozenset[str]:
         if inst.module_name in table.interfaces_by_name
     }
     names.update(p.name for p in module.ports if p.port_kind == "interface")
+    # A generate scope is a namespace the same way (rtl-buddy-sch#209):
+    # an unrolled ``g[0].u_s`` binds the iteration's own ``g[0].w``,
+    # which must key per iteration rather than collapse onto ``g``.
+    names.update(_key_root(inst.name) for inst in module.instances if "." in inst.name)
     return frozenset(names)
 
 

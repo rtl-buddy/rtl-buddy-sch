@@ -14,8 +14,13 @@ Phase 1 scope:
   instance paths)
 - Unresolved modules (libraries, blackboxes) flagged via
   :attr:`HierNode.is_blackbox`; not dropped silently
-- No generate / parameterized fallback yet — that lands in Phase 2 via
-  the slang frontend
+- Generate constructs are unrolled per placement
+  (:mod:`rtl_buddy_view.generate`, rtl-buddy-sch#209): a child's
+  template is re-unrolled under the parameter values its parent binds,
+  so ``lanes #(.N(4))`` gets four ``g[i]`` iterations even though the
+  module's default is two. Instances inside generate blocks carry
+  their scope in their name (``g[0].u_s``), so their paths read
+  ``top.g[0].u_s`` — exactly slang's hierarchical names.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import dataclasses
 from dataclasses import dataclass, field
 
 from rtl_buddy_view.extractor import Instance, Module, ModuleTable, ParameterOverride
+from rtl_buddy_view.generate import Env, elaborate_module, module_env
 
 
 class HierarchyError(ValueError):
@@ -64,6 +70,21 @@ class HierNode:
     display_params: tuple[str, ...] | None = None
 
     @property
+    def is_conditional(self) -> bool:
+        """Whether this node sits in an undecided ``if`` / ``case`` generate arm.
+
+        ``True`` when the generate condition guarding the instance
+        could not be evaluated, so every arm not ruled out was kept
+        (rtl-buddy-sch#209); the condition text is
+        ``node.instance.generate_condition``. Named like
+        :attr:`is_blackbox` — both say "this box may not be what
+        elaboration gives you".
+        """
+        return (
+            self.instance is not None and self.instance.generate_condition is not None
+        )
+
+    @property
     def shown_param_overrides(self) -> tuple[ParameterOverride, ...]:
         """The parameter overrides a box for this node displays.
 
@@ -91,7 +112,8 @@ def build_hierarchy(table: ModuleTable, top: str) -> HierNode:
     if top not in table.modules_by_name:
         known = sorted(table.modules_by_name)
         raise HierarchyError(f"top module {top!r} not found. Known modules: {known}")
-    return _build(table, table.modules_by_name[top], path=top, instance=None)
+    module = table.modules_by_name[top]
+    return _build(table, module, path=top, instance=None, env=module_env(module))
 
 
 def _subtree_contains(table: ModuleTable, start: str, target: str) -> bool:
@@ -203,7 +225,9 @@ def _build(
     *,
     path: str,
     instance: Instance | None,
+    env: Env,
 ) -> HierNode:
+    module = elaborate_module(module, env)
     children: list[HierNode] = []
     for inst in module.instances:
         child_path = f"{path}.{inst.name}"
@@ -221,7 +245,10 @@ def _build(
                 )
             )
             continue
-        children.append(_build(table, child_module, path=child_path, instance=inst))
+        child_env = module_env(child_module, inst.param_overrides, outer_env=env)
+        children.append(
+            _build(table, child_module, path=child_path, instance=inst, env=child_env)
+        )
     return HierNode(
         instance_path=path,
         module_name=module.name,

@@ -106,6 +106,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useViewerStore } from '../store.js'
 import { useHub } from '../composables/useHub.js'
+import { leafName } from '../instancePath.js'
 
 const store = useViewerStore()
 const hub = useHub()
@@ -133,9 +134,6 @@ const filterResult = computed(() =>
 const totalCount = computed(() => store.graph?.nodes?.length ?? 0)
 const matchCount = computed(() => filterResult.value?.matches.size ?? 0)
 
-function lastSegment(id) {
-  return id.slice(id.lastIndexOf('.') + 1)
-}
 
 // Flatten the tree into the visible rows, in DFS order. While
 // filtering, "visible" is decided by the match set (ancestors are
@@ -156,7 +154,9 @@ const rows = computed(() => {
     out.push({
       id,
       depth,
-      name: lastSegment(id),
+      // ``g[0].u_s``, not ``u_s``: both iterations of a generate loop
+      // share the bare name (rtl-buddy-sch#209).
+      name: leafName(byId.get(id), id),
       module: byId.get(id)?.module ?? '',
       hasChildren,
       open,
