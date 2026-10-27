@@ -7,7 +7,12 @@
 //
 // The visual contribution is: fill the node's <g> with a
 // clock-keyed pastel; mark edges where ``overlays.clock.crossing``
-// is true with a CDC accent.
+// is true with a CDC accent. The accent follows the crossing's
+// verdict (rtl-buddy-sch#211): ``hazard: false`` — every crossing on
+// the edge recognised-safe — paints a solid synchroniser teal, the
+// same teal the reset overlay gives synchronisers; anything else
+// (including a payload from before ``hazard`` existed) keeps the
+// dashed ⚠CDC red.
 //
 // The palette and the clock→colour assignment live in ``palette.js``
 // — shared with the in-JS DOT builder, which bakes the same colours
@@ -16,6 +21,22 @@
 
 import { buildClockPalette } from '../palette.js'
 import { token } from '../theme.js'
+
+/**
+ * Is this ``overlays.clock`` edge block a CDC hazard?
+ *
+ * Only an explicit ``hazard: false`` says no: a view.json written
+ * before the field existed carries ``crossing: true`` alone, and every
+ * crossing used to be a hazard.
+ */
+export function isCdcHazard(ov) {
+  return !!(ov && ov.crossing && ov.hazard !== false)
+}
+
+/** A crossing edge whose every crossing is recognised-safe. */
+export function isCdcSynchronized(ov) {
+  return !!(ov && ov.crossing && ov.hazard === false)
+}
 
 // Same hashing scheme as the dot renderer's ``_palette_color`` so
 // the same clock lands in the same colour across the desktop +
@@ -84,7 +105,7 @@ export const clockOverlay = {
       for (const group of groups) {
         const path = group.querySelector('path')
         if (!path) continue
-        if (enabled && ov && ov.crossing) {
+        if (enabled && isCdcHazard(ov)) {
           // Inline style, not the ``stroke`` attribute: the canvas
           // gives every edge a themed default stroke via CSS, and a
           // presentation attribute loses to a stylesheet rule. The
@@ -94,6 +115,13 @@ export const clockOverlay = {
           path.style.stroke = token('--err')
           path.setAttribute('stroke-dasharray', '4,3')
           path.setAttribute('data-overlay-clock', 'crossing')
+        } else if (enabled && isCdcSynchronized(ov)) {
+          // Recognised-safe: solid teal, no dash. Marked
+          // ``synchronized`` rather than ``crossing`` so an RDC hazard
+          // on the same edge still claims it (hazard beats safe).
+          path.style.stroke = token('--reset-sync')
+          path.removeAttribute('stroke-dasharray')
+          path.setAttribute('data-overlay-clock', 'synchronized')
         } else {
           path.style.stroke = ''
           path.removeAttribute('stroke-dasharray')
@@ -110,18 +138,22 @@ export const clockOverlay = {
       swatch,
       kind: 'fill',
     }))
-    // Conditionally surface the CDC edge style — only when at
-    // least one edge in the current graph is flagged as a
-    // crossing. Filters automatically when a new view.json
-    // without crossings is loaded.
-    const hasCdcCrossing = (graph?.edges || []).some(
-      (e) => e.overlays && e.overlays.clock && e.overlays.clock.crossing,
-    )
-    if (hasCdcCrossing) {
+    // Conditionally surface the CDC edge styles — each only when at
+    // least one edge in the current graph is drawn that way. Filters
+    // automatically when a new view.json without crossings is loaded.
+    const edges = graph?.edges || []
+    if (edges.some((e) => isCdcHazard(e.overlays && e.overlays.clock))) {
       entries.push({
         label: 'CDC crossing',
         swatch: token('--err'),
         kind: 'dashed-line',
+      })
+    }
+    if (edges.some((e) => isCdcSynchronized(e.overlays && e.overlays.clock))) {
+      entries.push({
+        label: 'synchronized CDC',
+        swatch: token('--reset-sync'),
+        kind: 'solid-line',
       })
     }
     return entries

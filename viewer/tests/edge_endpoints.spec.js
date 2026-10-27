@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest'
 import { stampEdgeEndpoints } from '../src/layout/netHover.js'
 import { getOverlay } from '../src/overlays/index.js'
+import { token } from '../src/theme.js'
 
 // One graph edge with two clock pairs renders as two DOT edges, each
 // entering its own ``in_<clk>`` cell; a third edge is a plain one with
@@ -109,6 +110,42 @@ describe('overlays paint ported edges', () => {
     for (const id of ['edge1', 'edge2']) {
       expect(visible(svg, id).hasAttribute('data-overlay-clock')).toBe(false)
     }
+  })
+
+  it('clock paints a recognised-safe crossing solid teal, not the hazard dash (#211)', () => {
+    const svg = svgFixture()
+    stampEdgeEndpoints(svg)
+    getOverlay('clock').apply(svg, graph({ clock: { crossing: true, hazard: false } }), true)
+    for (const id of ['edge1', 'edge2']) {
+      expect(visible(svg, id).getAttribute('data-overlay-clock')).toBe('synchronized')
+      expect(visible(svg, id).hasAttribute('stroke-dasharray')).toBe(false)
+      expect(visible(svg, id).style.stroke).toBe(token('--reset-sync'))
+    }
+  })
+
+  it('an explicit hazard: true, or no hazard key at all, stays the dashed hazard', () => {
+    for (const clock of [{ crossing: true, hazard: true }, { crossing: true }]) {
+      const svg = svgFixture()
+      stampEdgeEndpoints(svg)
+      getOverlay('clock').apply(svg, graph({ clock }), true)
+      expect(visible(svg, 'edge1').getAttribute('data-overlay-clock')).toBe('crossing')
+      expect(visible(svg, 'edge1').getAttribute('stroke-dasharray')).toBe('4,3')
+    }
+  })
+
+  it('an RDC hazard claims a synchronized CDC edge, but never a ⚠CDC one', () => {
+    const both = (hazard) =>
+      graph({ clock: { crossing: true, hazard }, reset: { crossing: true } })
+    let svg = svgFixture()
+    stampEdgeEndpoints(svg)
+    getOverlay('clock').apply(svg, both(false), true)
+    getOverlay('reset').apply(svg, both(false), true)
+    expect(visible(svg, 'edge1').getAttribute('data-overlay-reset')).toBe('crossing')
+    svg = svgFixture()
+    stampEdgeEndpoints(svg)
+    getOverlay('clock').apply(svg, both(true), true)
+    getOverlay('reset').apply(svg, both(true), true)
+    expect(visible(svg, 'edge1').hasAttribute('data-overlay-reset')).toBe(false)
   })
 
   it('reset paints a ported crossing edge the clock overlay has not claimed', () => {

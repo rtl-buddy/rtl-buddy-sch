@@ -253,6 +253,37 @@ connection sequence is recoverable.
 | `port_pairs` | array of `[expr, child_port]`   | Tuples of `[net_expr_at_parent, child_port_name]`. The wave→view joiner (Phase 9) traces signals across hierarchy levels through these. Either element can be `null` (positional connection, dangling port). |
 | `overlays`   | object                          | Per-overlay edge metadata. `clock.crossing: true` marks a CDC edge; `reset.crossing: true` an RDC edge. |
 
+#### `overlays.clock` on an edge
+
+Present only when an async crossing lands on the edge's `to` node:
+
+```jsonc
+"clock": {
+  "crossing": true,
+  "hazard": false,
+  "pairs": [
+    {"src_clock": "clk_a", "dst_clock": "clk_b", "flops": 2,
+     "hazard": false, "synchronizers": ["2ff", "handshake"]}
+  ]
+}
+```
+
+- `crossing` (bool) — always `true` when the block is present: a CDC
+  crossing lands here, whatever its verdict.
+- `hazard` (bool, rtl-buddy-sch#211) — `false` only when every crossing
+  on the edge is recognised-safe: the domain map (schema 1.2) names a
+  `synchronizer` scheme for it **and** its post-waiver `findings` list
+  is empty. `true` otherwise, including for every crossing from a 1.1
+  map. The SPA draws `hazard: false` edges solid teal and the rest as
+  the dashed `⚠CDC` red; a block without the key (a view.json from
+  before the field) is read as `hazard: true`.
+- `pairs[]` — one entry per `(src_clock, dst_clock)`, sorted. `flops`
+  counts every crossing in the pair. `hazard` is the same verdict per
+  pair; `synchronizers` lists, sorted, the raw scheme names of the
+  pair's recognised-safe crossings (`[]` when it has none). A pair can
+  be `hazard: true` and still name schemes when only some of its
+  crossings are clean.
+
 ## 4. The `rtlbuddy://` URI
 
 ```

@@ -12,8 +12,12 @@ semantics:
   the same way as dot (matches :data:`render.dot.MAX_EDGE_LABEL_CONNECTIONS`).
 - With a :class:`rtl_buddy_view.annotations.DomainMap`, nodes pick
   up a clock tag in their label and a colored fill from the same
-  palette as dot. CDC-crossing edges render dashed-red with the
-  warning prepended to the label.
+  palette as dot. CDC-crossing edges render dashed with the
+  warning prepended to the label. A crossing the map calls
+  recognised-safe (a synchronizer scheme and no findings,
+  rtl-buddy-sch#211) gets no warning: a solid edge labelled with the
+  scheme (``2FF clk_a→clk_b``) and a teal synchroniser stroke on the
+  destination, unless a hazard on the same node claims the stroke.
 
 Mermaid IDs must be alphanumeric (no dots), so we slugify each
 ``instance_path``. The mapping is deterministic and reversible by
@@ -33,6 +37,7 @@ from rtl_buddy_view.render.dot import (
     conditional_tag,
     MAX_EDGE_LABEL_CONNECTIONS,
     _format_cdc_summary,
+    _format_cdc_sync_summary,
     _format_rdc_summary,
     _palette_color,
     figure_clock_colors,
@@ -173,8 +178,9 @@ def _edge_label(
     if child.instance is not None and child.instance.port_connections:
         port_label = _format_port_connections(child.instance.port_connections)
     cdc = _format_cdc_summary(child, domain_map)
+    sync = _format_cdc_sync_summary(child, domain_map)
     rdc = _format_rdc_summary(child, reset_map) if reset_map is not None else ""
-    parts = [p for p in (cdc, rdc, port_label) if p]
+    parts = [p for p in (cdc, sync, rdc, port_label) if p]
     return "<br/>".join(parts)
 
 
@@ -214,7 +220,9 @@ def _emit_styles(
     without affecting the topology.
 
     Stroke precedence on dual-issue nodes mirrors the dot renderer:
-    CDC red > RDC orange > sync teal. The fill comes from the clock
+    CDC red > RDC orange > sync teal (a reset synchroniser, or a node
+    whose incoming crossings are all recognised-safe). The fill comes
+    from the clock
     palette in all three cases so the warning rides on the stroke
     without losing the clock-coloring cue.
     """
@@ -233,13 +241,13 @@ def _emit_styles(
         # Warning stroke ladder: CDC > RDC > sync. CDC wins on a
         # dual-issue node so reviewers see the silicon-failing hazard
         # first; the RDC warning still appears on the edge / label.
-        if domain_map is not None and domain_map.crossings_into(n.instance_path):
+        if domain_map is not None and domain_map.hazards_into(n.instance_path):
             attrs.append("stroke:#dc2626")
         elif reset_map is not None and reset_map.crossings_into(n.instance_path):
             attrs.append(f"stroke:{_RDC_STROKE}")
         elif (
             reset_map is not None and n.instance_path in reset_map.synchronizer_paths()
-        ):
+        ) or (domain_map is not None and domain_map.synchronized_into(n.instance_path)):
             attrs.append(f"stroke:{_RSTSYNC_STROKE}")
         if attrs:
             out.write(f"  style {_slug(n.instance_path)} {','.join(attrs)}\n")

@@ -1397,22 +1397,24 @@ onBeforeUnmount(() => {
       guard like ``[stroke='black']`` (Graphviz's default for an
       un-coloured edge) would re-tint almost nothing and undo the
       legibility this rule exists for.
-   2. Only two edge colours carry *meaning*: CDC ``#dc2626`` and RDC
-      ``#ea580c``. Those must survive, because no client-side overlay
-      re-derives them for an already-rendered producer DOT.
+   2. Only three edge colours carry *meaning*: CDC ``#dc2626``, RDC
+      ``#ea580c`` and the synchroniser teal ``#0d9488`` a recognised-safe
+      CDC crossing is drawn in (rtl-buddy-sch#211). Those must survive,
+      because no client-side overlay re-derives them for an
+      already-rendered producer DOT.
 
-   Naming the two accents is therefore the whole fix: the neutrals
+   Naming the accents is therefore the whole fix: the neutrals
    keep being re-tinted, the hazards keep their colour. Note that
    ``view.json``'s embedded DOT has carried no hazard colour since
    #57 made the layout block structure-only (the SPA owns overlay
    paint), so today this bites only on a pre-#57 payload — it is a
    safety net for the producer's semantics, kept honest by a test. */
 .svg-host.producer-dot
-  :deep(g.edge path:not([stroke='#dc2626']):not([stroke='#ea580c'])) {
+  :deep(g.edge path:not([stroke='#dc2626']):not([stroke='#ea580c']):not([stroke='#0d9488'])) {
   stroke: var(--fg-muted);
 }
 .svg-host.producer-dot
-  :deep(g.edge polygon:not([fill='#dc2626']):not([fill='#ea580c'])) {
+  :deep(g.edge polygon:not([fill='#dc2626']):not([fill='#ea580c']):not([fill='#0d9488'])) {
   fill: var(--fg-muted);
   stroke: var(--fg-muted);
 }

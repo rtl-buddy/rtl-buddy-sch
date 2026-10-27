@@ -37,13 +37,19 @@
         <dd>
           <table class="cdc-table">
             <thead>
-              <tr><th>src clock</th><th>→ dst clock</th><th class="num">flops</th></tr>
+              <tr>
+                <th>src clock</th><th>→ dst clock</th><th class="num">flops</th><th>sync</th>
+              </tr>
             </thead>
             <tbody>
               <tr v-for="(p, idx) in cdcCrossings" :key="idx">
                 <td><code>{{ p.src_clock }}</code></td>
                 <td><code>{{ p.dst_clock }}</code></td>
                 <td class="num">{{ p.flops }}</td>
+                <td
+                  :class="p.hazard === false ? 'cdc-safe' : 'cdc-hazard'"
+                  :data-cdc-verdict="p.hazard === false ? 'synchronized' : 'hazard'"
+                >{{ pairVerdict(p) }}</td>
               </tr>
             </tbody>
           </table>
@@ -82,6 +88,17 @@ const cdcCrossings = computed(() => {
   if (!ov || !Array.isArray(ov.pairs)) return []
   return ov.pairs
 })
+// The pair's verdict (rtl-buddy-sch#211): the recognised schemes for
+// a safe pair, ``⚠CDC`` for a hazard — with any schemes its safe
+// crossings had alongside. A pair from a payload that predates
+// ``hazard`` is a hazard, as it is drawn.
+function pairVerdict(p) {
+  const schemes = (Array.isArray(p.synchronizers) ? p.synchronizers : [])
+    .map((s) => String(s).toUpperCase())
+    .join('+')
+  if (p.hazard === false) return schemes || '✓'
+  return schemes ? `⚠CDC (+${schemes})` : '⚠CDC'
+}
 // Suppress the ``clock`` overlay from the generic JSON dump when
 // it's already rendered as the CDC table above — keeps the panel
 // from showing the same data twice.
@@ -130,6 +147,8 @@ const otherOverlays = computed(() => {
   font-size: 0.75rem;
 }
 .empty { color: var(--fg-muted); }
+.cdc-hazard { color: var(--err); font-family: var(--font-mono); }
+.cdc-safe { color: var(--reset-sync); font-family: var(--font-mono); }
 .port-name { color: var(--fg); }
 .port-arrow { color: var(--fg-muted); font-size: 0.75rem; margin-left: 0.25rem; }
 </style>

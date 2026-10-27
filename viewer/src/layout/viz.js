@@ -135,6 +135,10 @@ export function graphToDot(graph) {
   // ``--fg-muted`` tier instead.
   const edgeLine = token('--fg-muted')
   const cdc = token('--err')
+  // Recognised-safe crossings (rtl-buddy-sch#211) — the synchroniser
+  // teal the reset overlay already uses, so "vetted synchroniser"
+  // reads the same on both overlays.
+  const sync = token('--reset-sync')
   const lines = []
   lines.push('digraph view {')
   lines.push('  rankdir="LR";')
@@ -224,8 +228,7 @@ export function graphToDot(graph) {
     )
     if (realPairs.length === 0 && unconPairs.length === 0) continue
     for (const p of realPairs) {
-      const label = `${p.src_clock} → ${p.dst_clock}`
-      const attrs = ` [label="${labelEscape(label)}", color="${cdc}", style="dashed", fontcolor="${cdc}", fontsize=9]`
+      const attrs = cdcPairAttrs(p, cdc, sync)
       const fromRef = portRefForPair(edge.from, p, 'outgoing', pairsByNode)
       const toRef = portRefForPair(edge.to, p, 'incoming', pairsByNode)
       lines.push(`  ${fromRef} -> ${toRef}${attrs};`)
@@ -569,6 +572,24 @@ function portRefForUnconstrainedDst(nodeId, pair, pairsByNode) {
 // might be empty.
 function scopeLabel(node) {
   return node.instance_name || node.module || node.id || ''
+}
+
+// DOT attributes for one CDC pair's edge. A pair the producer marked
+// ``hazard: false`` (every crossing in it recognised-safe,
+// rtl-buddy-sch#211) is a solid teal edge that names its schemes —
+// ``2FF clk_a → clk_b`` — with no hazard dash. Anything else, including
+// a pair from a view.json written before the field existed, keeps the
+// dashed ``--err`` hazard look.
+export function cdcPairAttrs(p, cdc, sync) {
+  if (p && p.hazard === false) {
+    const schemes = (Array.isArray(p.synchronizers) ? p.synchronizers : [])
+      .map((s) => String(s).toUpperCase())
+      .join('+')
+    const label = `${schemes ? schemes + ' ' : ''}${p.src_clock} → ${p.dst_clock}`
+    return ` [label="${labelEscape(label)}", color="${sync}", fontcolor="${sync}", fontsize=9]`
+  }
+  const label = `${p.src_clock} → ${p.dst_clock}`
+  return ` [label="${labelEscape(label)}", color="${cdc}", style="dashed", fontcolor="${cdc}", fontsize=9]`
 }
 
 // Label for a CDC-flagged edge: dedupe the per-flop pairs (already

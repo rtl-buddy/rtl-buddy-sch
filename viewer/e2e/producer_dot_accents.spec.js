@@ -27,6 +27,7 @@ import { expect, test } from '@playwright/test'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const CDC_RED = 'rgb(220, 38, 38)' // #dc2626, as getComputedStyle reports it
+const SYNC_TEAL = 'rgb(13, 148, 136)' // #0d9488, a recognised-safe CDC edge
 const BAKED_NEUTRAL = '#cbd5e1' // what render/dot.py bakes on an untyped edge
 
 function payloadWithOneHazardEdge() {
@@ -59,6 +60,21 @@ test('a producer-baked CDC accent survives the theme re-tint', async ({ page }) 
   const strokes = await page
     .locator('.svg-host.producer-dot g.edge path')
     .evaluateAll((els) => els.map((e) => getComputedStyle(e).stroke))
+  expect(strokes).toContain(CDC_RED)
+})
+
+test('a producer-baked synchronized-CDC teal survives the re-tint', async ({ page }) => {
+  // rtl-buddy-sch#211: a recognised-safe crossing is drawn solid teal
+  // by render/dot.py. It is information, not chrome — re-tinting it to
+  // the neutral tier would erase the verdict.
+  const raw = payloadWithOneHazardEdge()
+  raw.layout.dot = raw.layout.dot.replace(`color="${BAKED_NEUTRAL}"`, 'color="#0d9488"')
+  expect(raw.layout.dot).toContain('#0d9488')
+  await openHier(page, raw)
+  const strokes = await page
+    .locator('.svg-host.producer-dot g.edge path')
+    .evaluateAll((els) => els.map((e) => getComputedStyle(e).stroke))
+  expect(strokes).toContain(SYNC_TEAL)
   expect(strokes).toContain(CDC_RED)
 })
 

@@ -1,0 +1,273 @@
+{
+  "schema_version": "1.2",
+  "generator": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.6.0"
+  },
+  "design": {
+    "top": "cdc_top",
+    "frontend": "slang"
+  },
+  "clocks": [
+    {
+      "name": "clk_a",
+      "period": 10.0,
+      "source": "create_clock",
+      "ports": [
+        "clk_a"
+      ]
+    },
+    {
+      "name": "clk_b",
+      "period": 8.0,
+      "source": "create_clock",
+      "ports": [
+        "clk_b"
+      ]
+    },
+    {
+      "name": "clk_c",
+      "period": 12.0,
+      "source": "create_clock",
+      "ports": [
+        "clk_c"
+      ]
+    }
+  ],
+  "generated_clocks": [],
+  "clock_groups": [
+    {
+      "kind": "asynchronous",
+      "members": [
+        [
+          "clk_a"
+        ],
+        [
+          "clk_b"
+        ],
+        [
+          "clk_c"
+        ]
+      ]
+    }
+  ],
+  "false_path_pairs": [],
+  "flop_domains": [
+    {
+      "instance_path": "cdc_top.u_src_a.q",
+      "clock": "clk_a",
+      "source_instance_path": "cdc_top.u_src_a"
+    },
+    {
+      "instance_path": "cdc_top.u_src_c.q",
+      "clock": "clk_c",
+      "source_instance_path": "cdc_top.u_src_c"
+    },
+    {
+      "instance_path": "cdc_top.u_sync.meta",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_sync"
+    },
+    {
+      "instance_path": "cdc_top.u_sync.q",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_sync"
+    },
+    {
+      "instance_path": "cdc_top.u_flagged.meta",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_flagged"
+    },
+    {
+      "instance_path": "cdc_top.u_flagged.q",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_flagged"
+    },
+    {
+      "instance_path": "cdc_top.u_unchecked.meta",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_unchecked"
+    },
+    {
+      "instance_path": "cdc_top.u_unchecked.q",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_unchecked"
+    },
+    {
+      "instance_path": "cdc_top.u_raw.q",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_raw"
+    },
+    {
+      "instance_path": "cdc_top.u_mix.q",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_mix"
+    },
+    {
+      "instance_path": "cdc_top.u_dual.q",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_dual"
+    },
+    {
+      "instance_path": "cdc_top.u_bridge.u_ab.meta",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_bridge.u_ab"
+    },
+    {
+      "instance_path": "cdc_top.u_bridge.u_ab.q",
+      "clock": "clk_b",
+      "source_instance_path": "cdc_top.u_bridge.u_ab"
+    },
+    {
+      "instance_path": "cdc_top.u_bridge.u_ba.meta",
+      "clock": "clk_a",
+      "source_instance_path": "cdc_top.u_bridge.u_ba"
+    },
+    {
+      "instance_path": "cdc_top.u_bridge.u_ba.q",
+      "clock": "clk_a",
+      "source_instance_path": "cdc_top.u_bridge.u_ba"
+    }
+  ],
+  "port_domains": [],
+  "crossings": [
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "src_flop": "cdc_top.u_src_a.q",
+      "dst_flop": "cdc_top.u_sync.meta",
+      "dst_source_instance_path": "cdc_top.u_sync",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": "2ff",
+      "findings": []
+    },
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "src_flop": "cdc_top.u_src_a.q",
+      "dst_flop": "cdc_top.u_flagged.meta",
+      "dst_source_instance_path": "cdc_top.u_flagged",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": "2ff",
+      "findings": [
+        "CDC-003"
+      ]
+    },
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "src_flop": "cdc_top.u_src_a.q",
+      "dst_flop": "cdc_top.u_raw.q",
+      "dst_source_instance_path": "cdc_top.u_raw",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": null,
+      "findings": [
+        "CDC-001"
+      ]
+    },
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "src_flop": "cdc_top.u_src_a.q",
+      "dst_flop": "cdc_top.u_unchecked.meta",
+      "dst_source_instance_path": "cdc_top.u_unchecked",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": "2ff",
+      "findings": null
+    },
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "src_flop": "cdc_top.u_src_a.q",
+      "dst_flop": "cdc_top.u_mix.q",
+      "dst_source_instance_path": "cdc_top.u_mix",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": null,
+      "findings": [
+        "CDC-001"
+      ]
+    },
+    {
+      "src_clock": "clk_c",
+      "dst_clock": "clk_b",
+      "src_flop": "cdc_top.u_src_c.q",
+      "dst_flop": "cdc_top.u_mix.q",
+      "dst_source_instance_path": "cdc_top.u_mix",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": "2ff",
+      "findings": []
+    },
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "src_flop": "cdc_top.u_src_a.q",
+      "dst_flop": "cdc_top.u_dual.q",
+      "dst_source_instance_path": "cdc_top.u_dual",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": "2ff",
+      "findings": []
+    },
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "src_flop": "cdc_top.u_src_a.q",
+      "dst_flop": "cdc_top.u_dual.q",
+      "dst_source_instance_path": "cdc_top.u_dual",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": "handshake",
+      "findings": []
+    },
+    {
+      "src_clock": "clk_c",
+      "dst_clock": "clk_b",
+      "src_flop": "cdc_top.u_src_c.q",
+      "dst_flop": "cdc_top.u_dual.q",
+      "dst_source_instance_path": "cdc_top.u_dual",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": "2ff",
+      "findings": []
+    },
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "src_flop": "cdc_top.u_src_a.q",
+      "dst_flop": "cdc_top.u_bridge.u_ab.meta",
+      "dst_source_instance_path": "cdc_top.u_bridge.u_ab",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": "2ff",
+      "findings": []
+    },
+    {
+      "src_clock": "clk_b",
+      "dst_clock": "clk_a",
+      "src_flop": "cdc_top.u_sync.q",
+      "dst_flop": "cdc_top.u_bridge.u_ba.meta",
+      "dst_source_instance_path": "cdc_top.u_bridge.u_ba",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "synchronizer": "gray",
+      "findings": []
+    }
+  ]
+}

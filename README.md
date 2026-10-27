@@ -232,6 +232,18 @@ uv run rtl-buddy-view \
 Without `--overlay clock=…` (or with an empty map), output is
 byte-identical to the un-annotated case.
 
+From domain-map schema 1.2 (rtl-buddy-cdc#307) each crossing also says
+which synchronizer scheme lint recognised (`2ff`, `gray`, `handshake`,
+…) and which CDC findings survived waivers. A crossing with a scheme
+**and** an empty findings list is drawn as recognised-safe: no `⚠`, a
+solid teal edge or outline (the reset-synchroniser teal) and a label
+naming the scheme, such as `2FF clk_a→clk_b` (`✓CDC[2FF clk_a→clk_b]`
+in the tree). Any other crossing keeps the `⚠CDC` hazard look: no
+scheme, findings present, findings `null` (the rules never ran), or a
+1.1 map without the keys. A destination with both kinds stays a
+hazard and lists only its hazards after the `⚠`. Clock-domain fills
+are the same either way.
+
 Each clock in a figure gets a **distinct** pastel swatch, dealt in
 sorted clock-name order (the same rule the hub canvas uses), so two
 domains of one diagram never share a colour while swatches last;

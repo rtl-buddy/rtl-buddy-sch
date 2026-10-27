@@ -338,6 +338,18 @@ consumer-side contract is enforced in `annotations.py`:
 - `crossings[].async_per_sdc` (bool) is the gate for the `⚠CDC`
   marker — when `False`, the crossing is treated as a same-clock
   / synchronous artefact and not flagged.
+- Schema 1.2 (rtl-buddy-cdc#307) adds `crossings[].synchronizer`
+  (scheme name or `null`) and `crossings[].findings` (post-waiver rule
+  ids, `[]` clean, `null` when the rules never ran). A crossing is
+  recognised-safe — `Crossing.is_synchronized` — iff it has a scheme
+  **and** `findings == []`; `DomainMap.hazards_into` /
+  `synchronized_into` split `crossings_into` on it. Every renderer
+  (tree, dot, mermaid, view.json's edge `clock.hazard`, the SPA) draws
+  only hazards as `⚠CDC` and safe crossings in the synchroniser teal
+  with the scheme named (rtl-buddy-sch#211). 1.1 maps render
+  byte-identically — `tests/fixtures/cdc_sync_design/goldens_v1_1/`
+  was rendered by the pre-#211 code and must never be regenerated
+  from newer code.
 
 When rtl-buddy-cdc bumps the schema, update both `annotations.py`'s
 loader and `tests/fixtures/domain_maps/` in the same change set.

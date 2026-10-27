@@ -119,6 +119,35 @@ class Crossing:
     # the same rationale.
     dst_source_instance_path: str | None = None
     src_source_instance_path: str | None = None
+    # Schema 1.2 (rtl-buddy-cdc#307): the synchronizer scheme lint
+    # recognised on this crossing (``"2ff"``, ``"gray"``, …) or
+    # ``None``, and the CDC rule ids still raised on it after waivers.
+    # ``findings`` is ``()`` for a crossing the rules checked and found
+    # clean, ``None`` when the rules never ran — or when the producer
+    # predates 1.2 and emitted neither key.
+    synchronizer: str | None = None
+    findings: tuple[str, ...] | None = None
+
+    @property
+    def is_synchronized(self) -> bool:
+        """``True`` for a recognised-safe crossing (rtl-buddy-sch#211).
+
+        Both halves are required: a recognised scheme *and* a rule pass
+        that ran and raised nothing. A scheme with findings is a
+        flagged synchronizer; ``findings is None`` means nobody checked
+        it, so it stays a hazard. Every 1.1 crossing is therefore a
+        hazard, which keeps their rendering unchanged.
+        """
+        return self.synchronizer is not None and self.findings == ()
+
+    @property
+    def scheme_label(self) -> str | None:
+        """The scheme as drawn on a figure: ``"2ff"`` → ``"2FF"``.
+
+        Upper-cases the raw producer string, so a scheme added to the
+        producer after this consumer was written still renders.
+        """
+        return self.synchronizer.upper() if self.synchronizer is not None else None
 
 
 @dataclass(frozen=True)
@@ -168,6 +197,25 @@ class DomainMap:
             if _crossing_targets(c, instance_path)
             and (not async_only or c.async_per_sdc)
         )
+
+    def hazards_into(self, instance_path: str) -> tuple["Crossing", ...]:
+        """The async crossings into ``instance_path`` drawn as ``⚠CDC``.
+
+        :meth:`crossings_into` minus the recognised-safe ones
+        (:attr:`Crossing.is_synchronized`). For a 1.1 map this is every
+        async crossing.
+        """
+        return tuple(
+            c for c in self.crossings_into(instance_path) if not c.is_synchronized
+        )
+
+    def synchronized_into(self, instance_path: str) -> tuple["Crossing", ...]:
+        """The recognised-safe async crossings into ``instance_path``.
+
+        The complement of :meth:`hazards_into` within
+        :meth:`crossings_into`. Always empty for a 1.1 map.
+        """
+        return tuple(c for c in self.crossings_into(instance_path) if c.is_synchronized)
 
     def predominant_clock(self, instance_path: str) -> str | None:
         """Return the most common clock among flops under ``instance_path``.
@@ -373,7 +421,41 @@ def _parse_crossing(entry: dict, source_path: Path) -> Crossing:
         src_port=entry.get("src_port"),
         dst_source_instance_path=dsip,
         src_source_instance_path=ssip,
+        synchronizer=_parse_synchronizer(entry.get("synchronizer"), source_path),
+        findings=_parse_findings(entry.get("findings"), source_path),
     )
+
+
+def _parse_synchronizer(raw, source_path: Path) -> str | None:
+    """Schema 1.2 ``crossings[].synchronizer``: a scheme name or ``null``.
+
+    Absent (1.1) and ``null`` both mean "no scheme recognised". Any
+    non-empty string is accepted, including names this consumer does
+    not know: a scheme the producer learns later is still a scheme.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise AnnotationsError(
+            f"{source_path}: crossings[].synchronizer must be string or null"
+        )
+    return raw or None
+
+
+def _parse_findings(raw, source_path: Path) -> tuple[str, ...] | None:
+    """Schema 1.2 ``crossings[].findings``: rule ids, ``[]``, or ``null``.
+
+    ``null`` (rules never ran) and absent (1.1) both load as ``None``,
+    which is not the same as ``()`` — only an actual empty list says
+    the crossing was checked and is clean.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not all(isinstance(f, str) for f in raw):
+        raise AnnotationsError(
+            f"{source_path}: crossings[].findings must be a list of strings or null"
+        )
+    return tuple(raw)
 
 
 def _parse_location(raw) -> SourceLocation | None:
