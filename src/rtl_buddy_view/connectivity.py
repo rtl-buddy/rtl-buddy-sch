@@ -25,11 +25,18 @@ The algorithm is deliberately structural rather than semantic:
    are never nets. A whole reference (``cfg``, ``dv``) also stands on
    every member or element key the scope selects, so it meets them
    all while two elements stay apart.
-2. Continuous assignments build a **directed value-flow graph** over
-   those roots: ``assign lhs = rhs;`` adds one edge ``rhs_root ->
-   lhs_root`` per root pair, because value flows out of the RHS and
-   into the LHS. Chains compose, so ``assign c = b; assign b = a;``
-   makes ``c`` reachable from ``a`` but not the other way round.
+2. Continuous and procedural assignments build a **directed
+   value-flow graph** over those roots: ``assign lhs = rhs;`` adds one
+   edge ``rhs_root -> lhs_root`` per root pair, because value flows out
+   of the RHS and into the LHS. Chains compose, so ``assign c = b;
+   assign b = a;`` makes ``c`` reachable from ``a`` but not the other
+   way round. An assignment in an ``always*`` block (``q <= d;``,
+   ``c = a;``) adds the same edges (rtl-buddy-sch#210), so a root input
+   the scope registers before handing on still reaches the instance it
+   feeds. Only the assigned value counts — the ``if`` / ``case``
+   conditions that steer it do not, or the reset in ``if (!rst_n)``
+   would join every register's group and defeat the clock/reset
+   filter.
 3. Pins with a known ``output`` / ``inout`` direction are drivers and
    ``input`` pins are sinks; the enclosing module's own ports join in
    from the outside (``input`` port = driver, ``output`` / ``inout``
@@ -64,9 +71,14 @@ Remaining limits, all downstream of not running an elaborator:
   (``mem[addr]``) falls back to the whole vector, so it meets every
   element key — two disjoint slices of one vector still alias. The
   index itself (``addr``) is never a read.
-* Procedural assignments (``always`` blocks) contribute no flow edges;
-  only continuous assignments do — both the ``assign`` statement and
-  the ``wire w = expr;`` declaration form.
+* Flow comes from assignments only: the ``assign`` statement, the
+  ``wire w = expr;`` declaration form, and assignments in ``always*``
+  blocks. ``if`` / ``case`` / loop conditions contribute none (a data
+  enable read only as a condition gets no edge), while a reset written
+  *into* the value (``q <= rst_n ? d : '0;``) is flow like any other
+  operand. Assignments in functions, tasks and ``initial`` blocks are
+  not read, and a procedural assignment is flow whatever its timing:
+  a register and a wire look the same.
 * A whole-interface binding's single direction is a heuristic fold
   of its modport (handshake names out, majority by signal count); a
   tie leaves it unresolved rather than guessed.
@@ -548,13 +560,47 @@ def _constant_index(index: str, variables: frozenset[str] | set[str]) -> bool:
 def _scope_variables(module: Module, interfaces: frozenset[str]) -> frozenset[str]:
     """Names in ``module``'s scope whose value can change at run time.
 
-    Its declared nets and variables, its ports and its interfaces — the
-    names that make an index non-constant (:func:`_constant_index`).
+    Its declared nets and variables, its ports, its interfaces and
+    anything an assignment writes (an implicit net, a block-local
+    variable, a ``for`` loop variable) — the names that make an index
+    non-constant (:func:`_constant_index`).
     """
     names = {decl.name for decl in module.net_decls}
     names.update(port.name for port in module.ports)
     names.update(interfaces)
+    for assign in (*module.assigns, *module.procedural_assigns):
+        names.update(
+            _key_root(key) for key in _scan_refs(assign.lhs_text, frozenset())[0]
+        )
     return frozenset(names)
+
+
+def logic_nets(
+    module: Module, net_hints: Mapping[str, NetHints] | None = None
+) -> frozenset[str]:
+    """Root names ``module``'s own logic reads or writes, clocks aside.
+
+    Every identifier in a continuous or procedural assignment (either
+    side, index expressions included) or in a procedural condition
+    (:attr:`~rtl_buddy_view.extractor.Module.procedural_conditions`),
+    less the names the block-diagram classifier reads as a clock or a
+    reset (:func:`_is_clock_or_reset_group`, hints included).
+
+    The ``--prune-flags`` guard (rtl-buddy-sch#210): a root port named
+    here is real dataflow even when no edge lands on its flag — an
+    enable read only in an ``if``, or anything else the textual flow
+    model misses — so it must not be pruned like an unconnected clock.
+    """
+    texts = [
+        text
+        for assign in (*module.assigns, *module.procedural_assigns)
+        for text in (assign.lhs_text, assign.rhs_text)
+    ]
+    texts.extend(module.procedural_conditions)
+    names = {name for text in texts for name in root_identifiers(text)}
+    return frozenset(
+        name for name in names if not _is_clock_or_reset_group({name}, net_hints)
+    )
 
 
 def _key_root(key: str) -> str:
@@ -1003,7 +1049,8 @@ def scope_connectivity(
       With neither it defaults to a driver (an unconsumed bundle still
       reads as an input to the block).
     * A driver only reaches a sink whose root is reachable from the
-      driver's root along the assign flow graph (reflexively, so a
+      driver's root along the assign flow graph — continuous and
+      ``always*`` assignments alike (reflexively, so a
       shared net needs no assign at all). A pin driving the *left*
       side of an assign is therefore not a driver of anything the RHS
       feeds — that direction would be a second driver on the net.
@@ -1061,7 +1108,7 @@ def scope_connectivity(
             _scan_refs(a.lhs_text, interfaces, None, variables),
             _scan_refs(a.rhs_text, interfaces, None, variables),
         )
-        for a in module.assigns
+        for a in (*module.assigns, *module.procedural_assigns)
     ]
     members = _members_by_root(
         [key for pin in raw_pins for key in pin.roots]
@@ -1217,7 +1264,7 @@ def _merge_bucket(target: _Bucket, extra: _Bucket) -> None:
 class _FlowGraph:
     """Directed value-flow graph over net root names.
 
-    Built once from the scope's continuous assigns, then queried; the
+    Built once from the scope's assignments, then queried; the
     two derived views (components, reachability) are memoised and
     assume the edge set is frozen by the time they are first asked
     for. Small enough to inline rather than reach for a dependency

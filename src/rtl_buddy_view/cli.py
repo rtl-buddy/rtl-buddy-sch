@@ -293,7 +293,8 @@ def main(
         help="With --block-diagram: draw no boundary flag for a root "
         "port that no edge lands on — typically clock and reset ports "
         "whose edges the dataflow classifier drops. A flag an edge or "
-        "CDC / RDC arrow names is always kept.",
+        "CDC / RDC arrow names is always kept, and so is one whose "
+        "port the top's own assign / always logic reads or writes.",
     ),
     no_pragmas: bool = typer.Option(
         False,

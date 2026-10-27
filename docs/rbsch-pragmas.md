@@ -413,7 +413,9 @@ module they are inert until that module is the root.
 - `--prune-flags` (CLI, block diagram only) drops every root flag no
   edge lands on — the clock and reset ports whose groups the
   classifier drops are the usual case. A flag any edge or CDC / RDC
-  arrow names is kept. It is opt-in: a flag with no edge still
+  arrow names is kept, and so is one whose port the top's own
+  `assign` / `always*` logic reads or writes — an enable read only in
+  an `if` gets no edge but is still a data port. It is opt-in: a flag with no edge still
   documents the block's interface, and the default output stays
   byte-identical for existing figures.
 - The ELK export (`--format elk`) still lists every root pin: it is

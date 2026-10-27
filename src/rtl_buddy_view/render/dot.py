@@ -55,6 +55,7 @@ from rtl_buddy_view.connectivity import (
     NetEdge,
     _fold_bundle_returns,
     boundary_directions,
+    logic_nets,
     module_param_defaults,
     port_width,
     scope_connectivity,
@@ -213,7 +214,9 @@ def render(
     ``prune_flags`` (block diagram only, rtl-buddy-sch#196) drops every
     root boundary flag that no edge in the figure lands on — clock and
     reset ports whose edges the dataflow classifier dropped are the
-    usual case. A flag any edge or overlay arrow names is always kept.
+    usual case. A flag any edge or overlay arrow names is always kept,
+    and so is one whose port the top's own logic reads or writes
+    (:func:`~rtl_buddy_view.connectivity.logic_nets`, rtl-buddy-sch#210).
     """
     active_map = domain_map if (domain_map and not domain_map.is_empty) else None
     with figure_clock_colors(active_map, clock_colors):
@@ -397,7 +400,25 @@ def _emit_top_frame(
             referenced = {
                 end for pair in _EDGE_LINE_RE.findall(edge_text) for end in pair
             }
-            flags = tuple(f for f in flags if f.node_id in referenced)
+            # A port the body's own logic reads (or writes) is real
+            # dataflow even when no edge lands on its flag
+            # (rtl-buddy-sch#210) — keep it; clocks and resets are left
+            # out of ``logic_nets`` and still go.
+            in_logic = (
+                logic_nets(
+                    top.module,
+                    hints.nets_for_module(top.module_name)
+                    if hints is not None
+                    else None,
+                )
+                if top.module is not None
+                else frozenset()
+            )
+            flags = tuple(
+                f
+                for f in flags
+                if f.node_id in referenced or in_logic.intersection(f.members)
+            )
         _emit_root_flags(flags, out)
     else:
         _emit_port_anchors(top, out, module_table=module_table)

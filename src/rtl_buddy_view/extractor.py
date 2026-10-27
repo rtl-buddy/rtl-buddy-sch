@@ -154,9 +154,10 @@ class Assign:
     (:mod:`rtl_buddy_view.connectivity`) is what turns them into
     net-alias groups.
 
-    Procedural assignments (``always_comb`` / ``always_ff``) are out
-    of scope: they are not net aliases, and tracing them would need
-    real dataflow analysis rather than a source slice.
+    The same record carries a **procedural** assignment
+    (:attr:`Module.procedural_assigns`): its right-hand side flows into
+    its left-hand side just the same, while the conditions that steer
+    it are kept apart (:attr:`Module.procedural_conditions`).
     """
 
     lhs_text: str
@@ -229,6 +230,21 @@ class Module:
     # nets that no pin drives; no renderer emits them, so the JSON /
     # graph / ELK contracts stay untouched.
     net_decls: tuple[NetDecl, ...] = ()
+    # Assignments inside ``always`` / ``always_ff`` / ``always_comb`` /
+    # ``always_latch`` blocks (``q <= d;``, ``c = a;``, ``c += a;``, and
+    # a ``for`` initializer), one :class:`Assign` per statement, in
+    # document order. Additive with a default, like ``assigns``.
+    # Consumed by :func:`rtl_buddy_view.connectivity.scope_connectivity`
+    # as value flow from the right-hand side into the left
+    # (rtl-buddy-sch#210); not emitted by any renderer.
+    procedural_assigns: tuple[Assign, ...] = ()
+    # Verbatim slices of the expressions that steer those blocks
+    # without being assigned anywhere: ``if`` and loop conditions,
+    # ``case`` selectors and item labels. Deliberately *not* value
+    # flow — the reset in ``if (!rst_n)`` would otherwise join every
+    # register's data group. Read only to tell which nets the body's
+    # logic reads (:func:`rtl_buddy_view.connectivity.logic_nets`).
+    procedural_conditions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

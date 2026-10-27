@@ -484,8 +484,10 @@ rtl-buddy-view [OPTIONS]
                         for a root port no edge lands on (clock /
                         reset ports whose edges the classifier
                         drops). Flags an edge or CDC / RDC arrow
-                        names are always kept. Warns and is ignored
-                        without --block-diagram.
+                        names are always kept, and so are ports the
+                        top's own assign / always logic reads or
+                        writes. Warns and is ignored without
+                        --block-diagram.
 --params [all|none]     Dot and mermaid: which parameter overrides
                         each box shows. all (default) = every one,
                         narrowed by `// rbsch: params=…` pragmas;
