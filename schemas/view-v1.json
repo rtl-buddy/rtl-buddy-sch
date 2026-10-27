@@ -140,7 +140,7 @@
         "overlays": {
           "type": "object",
           "additionalProperties": {"type": "object"},
-          "description": "Per-overlay edge metadata. ``clock.crossing: true`` marks a CDC edge; ``reset.crossing: true`` an RDC edge."
+          "description": "Per-overlay edge metadata. ``clock.crossing: true`` marks a CDC edge (``clock.hazard: false`` when every crossing on it is recognised-safe, rtl-buddy-sch#211); ``reset.crossing: true`` an RDC edge."
         }
       }
     },

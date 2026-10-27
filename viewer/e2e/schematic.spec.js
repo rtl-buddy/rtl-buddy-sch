@@ -331,6 +331,42 @@ test.describe('clock-domain shading', () => {
     expect(dash).not.toBe('none')
   })
 
+  test('draws a recognised-safe crossing solid teal, not dashed (#211)', async ({
+    page,
+  }) => {
+    const data = withClockOverlay(payload)
+    for (const edge of data.edges) {
+      if (edge.to !== 'blk_top.u_cons') continue
+      edge.overlays.clock = {
+        crossing: true,
+        hazard: false,
+        pairs: [
+          {
+            src_clock: 'clk_a',
+            dst_clock: 'clk_b',
+            flops: 2,
+            hazard: false,
+            synchronizers: ['2ff'],
+          },
+        ],
+      }
+    }
+    await openSchematic(page, data)
+    await expect(page.locator('.sch-wire.cdc')).toHaveCount(0)
+    const safe = page.locator('.sch-wire.cdc-sync')
+    expect(await safe.count()).toBeGreaterThan(0)
+    await expect(safe.first()).toHaveAttribute('data-cdc', 'synchronized')
+    const look = await safe
+      .first()
+      .locator('path:not(.sch-hit)')
+      .evaluate((el) => {
+        const cs = getComputedStyle(el)
+        return { dash: cs.strokeDasharray, stroke: cs.stroke }
+      })
+    expect(look.dash).toBe('none')
+    expect(look.stroke).toBe('rgb(13, 148, 136)')
+  })
+
   test('degrades to the plain look with no overlay', async ({ page }) => {
     await openSchematic(page, payload)
     await expect(page.locator('.sch-block[data-clock]')).toHaveCount(0)

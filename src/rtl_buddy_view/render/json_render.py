@@ -1057,18 +1057,40 @@ def _clock_edge_contribution(child: HierNode, domain_map: DomainMap) -> dict:
 
     Multiple flops in the same destination instance frequently share
     a single (src, dst) clock pair; dedup keeps the panel readable.
+
+    ``crossing`` still means "a CDC crossing lands here". Whether it is
+    drawn as a hazard is ``hazard`` (rtl-buddy-sch#211): ``false`` only
+    when every crossing on the edge is recognised-safe — a synchronizer
+    scheme and an empty post-waiver findings list in the domain map.
+    Each pair carries its own ``hazard`` and the sorted schemes of its
+    recognised-safe crossings in ``synchronizers``. A 1.1 map has no
+    schemes, so every edge reads ``hazard: true`` with no
+    ``synchronizers``.
     """
     crossings = domain_map.crossings_into(child.instance_path)
     if not crossings:
         return {}
     pairs: dict[tuple[str, str], int] = {}
+    hazard_pairs: set[tuple[str, str]] = set()
+    schemes: dict[tuple[str, str], set[str]] = {}
     for c in crossings:
         key = (c.src_clock, c.dst_clock)
         pairs[key] = pairs.get(key, 0) + 1
+        if c.is_synchronized and c.synchronizer is not None:
+            schemes.setdefault(key, set()).add(c.synchronizer)
+        else:
+            hazard_pairs.add(key)
     return {
         "crossing": True,
+        "hazard": bool(hazard_pairs),
         "pairs": [
-            {"src_clock": src, "dst_clock": dst, "flops": n}
+            {
+                "src_clock": src,
+                "dst_clock": dst,
+                "flops": n,
+                "hazard": (src, dst) in hazard_pairs,
+                "synchronizers": sorted(schemes.get((src, dst), ())),
+            }
             for (src, dst), n in sorted(pairs.items())
         ],
     }

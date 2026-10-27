@@ -34,13 +34,13 @@ import dataclasses
 import io
 import math
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import IO
 
-from rtl_buddy_view.annotations import DomainMap
+from rtl_buddy_view.annotations import Crossing, DomainMap
 from rtl_buddy_view.axi_perf_annotations import AxiPerfMap
 from rtl_buddy_view.clock_colors import (
     CLOCK_PALETTE,
@@ -133,6 +133,13 @@ _RDC_COLOR = "#ea580c"
 #: edges; deliberately not green (which would clash with the
 #: clock-palette ``#dcfce7`` swatch on light fills).
 _RSTSYNC_OUTLINE = "#0d9488"
+
+#: Recognised-safe CDC accent (rtl-buddy-sch#211): a crossing the
+#: domain map says is synchronized (a scheme, no findings). The same
+#: teal as the reset-synchronizer outline, so "vetted synchronizer"
+#: reads as one thing on either overlay, and no ``⚠``: a clean
+#: crossing is information, not a hazard.
+_CDC_SYNC_COLOR = _RSTSYNC_OUTLINE
 
 
 def render(
@@ -1262,6 +1269,11 @@ def _emit_top_cdc_arrows(
     draws as: a bundled clock port's arrow leaves its bundle flag, and
     a hidden one's arrow is not drawn (the destination still carries
     its ``⚠CDC`` summary).
+
+    One arrow per ``(src_clock, dst_clock)`` pair. A pair whose every
+    crossing is recognised-safe (rtl-buddy-sch#211) draws as a solid
+    teal arrow labelled with its schemes (``2FF clk_a→clk_b``); a
+    single hazard crossing in the pair makes the whole arrow ``⚠CDC``.
     """
     if domain_map is None:
         return
@@ -1272,6 +1284,10 @@ def _emit_top_cdc_arrows(
         # ``crossings_into`` is filtered to ``async_per_sdc=True`` by
         # default — the SDC-confirmed true-CDC subset that the tree /
         # mermaid renderers also surface.
+        crossings = domain_map.crossings_into(child.instance_path)
+        hazard_pairs = {
+            (c.src_clock, c.dst_clock) for c in crossings if not c.is_synchronized
+        }
         seen: set[tuple[str, str]] = set()
         child_cluster = (
             _cluster_id_for(child.instance_path)
@@ -1279,7 +1295,7 @@ def _emit_top_cdc_arrows(
             else None
         )
         lhead = f', lhead="{child_cluster}"' if child_cluster else ""
-        for c in domain_map.crossings_into(child.instance_path):
+        for c in crossings:
             if c.src_clock not in input_names:
                 continue
             tail = _arrow_tail(c.src_clock, flag_ids)
@@ -1289,11 +1305,23 @@ def _emit_top_cdc_arrows(
             if key in seen:
                 continue
             seen.add(key)
-            label = f"⚠CDC: {_escape(c.src_clock)}→{_escape(c.dst_clock)}"
+            if key in hazard_pairs:
+                label = f"⚠CDC: {_escape(c.src_clock)}→{_escape(c.dst_clock)}"
+                out.write(
+                    f'    "{tail}" -> "{child.instance_path}" '
+                    f'[label="{label}", color="#dc2626", '
+                    f'style="dashed", fontcolor="#dc2626", tailport=e{lhead}];\n'
+                )
+                continue
+            label = _escape(
+                _cdc_sync_parts(
+                    x for x in crossings if (x.src_clock, x.dst_clock) == key
+                )[0]
+            )
             out.write(
                 f'    "{tail}" -> "{child.instance_path}" '
-                f'[label="{label}", color="#dc2626", '
-                f'style="dashed", fontcolor="#dc2626", tailport=e{lhead}];\n'
+                f'[label="{label}", color="{_CDC_SYNC_COLOR}", '
+                f'fontcolor="{_CDC_SYNC_COLOR}", tailport=e{lhead}];\n'
             )
 
 
@@ -1736,14 +1764,15 @@ def _emit_cluster_subtree(
     title = _label_for(node, domain_map, reset_map)
 
     # Border colour resolution mirrors the box form's precedence:
-    # CDC red > RDC orange > reset-synchroniser teal > clock-keyed
-    # outline > neutral slate. The cluster carries the cue that a
-    # box would have carried for the same instance.
+    # CDC red > RDC orange > synchroniser teal (reset or CDC) >
+    # clock-keyed outline > neutral slate. The cluster carries the cue
+    # that a box would have carried for the same instance.
     fill, _ = _fill_for(node, domain_map)
-    is_sync = (
+    cdc_summary = _format_cdc_summary(node, domain_map) if top_level else ""
+    sync_summary = _format_cdc_sync_summary(node, domain_map) if top_level else ""
+    is_sync = bool(sync_summary) or (
         reset_map is not None and node.instance_path in reset_map.synchronizer_paths()
     )
-    cdc_summary = _format_cdc_summary(node, domain_map) if top_level else ""
     rdc_summary = (
         _format_rdc_summary(node, reset_map)
         if top_level and reset_map is not None
@@ -1771,6 +1800,8 @@ def _emit_cluster_subtree(
     label_suffix_parts: list[str] = []
     if cdc_summary:
         label_suffix_parts.append(cdc_summary)
+    if sync_summary:
+        label_suffix_parts.append(sync_summary)
     if rdc_summary:
         label_suffix_parts.append(rdc_summary)
     if label_suffix_parts:
@@ -2013,7 +2044,16 @@ def _emit_node(
     )
     if len(pairs) > 1:
         _emit_html_grid_node(
-            node, out, domain_map, pairs, cdc_on_node=cdc_on_node, reset_map=reset_map
+            node,
+            out,
+            domain_map,
+            pairs,
+            # A grid whose every crossing is recognised-safe is a clean
+            # synchronizer bridge (rtl-buddy-sch#211): teal, not red.
+            cdc_on_node=cdc_on_node,
+            all_synchronized=domain_map is not None
+            and _subtree_all_synchronized(node.instance_path, domain_map),
+            reset_map=reset_map,
         )
         for child in node.children:
             _emit_node(
@@ -2046,6 +2086,7 @@ def _emit_node(
         attrs.append(f'fillcolor="{fill}"')
     label_suffix = ""
     has_border = False
+    sync_summary = _format_cdc_sync_summary(node, domain_map) if cdc_on_node else ""
     if cdc_on_node:
         cdc_summary = _format_cdc_summary(node, domain_map)
         if cdc_summary:
@@ -2054,6 +2095,12 @@ def _emit_node(
             attrs.append("penwidth=2")
             attrs.append('fontcolor="#dc2626"')
             has_border = True
+        if sync_summary:
+            # A recognised-safe crossing (rtl-buddy-sch#211) names its
+            # scheme in plain text; the border is the synchroniser teal
+            # below, and only when no hazard has claimed it.
+            label_suffix += f"\\n{sync_summary}"
+            is_sync = True
     if cdc_on_node and reset_map is not None:
         rdc_summary = _format_rdc_summary(node, reset_map)
         if rdc_summary:
@@ -2078,6 +2125,8 @@ def _emit_node(
             cdc_line = _format_cdc_summary(node, domain_map)
             if cdc_line:
                 summary_lines.append(cdc_line)
+            if sync_summary:
+                summary_lines.append(sync_summary)
             if reset_map is not None:
                 rdc_line = _format_rdc_summary(node, reset_map)
                 if rdc_line:
@@ -2086,7 +2135,8 @@ def _emit_node(
             node, domain_map, reset_map, extra_lines=tuple(summary_lines)
         )
         attrs[0] = f"label=<{html}>"
-    # Synchronizer marker: teal outline + slightly thicker pen. Only
+    # Synchronizer marker (reset synchronizer, or a recognised-safe
+    # CDC crossing in): teal outline + slightly thicker pen. Only
     # applied when no warning border is already in place — clock /
     # reset issues take precedence visually since they're hazards.
     if is_sync and not has_border:
@@ -2190,6 +2240,7 @@ def _emit_html_grid_node(
     pairs: tuple[tuple[str, str], ...],
     *,
     cdc_on_node: bool,
+    all_synchronized: bool = False,
     reset_map: ResetDomainMap | None = None,
 ) -> None:
     """Emit a node as an HTML-label table — header text + one row per crossing.
@@ -2232,7 +2283,8 @@ def _emit_html_grid_node(
 
     attrs = [f"label={table}", "shape=plaintext"]
     if cdc_on_node:
-        attrs.append('color="#dc2626"')
+        color = _CDC_SYNC_COLOR if all_synchronized else "#dc2626"
+        attrs.append(f'color="{color}"')
         attrs.append("penwidth=2")
     out.write(f'  "{node.instance_path}" [{", ".join(attrs)}];\n')
 
@@ -2354,8 +2406,20 @@ def _crossing_pairs_into(
     Sorted for deterministic output. Crossings with an ``<unconstrained>``
     source are excluded — no real clock to anchor a direction on.
     """
+    return tuple(
+        sorted(
+            {
+                (c.src_clock, c.dst_clock)
+                for c in _crossings_under(instance_path, domain_map)
+            }
+        )
+    )
+
+
+def _crossings_under(instance_path: str, domain_map: DomainMap) -> tuple[Crossing, ...]:
+    """The async, clock-anchored crossings :func:`_crossing_pairs_into` counts."""
     prefix = instance_path + "."
-    pairs: set[tuple[str, str]] = set()
+    found: list[Crossing] = []
     for c in domain_map.crossings:
         if not c.async_per_sdc:
             continue
@@ -2364,8 +2428,18 @@ def _crossing_pairs_into(
         dst_owner = c.dst_source_instance_path or c.dst_flop
         if dst_owner != instance_path and not dst_owner.startswith(prefix):
             continue
-        pairs.add((c.src_clock, c.dst_clock))
-    return tuple(sorted(pairs))
+        found.append(c)
+    return tuple(found)
+
+
+def _subtree_all_synchronized(instance_path: str, domain_map: DomainMap) -> bool:
+    """``True`` when every crossing behind a node's grid is recognised-safe.
+
+    Always ``False`` for a 1.1 map (no crossing is), and for a node
+    with no crossings at all.
+    """
+    crossings = _crossings_under(instance_path, domain_map)
+    return bool(crossings) and all(c.is_synchronized for c in crossings)
 
 
 def _crossing_direction(
@@ -2485,12 +2559,15 @@ def _emit_edges(
             else ""
         )
         cdc_summary = _format_cdc_summary(child, domain_map)
+        sync_summary = _format_cdc_sync_summary(child, domain_map)
         rdc_summary = (
             _format_rdc_summary(child, reset_map) if reset_map is not None else ""
         )
         label_parts: list[str] = []
         if cdc_summary:
             label_parts.append(cdc_summary)
+        if sync_summary:
+            label_parts.append(sync_summary)
         if rdc_summary:
             label_parts.append(rdc_summary)
         if port_label:
@@ -2512,6 +2589,11 @@ def _emit_edges(
             attr_parts.append(f'color="{_RDC_COLOR}"')
             attr_parts.append('style="dashed"')
             attr_parts.append(f'fontcolor="{_RDC_COLOR}"')
+        elif sync_summary:
+            # Only recognised-safe crossings in (rtl-buddy-sch#211):
+            # a solid teal edge naming the scheme — no hazard dash.
+            attr_parts.append(f'color="{_CDC_SYNC_COLOR}"')
+            attr_parts.append(f'fontcolor="{_CDC_SYNC_COLOR}"')
         # AXI bundles are intentionally NOT styled here: perf is
         # surfaced in the viewer's AXI tab and in json_render, not on
         # the DOT graph (the #69 pivot away from per-edge styling).
@@ -2600,15 +2682,17 @@ def _arrow_tail(port: str, flag_ids: Mapping[str, str | None] | None) -> str | N
 def _format_cdc_summary(child: HierNode, domain_map: DomainMap | None) -> str:
     """Build the ``⚠CDC: clk_a→clk_b`` label fragment for a CDC edge.
 
-    Returns an empty string when no async crossing terminates at
+    Returns an empty string when no hazard crossing terminates at
     ``child``. Multiple crossings from distinct source clocks
     collapse to a single deterministic list — matches the tree
     renderer's marker shape so reviewers see the same summary across
-    formats.
+    formats. Recognised-safe crossings (rtl-buddy-sch#211) are left
+    out: they get :func:`_format_cdc_sync_summary` instead, so a mixed
+    destination lists only its hazards after the ``⚠``.
     """
     if domain_map is None or domain_map.is_empty:
         return ""
-    crossings = domain_map.crossings_into(child.instance_path)
+    crossings = domain_map.hazards_into(child.instance_path)
     if not crossings:
         return ""
     sources_by_dst: dict[str, set[str]] = {}
@@ -2619,6 +2703,34 @@ def _format_cdc_summary(child: HierNode, domain_map: DomainMap | None) -> str:
         for src in sorted(sources_by_dst[dst]):
             parts.append(f"{src}→{dst}")
     return "⚠CDC: " + ", ".join(parts)
+
+
+def _format_cdc_sync_summary(child: HierNode, domain_map: DomainMap | None) -> str:
+    """Build the ``2FF clk_a→clk_b`` fragment for recognised-safe crossings.
+
+    The neutral counterpart of :func:`_format_cdc_summary`
+    (rtl-buddy-sch#211): no ``⚠``, the scheme named instead. Empty for
+    a 1.1 map, whose crossings carry no scheme.
+    """
+    if domain_map is None or domain_map.is_empty:
+        return ""
+    return ", ".join(_cdc_sync_parts(domain_map.synchronized_into(child.instance_path)))
+
+
+def _cdc_sync_parts(crossings: Iterable[Crossing]) -> list[str]:
+    """``SCHEME src→dst`` per clock pair, schemes ``+``-joined.
+
+    Pairs sort by destination then source clock, like the ``⚠CDC``
+    summary; a pair carrying two schemes (a handshake's payload and
+    its 2FF request, say) reads ``2FF+HANDSHAKE clk_a→clk_b``.
+    """
+    schemes: dict[tuple[str, str], set[str]] = {}
+    for c in crossings:
+        schemes.setdefault((c.src_clock, c.dst_clock), set()).add(c.scheme_label or "")
+    return [
+        f"{'+'.join(sorted(schemes[(src, dst)]))} {src}→{dst}"
+        for src, dst in sorted(schemes, key=lambda pair: (pair[1], pair[0]))
+    ]
 
 
 def _format_port_connections(conns: tuple[PortConnection, ...]) -> str:

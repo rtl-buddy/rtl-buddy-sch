@@ -161,6 +161,7 @@
             :class="{
               bus: wire.bus,
               cdc: cdcEdgeIds.has(wire.id),
+              'cdc-sync': !cdcEdgeIds.has(wire.id) && cdcSyncEdgeIds.has(wire.id),
               hot: highlight.edges.has(wire.id),
               main: wire.emphasis === 'main',
               side: wire.emphasis === 'side',
@@ -169,7 +170,9 @@
             :data-edge-id="wire.id"
             :data-edge-source="wire.sourceId"
             :data-edge-target="wire.targetId"
-            :data-cdc="cdcEdgeIds.has(wire.id) ? 'true' : null"
+            :data-cdc="cdcEdgeIds.has(wire.id)
+              ? 'true'
+              : cdcSyncEdgeIds.has(wire.id) ? 'synchronized' : null"
             :data-emphasis="wire.emphasis || null"
             :data-bundle="wire.bundle || null"
           >
@@ -479,32 +482,43 @@ function plateFill(box) {
 // ``async_per_sdc`` crossings, which a clock-name comparison cannot
 // reproduce (two names can be the same domain, and an SDC false path
 // can make one crossing benign).
-const cdcSourcesByTarget = computed(() => {
+//
+// ``hazard`` picks which pairs count (rtl-buddy-sch#211): a pair the
+// producer marked ``hazard: false`` is recognised-safe; any other pair
+// — including one from a payload that predates the field — is a hazard.
+function cdcSourcesByTarget(hazard) {
   const out = new Map()
   for (const edge of store.graph?.edges || []) {
     const ov = edge.overlays && edge.overlays.clock
     if (!ov || !ov.crossing) continue
     const set = out.get(edge.to) || new Set()
     for (const pair of ov.pairs || []) {
-      if (pair && typeof pair.src_clock === 'string') set.add(pair.src_clock)
+      if (!pair || typeof pair.src_clock !== 'string') continue
+      if ((pair.hazard !== false) === hazard) set.add(pair.src_clock)
     }
-    out.set(edge.to, set)
+    if (set.size) out.set(edge.to, set)
   }
   return out
-})
+}
 
-// Edge ids whose wire is a crossing, resolved once per model rather
-// than per wire segment.
-const cdcEdgeIds = computed(() => {
+// Edge ids whose wire is a ⚠CDC hazard crossing, resolved once per
+// model rather than per wire segment.
+const cdcEdgeIds = computed(() => crossingWireIds(cdcSourcesByTarget(true)))
+// Edge ids whose wire carries only recognised-safe crossings: drawn in
+// the synchroniser teal, never the hazard dash. A wire in both sets is
+// a hazard — the template checks ``cdcEdgeIds`` first.
+const cdcSyncEdgeIds = computed(() => crossingWireIds(cdcSourcesByTarget(false)))
+
+function crossingWireIds(sourcesByTarget) {
   const ids = new Set()
-  if (!clockPalette.value || cdcSourcesByTarget.value.size === 0) return ids
+  if (!clockPalette.value || sourcesByTarget.size === 0) return ids
   const clockOf = new Map(model.value.boxes.map((b) => [b.id, b.clock]))
   // A folded block swallows its children, so a crossing that lands on
   // a descendant now lands on the box: match the target prefix, not
   // just the id.
   const sourcesFor = (nodeId) => {
     const out = new Set()
-    for (const [target, clocks] of cdcSourcesByTarget.value) {
+    for (const [target, clocks] of sourcesByTarget) {
       if (target === nodeId || target.startsWith(nodeId + '.')) {
         for (const c of clocks) out.add(c)
       }
@@ -524,7 +538,7 @@ const cdcEdgeIds = computed(() => {
     if (!srcClock || clocks.has(srcClock)) ids.add(wire.id)
   }
   return ids
-})
+}
 
 // --- sheet frame + title block (#163 P4) ------------------------------------
 
@@ -1028,6 +1042,18 @@ onBeforeUnmount(() => {
 .sch-wire.cdc .sch-hit {
   stroke: transparent;
   stroke-dasharray: none;
+}
+/* A recognised-safe crossing (rtl-buddy-sch#211): solid, in the
+   synchroniser teal the reset overlay uses — information, not a
+   hazard. */
+.sch-wire.cdc-sync path {
+  stroke: var(--reset-sync);
+}
+.sch-wire.cdc-sync .sch-arrow {
+  fill: var(--reset-sync);
+}
+.sch-wire.cdc-sync .sch-hit {
+  stroke: transparent;
 }
 .sch-wire line {
   stroke: var(--fg);

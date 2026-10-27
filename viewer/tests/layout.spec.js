@@ -164,6 +164,34 @@ describe('graphToDot presentation defaults', () => {
     expect(dot).toMatch(new RegExp(`node \\[[^\\]]*color="${faint}"`))
   })
 
+  it('draws a recognised-safe pair solid teal, naming its schemes (#211)', () => {
+    const safe = structuredClone(cdcGraph)
+    safe.edges[0].overlays.clock.pairs[0] = {
+      src_clock: 'clk_a',
+      dst_clock: 'clk_b',
+      flops: 2,
+      hazard: false,
+      synchronizers: ['2ff', 'handshake'],
+    }
+    const line = graphToDot(safe).split('\n').find((l) => l.includes('->'))
+    expect(line).toContain('label="2FF+HANDSHAKE clk_a → clk_b"')
+    expect(line).toContain(`color="${token('--reset-sync')}"`)
+    expect(line).not.toContain('dashed')
+    expect(line).not.toContain(token('--err'))
+  })
+
+  it('keeps a flagged pair (hazard: true) on the dashed --err accent', () => {
+    const flagged = structuredClone(cdcGraph)
+    Object.assign(flagged.edges[0].overlays.clock.pairs[0], {
+      hazard: true,
+      synchronizers: [],
+    })
+    const line = graphToDot(flagged).split('\n').find((l) => l.includes('->'))
+    expect(line).toContain('label="clk_a → clk_b"')
+    expect(line).toContain(`color="${token('--err')}"`)
+    expect(line).toContain('style="dashed"')
+  })
+
   it('leaves CDC-crossing edges on the --err accent', () => {
     const dot = graphToDot(cdcGraph)
     const err = token('--err')

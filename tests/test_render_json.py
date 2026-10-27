@@ -452,9 +452,20 @@ def test_clock_crossing_marks_edge() -> None:
     # pairs alongside the crossing flag so the SPA's EdgeDetail panel
     # can surface the specific clocks without re-reading the domain
     # map. One flop in this fixture → flops=1.
+    # A 1.1 crossing carries no scheme, so it is a hazard
+    # (rtl-buddy-sch#211) with no synchronizers.
     assert edge["overlays"]["clock"] == {
         "crossing": True,
-        "pairs": [{"src_clock": "clk_a", "dst_clock": "clk_b", "flops": 1}],
+        "hazard": True,
+        "pairs": [
+            {
+                "src_clock": "clk_a",
+                "dst_clock": "clk_b",
+                "flops": 1,
+                "hazard": True,
+                "synchronizers": [],
+            }
+        ],
     }
 
 

@@ -134,6 +134,25 @@ describe('built-in overlays', () => {
     expect(cdc.swatch).toBe('#dc2626')
   })
 
+  it('clock overlay legend splits hazard and synchronized crossings (#211)', () => {
+    const overlay = getOverlay('clock')
+    const legend = (clocks) =>
+      overlay.legend({
+        nodes: [],
+        edges: clocks.map((clock, i) => ({ from: 'x', to: `a${i}`, overlays: { clock } })),
+      })
+    const safeOnly = legend([{ crossing: true, hazard: false }])
+    expect(safeOnly.find((e) => e.label === 'CDC crossing')).toBeUndefined()
+    const sync = safeOnly.find((e) => e.label === 'synchronized CDC')
+    expect(sync.kind).toBe('solid-line')
+    expect(sync.swatch).toBe('#0d9488')
+    const mixed = legend([
+      { crossing: true, hazard: false },
+      { crossing: true, hazard: true },
+    ])
+    expect(mixed.map((e) => e.label)).toEqual(['CDC crossing', 'synchronized CDC'])
+  })
+
   it('clock overlay legend and apply agree on the colour for each clock', () => {
     // Reproduces the rtl-buddy-view live demo bug (2026-05-20):
     // ``apply`` painted by first-seen palette index, ``legend``

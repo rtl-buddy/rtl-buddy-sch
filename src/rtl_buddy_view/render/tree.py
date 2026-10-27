@@ -21,7 +21,10 @@ When a :class:`rtl_buddy_view.annotations.DomainMap` is supplied:
   known clock (no flops or all untraceable) render unannotated.
 - Flop destinations of an async crossing get an additional
   ``⚠CDC[src_clock→dst_clock]`` suffix so reviewers spot the CDC
-  hazards at a glance.
+  hazards at a glance. A crossing the map calls recognised-safe (a
+  synchronizer scheme and no findings, rtl-buddy-sch#211) is listed
+  in a ``✓CDC[2FF src_clock→dst_clock]`` suffix instead — the same
+  ``✓`` the reset side gives ``✓rstsync``.
 
 When a :class:`rtl_buddy_view.reset_annotations.ResetDomainMap` is
 also supplied (Phase 3):
@@ -58,6 +61,7 @@ from urllib.parse import quote
 from rtl_buddy_view.annotations import DomainMap
 from rtl_buddy_view.graph import HierNode
 from rtl_buddy_view.phys_annotations import PhysJoin, tree_suffix
+from rtl_buddy_view.render.dot import _cdc_sync_parts
 from rtl_buddy_view.reset_annotations import ResetDomainMap
 
 # OSC-8 hyperlink terminal escape sequence. Supported by iTerm2,
@@ -275,20 +279,27 @@ def _cdc_suffix(node: HierNode, domain_map: DomainMap | None) -> str:
     has this node as its destination flop. Multiple crossings from
     different source clocks collapse to a single suffix that lists
     each source once in alphabetical order.
+
+    Only hazard crossings go after the ``⚠``; recognised-safe ones
+    (rtl-buddy-sch#211) follow in a ``  ✓CDC[2FF src→dst, …]`` suffix.
     """
     if domain_map is None or domain_map.is_empty:
         return ""
-    crossings = domain_map.crossings_into(node.instance_path)
-    if not crossings:
-        return ""
-    sources_by_dst: dict[str, set[str]] = {}
-    for c in crossings:
-        sources_by_dst.setdefault(c.dst_clock, set()).add(c.src_clock)
-    parts: list[str] = []
-    for dst in sorted(sources_by_dst):
-        for src in sorted(sources_by_dst[dst]):
-            parts.append(f"{src}→{dst}")
-    return "  ⚠CDC[" + ", ".join(parts) + "]"
+    out = ""
+    crossings = domain_map.hazards_into(node.instance_path)
+    if crossings:
+        sources_by_dst: dict[str, set[str]] = {}
+        for c in crossings:
+            sources_by_dst.setdefault(c.dst_clock, set()).add(c.src_clock)
+        parts: list[str] = []
+        for dst in sorted(sources_by_dst):
+            for src in sorted(sources_by_dst[dst]):
+                parts.append(f"{src}→{dst}")
+        out = "  ⚠CDC[" + ", ".join(parts) + "]"
+    synced = _cdc_sync_parts(domain_map.synchronized_into(node.instance_path))
+    if synced:
+        out += "  ✓CDC[" + ", ".join(synced) + "]"
+    return out
 
 
 def _rdc_suffix(node: HierNode, reset_map: ResetDomainMap | None) -> str:

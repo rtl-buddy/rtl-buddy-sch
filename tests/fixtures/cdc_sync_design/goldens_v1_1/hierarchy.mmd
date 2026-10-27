@@ -1,0 +1,38 @@
+```mermaid
+flowchart TB
+  cdc_top["cdc_top<br/>cdc_top<br/>[clk_b]"]
+  cdc_top_u_src_a["u_src_a<br/>ff<br/>[clk_a]"]
+  cdc_top_u_src_c["u_src_c<br/>ff<br/>[clk_c]"]
+  cdc_top_u_sync["u_sync<br/>sync2<br/>[clk_b]"]
+  cdc_top_u_flagged["u_flagged<br/>sync2<br/>[clk_b]"]
+  cdc_top_u_raw["u_raw<br/>ff<br/>[clk_b]"]
+  cdc_top_u_unchecked["u_unchecked<br/>sync2<br/>[clk_b]"]
+  cdc_top_u_mix["u_mix<br/>mix2<br/>[clk_b]"]
+  cdc_top_u_dual["u_dual<br/>mix2<br/>[clk_b]"]
+  cdc_top_u_bridge["u_bridge<br/>bridge<br/>[clk_a]"]
+  cdc_top_u_bridge_u_ab["u_ab<br/>sync2<br/>[clk_b]"]
+  cdc_top_u_bridge_u_ba["u_ba<br/>sync2<br/>[clk_a]"]
+  cdc_top -->|".clk(clk_a), .d(d_a), .q(a_q)"| cdc_top_u_src_a
+  cdc_top -->|".clk(clk_c), .d(d_c), .q(c_q)"| cdc_top_u_src_c
+  cdc_top -.->|"⚠CDC: clk_a→clk_b<br/>.clk(clk_b), .d(a_q), .q(q_sync)"| cdc_top_u_sync
+  cdc_top -.->|"⚠CDC: clk_a→clk_b<br/>.clk(clk_b), .d(a_q), .q(q_flagged)"| cdc_top_u_flagged
+  cdc_top -.->|"⚠CDC: clk_a→clk_b<br/>.clk(clk_b), .d(a_q), .q(q_raw)"| cdc_top_u_raw
+  cdc_top -.->|"⚠CDC: clk_a→clk_b<br/>.clk(clk_b), .d(a_q), .q(q_unchecked)"| cdc_top_u_unchecked
+  cdc_top -.->|"⚠CDC: clk_a→clk_b, clk_c→clk_b<br/>.clk(clk_b), .d0(a_q), .d1(c_q), .q(q_mix)"| cdc_top_u_mix
+  cdc_top -.->|"⚠CDC: clk_a→clk_b, clk_c→clk_b<br/>.clk(clk_b), .d0(a_q), .d1(c_q), .q(q_dual)"| cdc_top_u_dual
+  cdc_top -->|".clk_a(clk_a), .clk_b(clk_b), .a_in(a_q), .b_in(q_sync), .a_out(a_out), .b_out(b_out)"| cdc_top_u_bridge
+  cdc_top_u_bridge -.->|"⚠CDC: clk_a→clk_b<br/>.clk(clk_b), .d(a_in), .q(b_out)"| cdc_top_u_bridge_u_ab
+  cdc_top_u_bridge -.->|"⚠CDC: clk_b→clk_a<br/>.clk(clk_a), .d(b_in), .q(a_out)"| cdc_top_u_bridge_u_ba
+  style cdc_top fill:#dcfce7
+  style cdc_top_u_src_a fill:#dbeafe
+  style cdc_top_u_src_c fill:#fef9c3
+  style cdc_top_u_sync fill:#dcfce7,stroke:#dc2626
+  style cdc_top_u_flagged fill:#dcfce7,stroke:#dc2626
+  style cdc_top_u_raw fill:#dcfce7,stroke:#dc2626
+  style cdc_top_u_unchecked fill:#dcfce7,stroke:#dc2626
+  style cdc_top_u_mix fill:#dcfce7,stroke:#dc2626
+  style cdc_top_u_dual fill:#dcfce7,stroke:#dc2626
+  style cdc_top_u_bridge fill:#dbeafe
+  style cdc_top_u_bridge_u_ab fill:#dcfce7,stroke:#dc2626
+  style cdc_top_u_bridge_u_ba fill:#dbeafe,stroke:#dc2626
+```

@@ -50,12 +50,15 @@ export const resetOverlay = {
         const path = group.querySelector('path')
         if (!path) continue
         if (enabled && ov && ov.crossing) {
-          // Only claim the edge when the clock overlay hasn't (CDC red
-          // wins on dual-issue edges — same precedence as the dot
-          // renderer). The marker attribute is the test, not the
-          // stroke colour: the colours are tokens now, so a string
-          // compare would break on a theme flip.
-          if (!path.hasAttribute('data-overlay-clock')) {
+          // Only claim the edge when the clock overlay hasn't marked a
+          // CDC hazard on it (CDC red wins on dual-issue edges — same
+          // precedence as the dot renderer). A recognised-safe CDC
+          // edge (``synchronized``, rtl-buddy-sch#211) is not a hazard,
+          // so the RDC warning paints over its teal. The marker
+          // attribute is the test, not the stroke colour: the colours
+          // are tokens now, so a string compare would break on a theme
+          // flip.
+          if (path.getAttribute('data-overlay-clock') !== 'crossing') {
             path.style.stroke = token('--reset-bind')
             path.setAttribute('stroke-dasharray', '6,3')
             path.setAttribute('data-overlay-reset', 'crossing')
