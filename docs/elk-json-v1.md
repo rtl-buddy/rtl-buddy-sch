@@ -122,7 +122,7 @@ matching.
 | Key | Type | Notes |
 | --- | ---- | ----- |
 | `name` | string | The formal port name. |
-| `net` | string \| null | The net expression bound at *this instance's* binding site — the verbatim slice (`op_q`, `~rst_n`, `cmd[7:0]`), with implicit `.name` shorthand resolved to the same-named net. `null` when the formal isn't bound; on the root, a port's net is its own name. **Why it exists**: a pin whose net no sibling *pin* drives — the parent's own `always_ff` drives it, and the dataflow analyzer only hops continuous assigns (§4) — has no edge to attach to and draws as a bare stub. This is what keeps that pin traceable, and it is read off the binding site rather than inferred. A consumer should print it only when it differs from `name`. |
+| `net` | string \| null | The net expression bound at *this instance's* binding site — the verbatim slice (`op_q`, `~rst_n`, `cmd[7:0]`), with implicit `.name` shorthand resolved to the same-named net. `null` when the formal isn't bound; on the root, a port's net is its own name. **Why it exists**: a pin whose net no sibling *pin* or root port reaches — the parent's own logic drives it from constants or local state, which the dataflow analyzer has no endpoint for (§6.3) — has no edge to attach to and draws as a bare stub. This is what keeps that pin traceable, and it is read off the binding site rather than inferred. A consumer should print it only when it differs from `name`. |
 | `direction` | `"input"` \| `"output"` \| `"inout"` \| null | A wire port's declared direction. An **interface port with a modport** (`bus_if.src o`) carries its modport's folded direction, `"input"` or `"output"` — see § 4.1. An interface port with **no modport** (`bus_if gen`), or one whose modport ties, takes its direction from the child modports it binds to inside the module: bound to a `snk` it is an `"input"`, to a `src` an `"output"`. `null` when that is still undecided, and for a blackbox pin. |
 | `is_clock` / `is_reset` | bool | Name-shaped, using the conservative token form (`clk`/`clock`, `rst`/`reset` as an underscore-delimited token). P2/P4 draw the chevron and bubble glyphs off these. |
 | `width` | int \| null | Declared bit width, **as this instance was parameterised** — `[WIDTH-1:0]` under `#(.WIDTH(19))` is 19. `null` when the bound doesn't resolve to an integer, the type is an aggregate, or the port is an interface bundle. See § 6.1. |
@@ -433,9 +433,12 @@ while a cryptic or wrong label reads as fact.
 - Positional port connections contribute no dataflow (the child's
   port order isn't authoritative enough), though they do mark a port
   `connected`.
-- Procedural (`always`) logic contributes no edges. Only continuous
-  assignments hop net aliases — both the standalone `assign`
-  statement and the declaration form (`wire w = expr;`), which is a
-  continuous assignment too. A *variable* initializer
+- Assignments hop net aliases: the standalone `assign` statement, the
+  declaration form (`wire w = expr;`), which is a continuous
+  assignment too, and assignments inside `always*` blocks
+  (rtl-buddy-sch#210) — value flows from the right-hand side into the
+  left. The `if` / `case` / loop conditions that steer an `always`
+  block contribute nothing, so the reset in `if (!rst_n)` never joins
+  a data group. A *variable* initializer
   (`logic w = expr;`) is a one-time static init, not a driver, and
   deliberately contributes nothing.

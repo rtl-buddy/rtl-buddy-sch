@@ -260,6 +260,9 @@ def _walk_modules(
             node, file=file, offsets=offsets, source=source
         )
         assigns = _extract_assigns(node, file=file, offsets=offsets, source=source)
+        procedural_assigns, procedural_conditions = _extract_procedural(
+            node, file=file, offsets=offsets, source=source
+        )
         net_decls = _extract_net_decls(
             node,
             file=file,
@@ -277,6 +280,8 @@ def _walk_modules(
                 dpi_functions=dpi_functions,
                 assigns=assigns,
                 net_decls=net_decls,
+                procedural_assigns=procedural_assigns,
+                procedural_conditions=procedural_conditions,
             )
         )
     return out
@@ -1050,6 +1055,103 @@ def _extract_assigns(
         )
         out.append(Assign(lhs_text=sym["text"], rhs_text=rhs_text, location=loc))
     return tuple(out)
+
+
+#: Procedural statements that assign a value: ``q <= d;``, ``c = a;``
+#: (Verible reuses the continuous-assign tag for a blocking
+#: assignment) and ``c += a;``. Each has a ``kLPValue`` and a
+#: ``kExpression`` child.
+_PROCEDURAL_ASSIGN_TAGS = (
+    "kNonblockingAssignmentStatement",
+    "kNetVariableAssignment",
+    "kAssignModifyStatement",
+)
+
+#: Procedural constructs whose expressions steer a block rather than
+#: being assigned: ``if (…)``, ``case (…)`` and its item labels, and
+#: the ``for`` / ``while`` / ``do … while`` / ``repeat`` headers.
+_PROCEDURAL_CONDITION_TAGS = (
+    "kIfHeader",
+    "kCaseStatement",
+    "kCaseItem",
+    "kLoopHeader",
+    "kWhileLoopStatement",
+    "kDoWhileLoopStatement",
+    "kRepeatControl",
+)
+
+
+def _extract_procedural(
+    module_node: dict, *, file: str, offsets: OffsetIndex, source: bytes
+) -> tuple[tuple[Assign, ...], tuple[str, ...]]:
+    """Extract assignments and conditions from ``always*`` blocks.
+
+    Layout (confirmed against ``verible-verilog-syntax --printtree``)::
+
+        kAlwaysStatement                      <- always / _ff / _comb / _latch
+          kProceduralTimingControlStatement?  <- @(posedge clk …)
+            kConditionalStatement
+              kIfClause > kIfHeader > kParenGroup > kExpression   <- condition
+                kIfBody > kNonblockingAssignmentStatement
+                            kLPValue  <=  kExpression             <- assignment
+
+    ``kNetVariableAssignment`` (a blocking ``=``) and
+    ``kAssignModifyStatement`` (``+=``) have the same two children. A
+    ``for`` initializer (``kForInitialization``) assigns its loop
+    variable, named by a ``kLPValue`` or, when it declares one
+    (``int i = 0``), by a bare ``SymbolIdentifier``.
+
+    Conditions are the ``kParenGroup`` of an ``if`` / ``case`` /
+    ``for`` / ``repeat`` header, the ``kExpression`` of a ``while`` /
+    ``do … while``, and a case item's label list. The
+    event control (``@(posedge clk_a)``) is neither: it says when the
+    block runs, not what it reads.
+
+    ``initial`` blocks, functions and tasks are not ``kAlwaysStatement``
+    and are skipped — a one-time initialisation or a subroutine body is
+    not a driver of the scope's nets.
+    """
+    assigns: list[Assign] = []
+    conditions: list[str] = []
+    for always in _iter_nodes_with_tag(module_node, "kAlwaysStatement"):
+        for node in _iter_nodes_with_tags(
+            always,
+            _PROCEDURAL_ASSIGN_TAGS
+            + _PROCEDURAL_CONDITION_TAGS
+            + ("kForInitialization",),
+        ):
+            tag = node.get("tag")
+            if tag in _PROCEDURAL_CONDITION_TAGS:
+                if tag == "kCaseItem":
+                    part = _first_child_with_tag(node, "kExpressionList")
+                else:
+                    part = _first_child_with_tag(
+                        node, "kParenGroup"
+                    ) or _first_child_with_tag(node, "kExpression")
+                text = _source_slice(part, source) if part is not None else None
+                if text:
+                    conditions.append(text)
+                continue
+            lpvalue = _first_child_with_tag(node, "kLPValue")
+            expr = _first_child_with_tag(node, "kExpression")
+            if expr is None:
+                continue
+            if lpvalue is not None:
+                lhs_text = _source_slice(lpvalue, source)
+            else:
+                sym = _first_child_with_tag(node, "SymbolIdentifier")
+                lhs_text = sym.get("text") if sym is not None else None
+            rhs_text = _source_slice(expr, source)
+            if not lhs_text or rhs_text is None:
+                continue
+            span = _node_span(node)
+            loc = (
+                SourceLocation(file=file)
+                if span is None
+                else _location(file, offsets, span[0], span[1])
+            )
+            assigns.append(Assign(lhs_text=lhs_text, rhs_text=rhs_text, location=loc))
+    return tuple(assigns), tuple(conditions)
 
 
 #: Tags whose *direct* children are module-body items. Restricting the
