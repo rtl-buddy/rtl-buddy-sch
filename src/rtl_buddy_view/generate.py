@@ -17,9 +17,11 @@ slang and simulators do:
 
 Port bindings, parameter overrides and assigns inside an iteration
 get that iteration's genvar value substituted (``bq[t].v`` →
-``bq[0].v``), and a net declared inside a generate block is qualified
-with its scope (``w`` → ``g[0].w``), so two iterations never share a
-net they don't share in hardware.
+``bq[0].v``), and a net or instance declared inside a generate block
+is qualified with its scope (``w`` → ``g[0].w``; an interface array
+``bus_if sub [0:1] ();`` bound as ``sub[1]`` → ``g[0].sub[1]``,
+rtl-buddy-sch#218), so two iterations never share a net or an
+interface they don't share in hardware.
 
 **When the evaluator cannot decide**, nothing is dropped:
 
@@ -472,10 +474,19 @@ def _with_locals(
     genvars: Mapping[str, str],
     env: Env,
     guards: tuple[str, ...],
+    items: tuple[GenerateItem, ...] = (),
 ) -> _Scope:
     nets = dict(scope.nets)
     for name in local_nets:
         nets[name] = prefix + name
+    # An instance declared in the block is scoped to it just like a
+    # net (rtl-buddy-sch#218): ``bus_if sub [0:1] ();`` inside ``g``
+    # is ``g[0].sub`` in iteration 0, and a sibling's ``.src(sub[1])``
+    # must bind that copy — not a module-scope ``sub`` every iteration
+    # would share.
+    for item in items:
+        if isinstance(item, Instance):
+            nets[item.name] = prefix + item.name
     inner_env = dict(env)
     for lp in local_params:
         value = eval_value(lp.default_text, inner_env)
@@ -591,6 +602,7 @@ def _unroll_loop(
             {**scope.genvars, loop.genvar: value if value is not None else index},
             env,
             scope.guards,
+            loop.items,
         )
         _unroll_items(loop.items, inner, instances, assigns)
 
@@ -622,6 +634,7 @@ def _unroll_conditional(
             scope.genvars,
             scope.env,
             scope.guards + tuple(undecided),
+            arm.items,
         )
         _unroll_items(arm.items, inner, instances, assigns)
 
