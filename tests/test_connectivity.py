@@ -1645,8 +1645,10 @@ def test_net_keys_keep_a_constant_array_index() -> None:
     assert net_keys("q[1].c_sta", {"q"}) == ("q[1].c_sta",)
 
 
-def test_net_keys_keep_a_non_constant_index_verbatim_and_read_it() -> None:
-    assert net_keys("q[i].c_sta", {"q"}) == ("q[i].c_sta", "i")
+def test_net_keys_keep_a_non_constant_index_verbatim_but_not_as_a_net() -> None:
+    """The index is a read of ``i``, not dataflow (rtl-buddy-sch#208)."""
+    assert net_keys("q[i].c_sta", {"q"}) == ("q[i].c_sta",)
+    assert net_keys("q[a[0]].c_sta", {"q"}) == ("q[a[0]].c_sta",)
 
 
 def test_net_keys_drop_selects_past_the_member() -> None:
@@ -1663,16 +1665,66 @@ def test_net_keys_leave_a_whole_interface_on_its_root() -> None:
     assert net_keys("q[1]", {"q"}) == ("q",)
 
 
-def test_net_keys_leave_struct_and_bit_selects_alone() -> None:
+def test_net_keys_leave_struct_selects_alone() -> None:
     """``s`` is not an interface: its field select is not a net."""
     assert net_keys("s.field", {"cfg"}) == ("s",)
-    assert net_keys("bus[3]", {"cfg"}) == ("bus",)
+    assert net_keys("s . field") == ("s",)
     assert net_keys("{cfg.a_en, s.f}", {"cfg"}) == ("cfg.a_en", "s")
 
 
-def test_net_keys_without_interfaces_are_root_identifiers() -> None:
-    expr = "{hwif_out.ctrl.SRC.value, mem[addr], 2'b01}"
-    assert net_keys(expr) == root_identifiers(expr)
+# --- plain-vector element selects (rtl-buddy-sch#208) -----------------------
+
+
+def test_net_keys_key_a_constant_vector_element() -> None:
+    assert net_keys("bus[3]", {"cfg"}) == ("bus[3]",)
+    assert net_keys("dv[SR_A]") == ("dv[SR_A]",)
+    assert net_keys("dv [ SR_A ]") == ("dv[SR_A]",)
+    assert net_keys("dv[pkg::SR_A]") == ("dv[pkg::SR_A]",)
+    assert net_keys("dv[N-1]", variables={"x"}) == ("dv[N-1]",)
+
+
+def test_net_keys_drop_selects_past_the_element() -> None:
+    assert net_keys("m[1][2]") == ("m[1]",)
+    assert net_keys("arr[0].f[3:0]") == ("arr[0]",)
+
+
+def test_net_keys_fall_back_to_the_vector_on_a_range_or_variable_index() -> None:
+    assert net_keys("cmd_data[18:16]") == ("cmd_data",)
+    assert net_keys("bus[i*8 +: 8]") == ("bus",)
+    assert net_keys("mem[addr]", variables={"addr"}) == ("mem",)
+    assert net_keys("mem[addr + 1]", variables={"addr"}) == ("mem",)
+    assert net_keys("bus[]") == ("bus",)
+
+
+def test_net_keys_never_key_an_index_identifier() -> None:
+    expr = "{hwif_out.ctrl.SRC.value, mem[addr], s_rst_l[SR_A], 2'b01}"
+    assert net_keys(expr, variables={"addr"}) == ("hwif_out", "mem", "s_rst_l[SR_A]")
+    assert net_keys("a[b[c]] & d") == ("a[b[c]]", "d")
+
+
+def test_net_keys_leave_an_unbalanced_bracket_to_the_identifier_scan() -> None:
+    assert net_keys("a[b") == ("a", "b")
+
+
+def test_whole_and_element_selects_of_a_scope_port_meet() -> None:
+    """A vector port stands on its own name and on every element selected."""
+    top = _module(
+        "top",
+        ports=(
+            _port("din", "input", "logic [1:0]"),
+            _port("dout", "output", "logic [1:0]"),
+        ),
+        instances=(
+            _inst("u_a", "blk_in", _conn("en", "din[0]")),
+            _inst("u_b", "blk_out", _conn("sta", "dout[1]")),
+        ),
+    )
+    table = _table(top, _BLK_IN, _BLK_OUT)
+    edges = scope_connectivity(top, table)
+    assert [(e.src, e.dst, e.nets) for e in edges] == [
+        (("inst", "u_b"), ("port", "dout"), ("dout[1]",)),
+        (("port", "din"), ("inst", "u_a"), ("din[0]",)),
+    ]
 
 
 _CFG_IF = Interface(

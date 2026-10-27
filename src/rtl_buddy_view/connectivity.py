@@ -19,7 +19,12 @@ The algorithm is deliberately structural rather than semantic:
    net of its own, so it keeps its member path instead: ``cfg.a_en``,
    ``q[1].c_sta`` (see :func:`net_keys`). Collapsing those to ``cfg`` /
    ``q`` would put every block touching any member — or any element
-   of an interface array — on one net (rtl-buddy-sch#193).
+   of an interface array — on one net (rtl-buddy-sch#193). An element
+   of a plain vector selected by a constant index is likewise keyed
+   ``dv[SR_A]`` (rtl-buddy-sch#208), and identifiers inside an index
+   are never nets. A whole reference (``cfg``, ``dv``) also stands on
+   every member or element key the scope selects, so it meets them
+   all while two elements stay apart.
 2. Continuous assignments build a **directed value-flow graph** over
    those roots: ``assign lhs = rhs;`` adds one edge ``rhs_root ->
    lhs_root`` per root pair, because value flows out of the RHS and
@@ -48,11 +53,17 @@ Remaining limits, all downstream of not running an elaborator:
 
 * Roots are recovered by a textual regex, so a net named inside a
   macro body or built by generate-scope mangling is invisible.
-* An interface member is keyed one level deep, by its spelling: a
+* A member or element is keyed one level deep, by its spelling:
+  ``dv[0]`` never meets ``dv[ZERO]``, and an interface member under a
   non-constant index (``q[i].v``) only meets the same text, never
-  ``q[0].v``.
-* Index expressions count as reads (``mem[addr]`` yields both), and
-  bit ranges are ignored — two disjoint slices of one vector alias.
+  ``q[0].v``. Constant-ness is judged without elaborating: an index is
+  constant unless it is a range or names a net, variable, port or
+  interface of the scope, so a **genvar** index counts as constant and
+  meets only the same spelling.
+* A vector select by a range (``bus[7:0]``) or a variable index
+  (``mem[addr]``) falls back to the whole vector, so it meets every
+  element key — two disjoint slices of one vector still alias. The
+  index itself (``addr``) is never a read.
 * Procedural assignments (``always`` blocks) contribute no flow edges;
   only continuous assignments do — both the ``assign`` statement and
   the ``wire w = expr;`` declaration form.
@@ -152,15 +163,10 @@ _PACKED_RANGE_RE = re.compile(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]")
 #: ("which names here are roots"). One pattern, one place.
 _ROOT_IDENT_RE = IDENT_RE
 
-#: What may follow an interface-instance name to select one of its
-#: members: zero or more ``[index]`` element selects (an interface
-#: array), then an optional ``.member``. Matched at the end of a root
-#: identifier by :func:`_scan_refs`. Index text is taken verbatim
-#: (whitespace aside) and may not nest brackets — ``q[a[0]].v`` fails
-#: the member half and falls back to a whole-interface reference.
-_MEMBER_TAIL_RE = re.compile(
-    r"((?:\s*\[[^\[\]]*\])*)\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_$]*))?"
-)
+#: ``.member`` after a select chain, whitespace allowed around the dot.
+#: Matched by :func:`_scan_tail` once the leading ``[index]`` groups
+#: are consumed.
+_TAIL_MEMBER_RE = re.compile(r"\s*\.\s*([A-Za-z_][A-Za-z0-9_$]*)")
 
 #: The leading identifier of a net key — its root.
 _KEY_ROOT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
@@ -266,9 +272,9 @@ def root_identifiers(expr_text: str) -> tuple[str, ...]:
     Sized-literal bases (the ``b00`` of ``2'b00``) and system
     task/function names (the ``clog2`` of ``$clog2(W)``) are excluded.
     Names appearing purely as index expressions are *not* excluded —
-    ``mem[addr]`` yields both ``mem`` and ``addr``. That over-match is
-    intentional: an index is a real read of that net, and pin
-    directions downstream keep the resulting edges honest.
+    ``mem[addr]`` yields both ``mem`` and ``addr``: this is the purely
+    lexical scan. The connectivity keys (:func:`net_keys`) leave index
+    identifiers out (rtl-buddy-sch#208).
 
     The result is deduped, in first-appearance order, so callers get
     deterministic output without needing to sort.
@@ -339,31 +345,48 @@ def interface_roots(module: Module, table: ModuleTable) -> frozenset[str]:
 
 
 def net_keys(
-    expr_text: str, interfaces: frozenset[str] | set[str] = frozenset()
+    expr_text: str,
+    interfaces: frozenset[str] | set[str] = frozenset(),
+    variables: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[str, ...]:
     """The nets an expression slice references, as connectivity keys.
 
-    :func:`root_identifiers`, except that a reference into an
-    **interface** named in ``interfaces`` (see :func:`interface_roots`)
-    keeps its member path — the member is the net, the interface is
-    only a namespace::
+    :func:`root_identifiers`, with two refinements.
+
+    A reference into an **interface** named in ``interfaces`` (see
+    :func:`interface_roots`) keeps its member path — the member is the
+    net, the interface is only a namespace (rtl-buddy-sch#193)::
 
         net_keys("cfg.a_en", {"cfg"})            ->  ("cfg.a_en",)
         net_keys("q[1].c_sta", {"q"})            ->  ("q[1].c_sta",)
-        net_keys("q[i].c_sta", {"q"})            ->  ("q[i].c_sta", "i")
+        net_keys("q[i].c_sta", {"q"})            ->  ("q[i].c_sta",)
         net_keys("cfg.data[3:0]", {"cfg"})       ->  ("cfg.data",)
-        net_keys("s.field", {"cfg"})             ->  ("s",)      # a struct
         net_keys("cfg", {"cfg"})                 ->  ("cfg",)    # whole
 
-    The key is the member path **as spelled**, whitespace removed:
-    element indices are kept verbatim (constant or not), and selects
-    past the first member (``cfg.data[3:0]``, ``cfg.s.f``) are dropped
-    the same way a struct field or bit range is on an ordinary net. A
-    reference to the whole interface (``cfg``, ``q[1]``) stays on the
-    root name, exactly as before. With ``interfaces`` empty this *is*
-    :func:`root_identifiers`.
+    An **element select of a plain vector** with a constant index is
+    keyed on the element, the same way (rtl-buddy-sch#208)::
+
+        net_keys("dv[SR_A]")                     ->  ("dv[SR_A]",)
+        net_keys("dv[0].f")                      ->  ("dv[0]",)
+        net_keys("bus[7:0]")                     ->  ("bus",)    # a range
+        net_keys("mem[addr]", variables={"addr"})  ->  ("mem",)
+        net_keys("s.field")                      ->  ("s",)      # a struct
+
+    An index is **constant** unless it is a range (``[7:0]``,
+    ``[i +: 8]``) or names one of ``variables`` — the scope's own nets,
+    variables, ports and interfaces (:func:`_scope_variables`). Enum
+    members, parameters, localparams and literals are not declared as
+    nets, which is what makes them constant here; a genvar is not
+    either, so a genvar index is keyed verbatim and only meets the same
+    spelling. A non-constant select falls back to the root name.
+
+    Identifiers **inside** ``[...]`` never become keys, constant or
+    not: they are reads of the index, not dataflow between instances.
+    Selects past the first index or member (``cfg.data[3:0]``,
+    ``dv[0][3]``, ``cfg.s.f``) are dropped the way a struct field is.
+    Whitespace is removed from a key.
     """
-    return _scan_refs(expr_text, interfaces)[0]
+    return _scan_refs(expr_text, interfaces, None, variables)[0]
 
 
 def _interface_modports(
@@ -397,43 +420,141 @@ def _scan_refs(
     expr_text: str,
     interfaces: frozenset[str] | set[str],
     modports: Mapping[str, frozenset[str]] | None = None,
+    variables: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(keys, whole)`` for one expression slice.
 
-    ``keys`` is :func:`net_keys`. ``whole`` lists the whole-interface
-    references among them as their select prefix (``cfg``, ``q[1]``),
-    so the caller can attach such a binding to the member nets it
-    spans (see :func:`_expand_whole`). ``modports`` names each
+    ``keys`` is :func:`net_keys`. ``whole`` lists the references that
+    stand for a whole bundle — an interface as its select prefix
+    (``cfg``, ``q[1]``), a vector referenced by its bare name or by a
+    select that fell back to it (``bus``, ``bus[7:0]``, ``mem[addr]``)
+    — so the caller can attach such a binding to the member or element
+    nets it spans (see :func:`_expand_whole`). ``modports`` names each
     interface's modports (:func:`_interface_modports`): a select of
     one (``u_if.sub``) is a whole-interface reference too.
     """
     keys: dict[str, None] = {}
     whole: dict[str, None] = {}
-    # Start offsets of member names already folded into a key. The
-    # identifier regex skips a name preceded by ``.``, but not one
-    # spelled ``cfg . a_en`` — that member must not also count as a
-    # net of its own.
-    members_at: set[int] = set()
+    # Everything up to here belongs to a select chain already folded
+    # into a key: its index identifiers and member names (including a
+    # member spelled ``cfg . a_en``, which the identifier regex does
+    # not skip on its own) are not nets.
+    consumed = 0
     for match in _ROOT_IDENT_RE.finditer(expr_text):
-        if match.start() in members_at:
+        if match.start() < consumed:
             continue
         name = match.group(0)
-        tail = _MEMBER_TAIL_RE.match(expr_text, match.end())
-        if name not in interfaces or tail is None:
-            keys.setdefault(name, None)
+        tail = _scan_tail(expr_text, match.end())
+        consumed = tail.end
+        indices = "".join(f"[{_WS_RE.sub('', i)}]" for i in tail.indices)
+        if name not in interfaces:
+            if tail.indices and _constant_index(tail.indices[0], variables):
+                keys.setdefault(f"{name}[{_WS_RE.sub('', tail.indices[0])}]", None)
+            else:
+                keys.setdefault(name, None)
+                whole.setdefault(name, None)
             continue
-        indices = _WS_RE.sub("", tail.group(1))
-        member = tail.group(2)
+        member = tail.member
         if member is not None and modports and member in modports.get(name, ()):
-            members_at.add(tail.start(2))
             member = None
         if member is None:
             keys.setdefault(name, None)
             whole.setdefault(name + indices, None)
             continue
-        members_at.add(tail.start(2))
         keys.setdefault(f"{name}{indices}.{member}", None)
     return tuple(keys), tuple(whole)
+
+
+@dataclass(frozen=True)
+class _Tail:
+    """The select chain after a root identifier (:func:`_scan_tail`).
+
+    ``indices`` are the bracket contents before the first member,
+    verbatim; ``member`` is that member's name, when there is one;
+    ``end`` is the offset just past the whole chain, later selects
+    included.
+    """
+
+    indices: tuple[str, ...]
+    member: str | None
+    end: int
+
+
+def _scan_tail(text: str, pos: int) -> _Tail:
+    """Read the ``[...]`` / ``.member`` select chain starting at ``pos``.
+
+    Brackets nest (``q[a[0]].v``). An unbalanced ``[`` ends the chain
+    where it starts.
+    """
+    indices: list[str] = []
+    end = _scan_brackets(text, pos, indices)
+    match = _TAIL_MEMBER_RE.match(text, end)
+    if match is None:
+        return _Tail(tuple(indices), None, end)
+    member = match.group(1)
+    end = match.end()
+    while True:
+        end = _scan_brackets(text, end, None)
+        more = _TAIL_MEMBER_RE.match(text, end)
+        if more is None:
+            break
+        end = more.end()
+    return _Tail(tuple(indices), member, end)
+
+
+def _scan_brackets(text: str, pos: int, out: list[str] | None) -> int:
+    """Consume consecutive balanced ``[...]`` groups from ``pos``.
+
+    Appends each group's contents to ``out`` (when given) and returns
+    the offset past the last one — ``pos`` itself when none starts
+    there.
+    """
+    end = pos
+    while True:
+        start = end
+        while start < len(text) and text[start].isspace():
+            start += 1
+        if start >= len(text) or text[start] != "[":
+            return end
+        depth = 0
+        close = -1
+        for i in range(start, len(text)):
+            if text[i] == "[":
+                depth += 1
+            elif text[i] == "]":
+                depth -= 1
+                if depth == 0:
+                    close = i
+                    break
+        if close < 0:
+            return end
+        if out is not None:
+            out.append(text[start + 1 : close])
+        end = close + 1
+
+
+def _constant_index(index: str, variables: frozenset[str] | set[str]) -> bool:
+    """True for an element index that names one fixed element.
+
+    A range (``7:0``, ``i +: 8``; a package scope ``pkg::C`` is not
+    one) or an index reading any of the scope's ``variables`` selects
+    no fixed element. An empty index is not constant either.
+    """
+    if not index.strip() or ":" in index.replace("::", ""):
+        return False
+    return not any(m.group(0) in variables for m in _ROOT_IDENT_RE.finditer(index))
+
+
+def _scope_variables(module: Module, interfaces: frozenset[str]) -> frozenset[str]:
+    """Names in ``module``'s scope whose value can change at run time.
+
+    Its declared nets and variables, its ports and its interfaces — the
+    names that make an index non-constant (:func:`_constant_index`).
+    """
+    names = {decl.name for decl in module.net_decls}
+    names.update(port.name for port in module.ports)
+    names.update(interfaces)
+    return frozenset(names)
 
 
 def _key_root(key: str) -> str:
@@ -445,6 +566,16 @@ def _key_root(key: str) -> str:
 def _is_member_key(key: str) -> bool:
     """True for an interface member path rather than a plain net name."""
     return "." in key
+
+
+def _is_select_key(key: str) -> bool:
+    """True for a member path or a vector element (``dv[SR_A]``)."""
+    return "." in key or "[" in key
+
+
+def _is_element_key(key: str) -> bool:
+    """True for a plain vector element key (``dv[SR_A]``), not a member."""
+    return "[" in key and "." not in key
 
 
 def _is_handshake_name(name: str) -> bool:
@@ -652,12 +783,14 @@ def _boundary_directions(
         direction = port_direction(port, table)
         if direction is None and port.port_kind == "interface":
             if pins is None:
+                interfaces = interface_roots(module, table)
                 pins = _collect_pins(
                     module,
                     table,
                     None,
-                    interface_roots(module, table),
+                    interfaces,
                     _interface_modports(module, table),
+                    _scope_variables(module, interfaces),
                 )
             direction = _direction_from_children(port.name, pins)
         out[port.name] = direction
@@ -914,18 +1047,33 @@ def scope_connectivity(
     scope_params = params if params is not None else module_param_defaults(module)
     module = _resolved_ports(module, table)
     interfaces = interface_roots(module, table)
+    variables = _scope_variables(module, interfaces)
     raw_pins = _collect_pins(
-        module, table, pin_hints, interfaces, _interface_modports(module, table)
+        module,
+        table,
+        pin_hints,
+        interfaces,
+        _interface_modports(module, table),
+        variables,
     )
-    assign_keys = [
-        (net_keys(a.lhs_text, interfaces), net_keys(a.rhs_text, interfaces))
+    assign_refs = [
+        (
+            _scan_refs(a.lhs_text, interfaces, None, variables),
+            _scan_refs(a.rhs_text, interfaces, None, variables),
+        )
         for a in module.assigns
     ]
     members = _members_by_root(
         [key for pin in raw_pins for key in pin.roots]
-        + [key for lhs, rhs in assign_keys for key in (*lhs, *rhs)]
+        + [key for lhs, rhs in assign_refs for key in (*lhs[0], *rhs[0])]
     )
     pins = tuple(split for pin in raw_pins for split in _expand_whole(pin, members))
+    # A whole reference on either side of an assign stands on every
+    # element / member key it spans too, exactly like a whole pin.
+    assign_keys = [
+        (_spanned_keys(*lhs, members), _spanned_keys(*rhs, members))
+        for lhs, rhs in assign_refs
+    ]
     # Pins first so their roots exist as flow-graph nodes before the
     # assign pass wires them; isolated roots still need a component of
     # their own for the direct same-net case.
@@ -965,6 +1113,8 @@ def scope_connectivity(
             slot[2].update(dst_pins)
 
     observers = {(pin.endpoint, pin.formal) for pin in pins if pin.observer}
+    for nets, _, _ in bundled.values():
+        nets -= _covered_elements(nets)
     edges = [
         NetEdge(
             src=src,
@@ -986,6 +1136,29 @@ def scope_connectivity(
 
 
 # --- internals ---------------------------------------------------------------
+
+
+def _spanned_keys(
+    keys: tuple[str, ...],
+    whole: tuple[str, ...],
+    members: Mapping[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    """``keys`` plus every member / element key a whole reference spans."""
+    out = dict.fromkeys(keys)
+    for prefix in whole:
+        out.update(dict.fromkeys(_members_under(prefix, members)))
+    return tuple(out)
+
+
+def _covered_elements(nets: set[str]) -> set[str]:
+    """Vector element keys on an edge that also carries the whole vector.
+
+    A whole-vector driver reaching a whole-vector reader reaches every
+    element key on the way (:func:`_expand_whole`); the label says
+    ``dv`` once rather than ``dv, dv[0], dv[1]``, and the width is the
+    vector's rather than a double count.
+    """
+    return {n for n in nets if _is_element_key(n) and _key_root(n) in nets}
 
 
 @dataclass(frozen=True)
@@ -1211,6 +1384,7 @@ def _collect_pins(
     pin_hints: Mapping[str, Mapping[str, PinDirection]] | None = None,
     interfaces: frozenset[str] = frozenset(),
     modports: Mapping[str, frozenset[str]] | None = None,
+    variables: frozenset[str] = frozenset(),
 ) -> tuple[_Pin, ...]:
     """Resolve every named child-instance pin into a :class:`_Pin`.
 
@@ -1219,7 +1393,9 @@ def _collect_pins(
     doesn't know) — the declaration always beats the hint.
     ``interfaces`` names the scope's interfaces, whose member selects
     key on the member path (:func:`net_keys`); ``modports`` lets a
-    modport select (``.m(u_if.sub)``) bind the whole interface.
+    modport select (``.m(u_if.sub)``) bind the whole interface;
+    ``variables`` (:func:`_scope_variables`) decides which vector
+    indices are constant.
     """
     pins: list[_Pin] = []
     for inst in module.instances:
@@ -1258,7 +1434,7 @@ def _collect_pins(
             # Implicit ``.name`` shorthand: the elaborator binds it to
             # the same-named net, so that is what we resolve it to.
             expr = conn.net_expr_text.strip() or conn.port_name
-            roots, whole = _scan_refs(expr, interfaces, modports)
+            roots, whole = _scan_refs(expr, interfaces, modports, variables)
             if not roots:
                 continue
             direction = directions.get(conn.port_name) if child is not None else None
@@ -1286,10 +1462,10 @@ def _collect_pins(
 
 
 def _members_by_root(keys: list[str]) -> dict[str, tuple[str, ...]]:
-    """Interface member keys seen in the scope, grouped by root, sorted."""
+    """Interface member and vector element keys, grouped by root, sorted."""
     found: dict[str, set[str]] = {}
     for key in keys:
-        if _is_member_key(key):
+        if _is_select_key(key):
             found.setdefault(_key_root(key), set()).add(key)
     return {root: tuple(sorted(under)) for root, under in found.items()}
 
@@ -1298,7 +1474,8 @@ def _members_under(prefix: str, members: Mapping[str, tuple[str, ...]]) -> list[
     """The member keys a whole-interface select prefix spans.
 
     ``cfg`` spans every ``cfg.*`` member and ``q`` every element's
-    members; ``q[1]`` only ``q[1].*``.
+    members; ``q[1]`` only ``q[1].*``. A vector's whole reference
+    (``dv``) spans every element key (``dv[SR_A]``).
     """
     root = _key_root(prefix)
     under = members.get(root, ())
@@ -1326,6 +1503,16 @@ def _expand_whole(
     expose is not reachable through this binding and is skipped. A
     modport-less binding joins every member with the pin's own
     (unresolved) direction, as before.
+
+    A whole **vector** reference (``.q(dv)``, or a select that fell
+    back to the vector, ``.d(dv[sel])``) spans the element keys the
+    scope selects (``dv[SR_A]``) the same way (rtl-buddy-sch#208), so a
+    whole-vector driver still reaches an element reader and the other
+    way round, while two elements stay apart.
+
+    Spanned keys join as pins of their own carrying no type: the
+    formal's declared width is the whole binding's, not one member's
+    or element's.
     """
     if not pin.whole:
         return (pin,)
@@ -1333,11 +1520,14 @@ def _expand_whole(
     for prefix in pin.whole:
         spanned.update(dict.fromkeys(_members_under(prefix, members)))
     if not pin.modport_signals:
-        roots = dict.fromkeys(pin.roots)
-        roots.update(spanned)
-        if len(roots) == len(pin.roots):
-            return (pin,)
-        return (dataclasses.replace(pin, roots=tuple(roots)),)
+        extra = [key for key in spanned if key not in pin.roots]
+        return (
+            pin,
+            *(
+                dataclasses.replace(pin, roots=(key,), type_text=None, whole=())
+                for key in extra
+            ),
+        )
     by_signal = dict(pin.modport_signals)
     out = [pin]
     for key in spanned:
@@ -1355,12 +1545,11 @@ def _expand_whole(
 def _port_keys(port: Port, members: Mapping[str, tuple[str, ...]]) -> tuple[str, ...]:
     """The net keys a scope port stands on.
 
-    A wire port is its own net. An interface port is the root of its
-    members, so — like a whole-interface pin — it stands on its own
-    name *and* on every member of it the scope selects.
+    A port is its own net. An interface port is the root of its
+    members, and a vector port the root of its elements, so — like a
+    whole-interface pin — it stands on its own name *and* on every
+    member or element of it the scope selects.
     """
-    if port.port_kind != "interface":
-        return (port.name,)
     return (port.name, *members.get(port.name, ()))
 
 
@@ -1612,7 +1801,9 @@ def _build_groups(
         for key in _port_keys(port, members or {}):
             group = group_for(key)
             direction = whole
-            if key != port.name:
+            if key != port.name and binding is not None:
+                # An interface member takes its modport's direction; a
+                # vector element is as the port declares.
                 direction = signals.get(key.rsplit(".", 1)[-1])
             if direction == "input":
                 bucket = group.drivers
@@ -1655,8 +1846,9 @@ def _is_clock_or_reset_group(
             if hint.classification == "data" or hint.emphasis is not None:
                 return False
         # An interface member is classified by its own name: ``bus.clk``
-        # is a clock, and ``cfg.a_en`` is data whatever ``cfg`` is.
-        leaf = name.rsplit(".", 1)[-1]
+        # is a clock, and ``cfg.a_en`` is data whatever ``cfg`` is. A
+        # vector element by its vector's: ``s_rst_l[SR_A]`` is a reset.
+        leaf = name.rsplit(".", 1)[-1].split("[", 1)[0]
         return bool(
             _CLOCK_NAME_RE.search(leaf)
             or _RESET_NAME_RE.search(leaf)
@@ -1674,13 +1866,14 @@ def _hint_for(name: str, net_hints: Mapping[str, NetHints] | None) -> NetHints |
     ``q[1].c_sta``) has no declaration of its own in the scope to carry
     a pragma, so it inherits the hint on its interface — the instance
     or interface port that declares ``cfg`` / ``q`` — unless a hint is
-    keyed on the member path itself. That is what lets ``bundle=`` on
+    keyed on the member path itself. A vector element (``dv[SR_A]``)
+    inherits the hint on its vector the same way. That is what lets ``bundle=`` on
     an interface fold its members back into one named edge.
     """
     if not net_hints:
         return None
     hint = net_hints.get(name)
-    if hint is None and _is_member_key(name):
+    if hint is None and _is_select_key(name):
         hint = net_hints.get(_key_root(name))
     return hint
 
